@@ -6,9 +6,10 @@ account, and build/run the `entry` module. No signing credentials are included.
 
 The prepared project contains `entry/libs/arm64-v8a/libgodot.so`, the N-API bridge
 headers, and `entry/src/main/resources/rawfile/runtime.zip`. The resource archive
-contains GodotSharp, the adapted native .NET SDK and an offline NuGet feed. On
-first launch these are extracted to private application storage. Keep adequate
-free space for both the archive and the extracted SDK.
+contains GodotSharp, the packaged `oheco/dotnet-sdk` 10.0.401-ohos.2 (target RID
+`openharmony-arm64`) and an offline NuGet feed. On first launch these are
+extracted to private application storage. Keep adequate free space for both the
+archive and the extracted SDK.
 
 If these generated files are absent, this is the source template. Run
 `platform/openharmony/export-editor-project.py` in the Godot source repository
@@ -23,7 +24,7 @@ access have been verified. Terminal .NET validation alone does not establish
 those application capabilities.
 
 The first launch copies a C# verification project into the application's
-`Projects/CSharpSmoke-4.7.2-ohos.1` directory. Import its `project.godot` from the
+`Projects/CSharpSmoke-4.7.2-ohos.2` directory. Import its `project.godot` from the
 project manager and press F5. A successful run displays a rotating cube and a
 `C# PASS` label. Existing example files are preserved on subsequent launches.
 

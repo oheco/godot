@@ -25,9 +25,12 @@ editor. The earlier ArkTS compiler fixture is not an installable Godot editor.
   dependencies from **Vulkan SDK 1.4.357.0**. Exact archives, SHA-256 and sources:
   [`thirdparty/vulkan/openharmony-inputs.json`](thirdparty/vulkan/openharmony-inputs.json).
   Godot's vendored dependency licenses are retained.
-- Native .NET runtime **10.0.12** and SDK **10.0.401** from
-  <https://github.com/oheco/dotnet-runtime> and <https://github.com/oheco/dotnet-sdk>.
-  Use the adapted OpenHarmony SDK; generic Linux ARM64 .NET cannot replace it.
+- Native .NET runtime **10.0.12** and SDK **10.0.401** from the packaged
+  <https://github.com/oheco/dotnet-sdk> release, installed with
+  `oo install dotnet-sdk` (version `10.0.401-ohos.2`). Its target RID is
+  **openharmony-arm64**, and it ships the matching reference, runtime, host and
+  NativeAOT packs, so managed restores and publishes stay offline. A generic
+  Linux ARM64 .NET SDK cannot replace it.
 - The managed build uses the pinned NuGet archives listed in
   [`platform/openharmony/dotnet/nuget-inputs.json`](platform/openharmony/dotnet/nuget-inputs.json).
   Every entry records its source, version, size, digest and license metadata.
@@ -40,35 +43,43 @@ actual features and extensions. No system loader or driver is replaced.
 
 Prepare these before the offline build:
 
-- OpenHarmony SDK API **26**, including its native LLVM compiler and sysroot.
-- Native Python 3 and SCons, available on PATH.
-- The existing native LLVM tools and `binary-sign-tool` on PATH.
-- The complete signed native .NET SDK layout and the pinned NuGet feed.
+- OpenHarmony SDK API **26**, including its native LLVM compiler and sysroot
+  (`oo install ohos-sdk-native`).
+- Native Python 3 and SCons, available on PATH (`oo install python3`).
+- The existing native LLVM tools and `binary-sign-tool` on PATH
+  (`oo install ohos-sdk-toolchains`).
+- The packaged native .NET SDK (`oo install dotnet-sdk`) and the pinned NuGet feed.
 - DevEco Studio and the matching SDK for the final application build. Optional
   native Hvigor validation uses the user's adapted Node 24 and isolated Hvigor
   6.26.4 tooling; these tools are not installed by the project packager.
 
-Commands below run on the OpenHarmony host, from this source checkout. Replace
-`/path/to/...` with prepared local inputs; no build command downloads dependencies.
+Commands below run on the OpenHarmony host, from this source checkout. The `oo`
+package manager installs every toolchain input; no build command downloads
+anything. Adjust the `ohos-sdk-native` and `dotnet-sdk` versions to what
+`oo list` reports.
 
 ```sh
+OO_ROOT=${OHECO_ROOT:-$HOME/.oheco}
+NATIVE_SDK=$OO_ROOT/packages/ohos-sdk-native/26.0.0.35-Beta
+DOTNET_SDK=$OO_ROOT/packages/dotnet-sdk/10.0.401-ohos.2
+
 python3 -m SCons platform=openharmony target=editor arch=arm64 \
   module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=no \
-  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH=/path/to/ohos-sdk/ohos -j2
+  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j4
 
 python3 platform/openharmony/build-cli.py \
   --library bin/libgodot.openharmony.editor.arm64.so \
-  --native-sdk /path/to/ohos-sdk/ohos/native --output /path/to/new-cli-directory
+  --native-sdk "$NATIVE_SDK" --output /path/to/new-cli-directory
 
 python3 platform/openharmony/build-dotnet.py \
   --godot /path/to/new-cli-directory/godot \
-  --dotnet-sdk /path/to/native-dotnet-sdk \
+  --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
   --log /path/to/managed-build.log
 ```
 
 The managed build uses an empty private NuGet cache and locked dependencies.
-Godot package versions are pinned to **4.7.2-ohos.1** to avoid selecting upstream
+Godot package versions are pinned to **4.7.2-ohos.2** to avoid selecting upstream
 packages with different bindings. Godot API/tool assemblies retain their upstream
 .NET 8 target and run on .NET 10; newly created OpenHarmony C# projects target
 .NET 10. A project-local `NuGet.Config` uses the bundled feed through the
@@ -80,7 +91,7 @@ Run the native integration acceptance after the managed build:
 python3 platform/openharmony/test-dotnet.py \
   --godot /path/to/new-cli-directory/godot \
   --godotsharp bin/GodotSharp \
-  --dotnet-sdk /path/to/native-dotnet-sdk \
+  --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
   --output /path/to/new-csharp-check-directory
 ```
@@ -98,17 +109,23 @@ After the native editor and managed assemblies have been validated:
 python3 platform/openharmony/export-editor-project.py \
   --library /path/to/new-cli-directory/libgodot.so \
   --godotsharp bin/GodotSharp \
-  --dotnet-sdk /path/to/native-dotnet-sdk \
+  --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
   --output /path/to/new-GodotEditor-project \
-  --archive /path/to/GodotEditor-4.7.2-ohos.1-project.zip
+  --archive /path/to/GodotEditor-4.7.2-ohos.2-project.zip
 ```
 
-The script verifies required ARM64 inputs and the fixed feed. It packages the
-SDK, managed tools, native headers, licenses and a resource digest manifest.
-Runtime extraction uses the application's private files and cache directories.
-Project files contain no maintainer signing profile, account or absolute SDK path.
-The project archive includes a checksum file alongside it.
+The script verifies the ARM64 inputs, the packaged SDK RID and the presence of
+its OpenHarmony reference and runtime packs, and the fixed feed. It packages the
+signed editor library, the SDK, managed tools, native headers, licenses and a
+resource digest manifest. Runtime extraction uses the application's private files
+and cache directories. Project files contain no maintainer signing profile,
+account or absolute SDK path.
+
+The packager stops at the project: it neither builds nor signs a HAP, and it does
+not publish anything. Published adaptation packages carry this project in the
+`projects` field of their version descriptor, which `oo export` downloads,
+verifies and extracts.
 
 Open the extracted root directory in DevEco, select the SDK, configure automatic
 signing with your own account, and build the `entry` module. The current shell
@@ -123,33 +140,40 @@ engine thread owns Godot initialization, input dispatch and teardown; ArkUI and
 native VSync callbacks send it events. Spawn requests return the actual PID so
 Godot can stop and observe the game process.
 
-Current checks:
+Checks for the **4.7.2-ohos.2** project:
 
-- Native CoreCLR embedding with callbacks, a native worker thread, JIT and
-  compacting GC: passed in the terminal application's sandbox.
-- Native offline build of GodotTools.ProjectEditor, Core and Shared from a fresh
-  NuGet cache: passed.
-- ArkTS UIAbility, window/input shell and runtime extraction code: compiled on
-  OpenHarmony using the adapted Node runtime.
-- C++ N-API shell: native compiler syntax check passed.
-- SDK subprocess startup check and missing-SDK error: passed in the terminal
-  security domain; the same check runs asynchronously inside the application.
-- Offline Vulkan update in a separate directory: all 216 regenerated files
-  matched the source tree, including the rebased Godot glslang patches.
-- Full native Godot editor and complete GodotSharp Debug/Release/tools build:
-  passed, with locked offline NuGet inputs.
-- Real C# scene (bindings, signals, private files, worker-thread JIT and compacting
-  GC), followed by assembly unload/reload in the same editor process: passed.
-- Exported runtime extracted into a new private path containing spaces: all
-  5,022 SDK file hashes matched; C# scene/build/reload passed again using the
-  extracted SDK and GodotSharp, without loader-path overrides.
-- Complete DevEco project with real engine, SDK and GodotSharp: native build of
-  the N-API bridge, ArkTS and unsigned HAP passed; signed engine bytes preserved.
-- Signed HAP installation, GUI rendering, input, process launch, sandboxed .NET
-  execution and project portability: pending.
+- Full native Godot editor build from a clean tree with the packaged OpenHarmony
+  SDK, ARM64, Vulkan only, OpenGL disabled: passed (2,663 translation units,
+  49m19s, `libgodot.so` SHA-256 `eec572f470f1fe784fcd513e5f16903cbbfd30e54cd604b451bc0a964e7966fd`).
+- Complete offline GodotSharp Debug/Release/tools build with the packaged
+  `dotnet-sdk` 10.0.401-ohos.2 (RID `openharmony-arm64`) and locked NuGet inputs:
+  passed; the managed tree only contains `4.7.2-ohos.2` packages.
+- Real C# scene (bindings, signals, private files, worker-thread JIT and
+  compacting GC), followed by assembly unload/reload in the same headless editor
+  process: passed using the packaged SDK.
+- Managed publish for `openharmony-arm64`: passed offline with an empty package
+  source and an empty NuGet cache. The self-contained output contains
+  `libcoreclr.so`, `libclrjit.so`, `libclrgc.so`, `libhostfxr.so`, ICU and
+  OpenSSL as musl AArch64 ELF, plus `Smoke.dll` and `GodotSharp.dll`.
+- DevEco project assembly and independent audit (24 checks): all 5,452 packaged
+  SDK files matched the recorded inventory, the runtime manifest matched the
+  archive, and the project contains no signing material or absolute host path.
+
+Earlier rounds additionally passed the ArkTS/Hvigor build of the DevEco project
+and an unsigned HAP, offline Vulkan dependency regeneration, and runtime
+extraction into a path containing spaces. The template changed in this round, so
+those application-level checks were not repeated.
+
+Signed HAP installation, GUI rendering, input, process launch, sandboxed .NET
+execution and project portability: pending, to be performed in DevEco with your
+own account.
 
 Current implementation uses embedded Godot dialogs in a single native window.
 Native detached editor subwindows and operating-system file picker integration
 are not implemented. Editing external documents requires a suitable granted
-path or import into the application sandbox. Managed game export is not yet
-validated; native editor C# support does not imply every export target works.
+path or import into the application sandbox.
+
+The managed toolchain now publishes for `openharmony-arm64` offline. The export
+plugin's own game-export path still drives the DevEco/JBR command-line tools and
+has not been reworked for the native toolchain, so exporting a game from inside
+the device editor is not yet validated.
