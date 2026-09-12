@@ -16,6 +16,19 @@ namespace GodotTools.Build
             // In the future, this method may do more than just search in PATH. We could look in
             // known locations or use Godot's linked nethost to search from the hostfxr location.
 
+            if (OS.IsOpenHarmony)
+            {
+                string architecture = RuntimeInformation.ProcessArchitecture == Architecture.Arm64 ? "ARM64" : "X64";
+                string? root = Environment.GetEnvironmentVariable("DOTNET_ROOT_" + architecture)
+                    ?? Environment.GetEnvironmentVariable("DOTNET_ROOT");
+                if (!string.IsNullOrEmpty(root))
+                {
+                    string bundled = Path.Combine(root, "dotnet");
+                    if (File.Exists(bundled))
+                        return bundled;
+                }
+            }
+
             if (OS.IsMacOS)
             {
                 if (RuntimeInformation.OSArchitecture == Architecture.X64)
@@ -99,7 +112,8 @@ namespace GodotTools.Build
                     continue;
 
                 // We're looking for the exact same major version
-                if (lineVersion.Major != expectedVersion.Major)
+                if (lineVersion.Major != expectedVersion.Major &&
+                    (!OS.IsOpenHarmony || lineVersion.Major < expectedVersion.Major))
                     continue;
 
                 if (latestVersionMatch != null && lineVersion < latestVersionMatch)

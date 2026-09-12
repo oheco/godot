@@ -61,6 +61,10 @@
   </PropertyGroup>
 
   <!-- Auto-detect the target Godot platform if it was not specified. -->
+  <PropertyGroup Condition=" '$(GodotTargetPlatform)' == '' and ( $(RuntimeIdentifier.StartsWith('openharmony-')) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOsPlatform('OPENHARMONY'))) ) ">
+    <GodotTargetPlatform>openharmony</GodotTargetPlatform>
+  </PropertyGroup>
+
   <PropertyGroup Condition=" '$(GodotTargetPlatform)' == '' ">
     <GodotTargetPlatform Condition=" $(RuntimeIdentifier.StartsWith('ios')) ">ios</GodotTargetPlatform>
     <GodotTargetPlatform Condition=" '$(GodotTargetPlatform)' == '' and $(RuntimeIdentifier.StartsWith('android')) ">android</GodotTargetPlatform>
@@ -95,6 +99,7 @@
     -->
     <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'windows' ">GODOT_WINDOWS;GODOT_PC</_GodotPlatformConstants>
     <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'linuxbsd' ">GODOT_LINUXBSD;GODOT_PC</_GodotPlatformConstants>
+    <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'openharmony' ">GODOT_OPENHARMONY;GODOT_PC</_GodotPlatformConstants>
     <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'macos' ">GODOT_OSX;GODOT_MACOS;GODOT_PC</_GodotPlatformConstants>
     <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'android' ">GODOT_ANDROID;GODOT_MOBILE</_GodotPlatformConstants>
     <_GodotPlatformConstants Condition=" '$(GodotTargetPlatform)' == 'ios' ">GODOT_IPHONE;GODOT_IOS;GODOT_MOBILE</_GodotPlatformConstants>

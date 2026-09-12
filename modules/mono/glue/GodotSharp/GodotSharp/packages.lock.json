@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "ReflectionAnalyzers": {
+        "type": "Direct",
+        "requested": "[0.1.22-dev, )",
+        "resolved": "0.1.22-dev",
+        "contentHash": "8OwCJaPVsY3rGZFzOzDI2v3O5btvsidLDStBlzspuSLFT6WdLAxbWdswG52qzTonpO7aXRO9TL1iKHukTB9UOw=="
+      }
+    }
+  }
+}

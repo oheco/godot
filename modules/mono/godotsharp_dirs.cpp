@@ -161,6 +161,12 @@ private:
 
 #ifdef TOOLS_ENABLED
 		String data_dir_root = exe_dir.path_join("GodotSharp");
+#ifdef OPENHARMONY_ENABLED
+		String configured_root = OS::get_singleton()->get_environment("GODOT_SHARP_ROOT");
+		if (!configured_root.is_empty()) {
+			data_dir_root = configured_root;
+		}
+#endif
 		data_editor_tools_dir = data_dir_root.path_join("Tools");
 		String api_assemblies_base_dir = data_dir_root.path_join("Api");
 		build_logs_dir = mono_user_dir.path_join("build_logs");

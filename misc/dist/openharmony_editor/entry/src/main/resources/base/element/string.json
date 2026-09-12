@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Godot Editor with .NET for OpenHarmony"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Godot Editor with .NET"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Godot Editor .NET"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+config_version=5
+
+[application]
+config/name="OpenHarmony CSharp Smoke"
+run/main_scene="res://Main.tscn"
+
+[dotnet]
+project/assembly_name="Smoke"
+
+[display]
+window/size/viewport_width=960
+window/size/viewport_height=640
+
+[rendering]
+renderer/rendering_method="mobile"
+renderer/rendering_method.mobile="mobile"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/reload_check/plugin.cfg")

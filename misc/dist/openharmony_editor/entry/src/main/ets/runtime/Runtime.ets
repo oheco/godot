@@ -1,0 +1,57 @@
+// Godot Engine contributors. SPDX-License-Identifier: MIT
+import { common } from '@kit.AbilityKit';
+import { fileIo as fs, hash } from '@kit.CoreFileKit';
+import { zlib } from '@kit.BasicServicesKit';
+import { util } from '@kit.ArkTS';
+
+interface RuntimeManifest { version: string; sha256: string; size: number; }
+
+export async function prepareRuntime(context: common.UIAbilityContext): Promise<string> {
+  const data = await context.resourceManager.getRawFileContent('runtime-manifest.json');
+  const manifest = JSON.parse(new util.TextDecoder().decodeWithStream(data)) as RuntimeManifest;
+  if (!/^[a-f0-9]{64}$/.test(manifest.sha256) || manifest.size <= 0) {
+    throw new Error('Invalid runtime manifest');
+  }
+  const parent = `${context.filesDir}/runtimes`;
+  fs.mkdirSync(parent, true);
+  // The content digest is also the directory identity, so upgrades never reuse stale files.
+  const destination = `${parent}/${manifest.sha256}`;
+  if (fs.accessSync(`${destination}/.ready`)) {
+    return destination;
+  }
+  const staging = `${destination}.extracting`;
+  if (fs.accessSync(staging)) { fs.rmdirSync(staging); }
+  fs.mkdirSync(staging, true);
+  const archive = `${context.cacheDir}/godot-runtime.zip`;
+  // Read a bounded buffer; the complete SDK archive can be hundreds of MB.
+  const raw = await context.resourceManager.getRawFd('runtime.zip');
+  try {
+    if (raw.length !== manifest.size) { throw new Error('Runtime archive size mismatch'); }
+    const file = fs.openSync(archive, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    try {
+      fs.lseek(raw.fd, raw.offset, fs.WhenceType.SEEK_SET);
+      const buffer = new ArrayBuffer(1024 * 1024);
+      let copied = 0;
+      while (copied < raw.length) {
+        const count = await fs.read(raw.fd, buffer, { length: Math.min(buffer.byteLength, raw.length - copied) });
+        if (count === 0) { throw new Error('Unexpected end of runtime archive'); }
+        let written = 0;
+        while (written < count) {
+          const size = await fs.write(file.fd, buffer.slice(written, count));
+          if (size === 0) { throw new Error('Unable to write runtime archive'); }
+          written += size;
+        }
+        copied += count;
+      }
+    } finally { fs.closeSync(file); }
+  } finally { await context.resourceManager.closeRawFd('runtime.zip'); }
+  if ((await hash.hash(archive, 'sha256')).toLowerCase() !== manifest.sha256) {
+    throw new Error('Runtime archive checksum mismatch');
+  }
+  await zlib.decompressFile(archive, staging);
+  fs.renameSync(staging, destination);
+  const marker = fs.openSync(`${destination}/.ready`, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+  fs.closeSync(marker);
+  fs.unlinkSync(archive);
+  return destination;
+}

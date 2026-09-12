@@ -23,6 +23,7 @@ namespace GodotTools.Utils
             public const string Windows = "Windows";
             public const string MacOS = "macOS";
             public const string Linux = "Linux";
+            public const string OpenHarmony = "OpenHarmony";
             public const string FreeBSD = "FreeBSD";
             public const string NetBSD = "NetBSD";
             public const string BSD = "BSD";
@@ -39,6 +40,7 @@ namespace GodotTools.Utils
             public const string Windows = "windows";
             public const string MacOS = "macos";
             public const string LinuxBSD = "linuxbsd";
+            public const string OpenHarmony = "openharmony";
             public const string Android = "android";
             public const string iOS = "ios";
             public const string Web = "web";
@@ -53,6 +55,7 @@ namespace GodotTools.Utils
             public const string Win = "win";
             public const string OSX = "osx";
             public const string Linux = "linux";
+            public const string OpenHarmony = "openharmony";
             public const string Win10 = "win10";
             public const string Android = "android";
             public const string LinuxBionic = "linux-bionic";
@@ -69,6 +72,7 @@ namespace GodotTools.Utils
             ["Windows"] = Platforms.Windows,
             ["macOS"] = Platforms.MacOS,
             ["Linux"] = Platforms.LinuxBSD,
+            ["OpenHarmony"] = Platforms.OpenHarmony,
             ["Android"] = Platforms.Android,
             ["iOS"] = Platforms.iOS,
             ["Web"] = Platforms.Web
@@ -79,6 +83,7 @@ namespace GodotTools.Utils
             [Names.Windows] = Platforms.Windows,
             [Names.MacOS] = Platforms.MacOS,
             [Names.Linux] = Platforms.LinuxBSD,
+            [Names.OpenHarmony] = Platforms.OpenHarmony,
             [Names.FreeBSD] = Platforms.LinuxBSD,
             [Names.NetBSD] = Platforms.LinuxBSD,
             [Names.BSD] = Platforms.LinuxBSD,
@@ -96,6 +101,7 @@ namespace GodotTools.Utils
             // instead of `linux` in the runtime identifier. This would be a problem as
             // Godot has a single export profile for both, named LinuxBSD.
             [Platforms.LinuxBSD] = DotNetOS.Linux,
+            [Platforms.OpenHarmony] = DotNetOS.OpenHarmony,
             [Platforms.Android] = DotNetOS.Android,
             [Platforms.iOS] = DotNetOS.iOS,
             [Platforms.Web] = DotNetOS.Browser
@@ -124,12 +130,13 @@ namespace GodotTools.Utils
             new[] { Names.Linux, Names.FreeBSD, Names.NetBSD, Names.BSD };
 
         private static readonly IEnumerable<string> UnixLikePlatforms =
-            new[] { Names.MacOS, Names.Android, Names.iOS }
+            new[] { Names.MacOS, Names.Android, Names.iOS, Names.OpenHarmony }
                 .Concat(LinuxBSDPlatforms).ToArray();
 
         private static readonly Lazy<bool> _isWindows = new(() => IsOS(Names.Windows));
         private static readonly Lazy<bool> _isMacOS = new(() => IsOS(Names.MacOS));
         private static readonly Lazy<bool> _isLinuxBSD = new(() => IsAnyOS(LinuxBSDPlatforms));
+        private static readonly Lazy<bool> _isOpenHarmony = new(() => IsOS(Names.OpenHarmony));
         private static readonly Lazy<bool> _isAndroid = new(() => IsOS(Names.Android));
         private static readonly Lazy<bool> _isiOS = new(() => IsOS(Names.iOS));
         private static readonly Lazy<bool> _isWeb = new(() => IsOS(Names.Web));
@@ -147,6 +154,7 @@ namespace GodotTools.Utils
 
         [SupportedOSPlatformGuard("browser")] public static bool IsWeb => _isWeb.Value;
         public static bool IsUnixLike => _isUnixLike.Value;
+        public static bool IsOpenHarmony => _isOpenHarmony.Value;
 
         public static char PathSep => IsWindows ? ';' : ':';
 

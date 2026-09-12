@@ -47,3 +47,6 @@ WrapperScreenOrientation ohos_wrapper_get_display_orientation();
 void ohos_wrapper_screen_set_keep_on(int32_t window_id, bool p_enable);
 bool ohos_wrapper_screen_is_kept_on(int32_t window_id);
 int ohos_wrapper_get_keyboard_avoid_area(int32_t window_id);
+
+int ohos_wrapper_set_mouse_mode(int32_t window_id, bool locked, bool follow, bool visible);
+int ohos_wrapper_set_cursor_shape(int32_t window_id, int shape);

@@ -359,7 +359,7 @@ static napi_value NAPI_Global_inputKey(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 
-	GodotKeyEvent event;
+	GodotKeyEvent event{};
 	event.code = code_uint;
 	event.unicode = unicode_uint;
 	event.pressed = pressed_bool;
@@ -444,7 +444,7 @@ static napi_value NAPI_Global_inputMouse(napi_env env, napi_callback_info info) 
 		return nullptr;
 	}
 
-	GodotMouseEvent event;
+	GodotMouseEvent event{};
 	event.type = type_uint;
 	event.button = button_uint;
 	event.mask = mask_uint;

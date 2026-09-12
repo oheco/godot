@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "export_plugin.h"
+#include "core/object/callable_mp.h"
 
 #include "logo_svg.gen.h"
 #include "run_icon_svg.gen.h"
@@ -246,14 +247,14 @@ List<String> EditorExportPlatformOpenHarmony::get_binary_extensions(const Ref<Ed
 	return List<String>{ "hap", "app" };
 }
 
-Error EditorExportPlatformOpenHarmony::export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags) {
+Error EditorExportPlatformOpenHarmony::export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify) {
 	bool should_sign = p_preset->get("build/sign");
 	bool export_project_only = p_preset->get("build/export_project_only");
-	return export_project_helper(p_preset, p_debug, p_path, should_sign, export_project_only, p_flags);
+	return export_project_helper(p_preset, p_debug, p_path, should_sign, export_project_only, p_flags, p_notify);
 }
 
-Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags) {
-	ExportNotifier notifier(*this, p_preset, p_debug, p_path, p_flags);
+Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify) {
+	ExportNotifier notifier(*this, p_preset, p_debug, p_path, p_flags, p_notify);
 
 	EditorProgress ep("export", TTR("Exporting OpenHarmony Project"), 7, true);
 

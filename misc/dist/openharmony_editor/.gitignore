@@ -1,0 +1,17 @@
+.hvigor/
+node_modules
+oh_modules/
+build/
+entry/build/
+entry/oh_modules/
+local.properties
+signing/
+*.p12
+*.p7b
+*.cer
+entry/libs/
+entry/src/main/cpp/include/
+entry/src/main/resources/rawfile/runtime.zip
+entry/src/main/resources/rawfile/runtime-manifest.json
+.cxx/
+entry/.cxx/

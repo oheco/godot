@@ -32,14 +32,19 @@
 
 #include "dir_access_openharmony.h"
 #include "display_server_openharmony.h"
+#include "editor_bridge_openharmony.h"
 #include "file_access_openharmony.h"
 
+#include "core/input/input.h"
 #include "main/main.h"
 #include "scene/main/scene_tree.h"
 
 #include <hilog/log.h>
 #include <native_drawing/drawing_text_font_descriptor.h>
 #include <native_drawing/drawing_text_typography.h>
+#include <signal.h>
+
+#include <cerrno>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -54,11 +59,13 @@ OS_OpenHarmony *OS_OpenHarmony::get_singleton() {
 	return static_cast<OS_OpenHarmony *>(OS::get_singleton());
 }
 
-OS_OpenHarmony::OS_OpenHarmony() {
-	Vector<Logger *> loggers;
-	Logger_OpenHarmony *logger = memnew(Logger_OpenHarmony);
-	loggers.push_back(logger);
-	_set_logger(memnew(CompositeLogger(loggers)));
+OS_OpenHarmony::OS_OpenHarmony(bool p_use_hilog) {
+	ui_ability = p_use_hilog;
+	if (p_use_hilog) {
+		Vector<Logger *> loggers;
+		loggers.push_back(memnew(Logger_OpenHarmony));
+		_set_logger(memnew(CompositeLogger(loggers)));
+	}
 
 	AudioDriverManager::add_driver(&audio_driver);
 	DisplayServerOpenHarmony::register_openharmony_driver();
@@ -122,6 +129,10 @@ MainLoop *OS_OpenHarmony::get_main_loop() const {
 }
 
 void OS_OpenHarmony::delete_main_loop() {
+	if (main_loop) {
+		memdelete(main_loop);
+		main_loop = nullptr;
+	}
 }
 
 void OS_OpenHarmony::finalize() {
@@ -131,14 +142,33 @@ bool OS_OpenHarmony::_check_internal_feature_support(const String &p_feature) {
 	if (p_feature == "system_fonts") {
 		return true;
 	}
-	if (p_feature == "mobile") {
+	if (p_feature == "desktop") {
 		return true;
 	}
 	return false;
 }
 
 String OS_OpenHarmony::get_user_data_dir(const String &p_user_dir) const {
-	return OS_OpenHarmony::USER_DATA_DIR;
+	return get_data_path().path_join(p_user_dir);
+}
+
+String OS_OpenHarmony::get_data_path() const {
+	String configured = get_environment("GODOT_OHOS_DATA_DIR");
+	return configured.is_empty() ? String(USER_DATA_DIR) : configured;
+}
+
+String OS_OpenHarmony::get_config_path() const {
+	return get_data_path().path_join("config");
+}
+
+String OS_OpenHarmony::get_cache_path() const {
+	String configured = get_environment("GODOT_OHOS_CACHE_DIR");
+	return configured.is_empty() ? get_data_path().path_join("cache") : configured;
+}
+
+String OS_OpenHarmony::get_temp_path() const {
+	String configured = get_environment("TMPDIR");
+	return configured.is_empty() || configured == "/tmp" ? get_cache_path() : configured;
 }
 
 String OS_OpenHarmony::get_bundle_resource_dir() const {
@@ -382,7 +412,7 @@ bool OS_OpenHarmony::main_loop_iterate() {
 	if (!main_loop) {
 		return false;
 	}
-	DisplayServerOpenHarmony::get_singleton()->process_events();
+	DisplayServer::get_singleton()->process_events();
 	return Main::iteration();
 }
 
@@ -399,9 +429,10 @@ void OS_OpenHarmony::main_loop_end() {
 void OS_OpenHarmony::on_focus_out() {
 	if (is_focused) {
 		is_focused = false;
+		Input::get_singleton()->release_pressed_events();
 
 		if (DisplayServerOpenHarmony::get_singleton()) {
-			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServer::WINDOW_EVENT_FOCUS_OUT);
+			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_OUT);
 		}
 
 		if (OS::get_singleton()->get_main_loop()) {
@@ -417,7 +448,7 @@ void OS_OpenHarmony::on_focus_in() {
 		is_focused = true;
 
 		if (DisplayServerOpenHarmony::get_singleton()) {
-			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServer::WINDOW_EVENT_FOCUS_IN);
+			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_IN);
 		}
 
 		if (OS::get_singleton()->get_main_loop()) {
@@ -459,4 +490,52 @@ void Logger_OpenHarmony::logv(const char *p_format, va_list p_list, bool p_err) 
 	} else {
 		OH_LOG_INFO(LOG_APP, "%{public}s", &buffer[0]);
 	}
+}
+
+Error OS_OpenHarmony::create_instance(const List<String> &p_arguments, ProcessID *r_child_id) {
+	if (!ui_ability) {
+		return OS_Unix::create_process(get_executable_path(), p_arguments, r_child_id);
+	}
+	Vector<CharString> arguments;
+	for (const String &argument : p_arguments) {
+		arguments.push_back(argument.utf8());
+	}
+	Vector<const char *> argv;
+	for (const CharString &argument : arguments) {
+		argv.push_back(argument.get_data());
+	}
+	int32_t pid = godot_editor_create_instance(argv.size(), argv.ptr());
+	ERR_FAIL_COND_V_MSG(pid <= 0, ERR_CANT_FORK, "The UIAbility could not start a separate Godot process.");
+	ability_processes.insert(pid);
+	if (r_child_id) {
+		*r_child_id = pid;
+	}
+	return OK;
+}
+
+Error OS_OpenHarmony::create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id, bool p_open_console) {
+	if (ui_ability && p_path == get_executable_path()) {
+		return create_instance(p_arguments, r_child_id);
+	}
+	return OS_Unix::create_process(p_path, p_arguments, r_child_id, p_open_console);
+}
+
+Error OS_OpenHarmony::kill(const ProcessID &p_pid) {
+	if (ability_processes.has(p_pid)) {
+		// AbilityManager owns this process, so it must not be passed to waitpid().
+		return ::kill(p_pid, SIGTERM) == 0 ? OK : ERR_INVALID_PARAMETER;
+	}
+	return OS_Unix::kill(p_pid);
+}
+
+bool OS_OpenHarmony::is_process_running(const ProcessID &p_pid) const {
+	if (ability_processes.has(p_pid)) {
+		return ::kill(p_pid, 0) == 0 || errno == EPERM;
+	}
+	return OS_Unix::is_process_running(p_pid);
+}
+
+int OS_OpenHarmony::get_process_exit_code(const ProcessID &p_pid) const {
+	// AbilityManager does not expose waitpid-style exit status.
+	return ability_processes.has(p_pid) ? -1 : OS_Unix::get_process_exit_code(p_pid);
 }

@@ -34,6 +34,8 @@
 #include "rendering_context_driver_vulkan_openharmony.h"
 #include "wrapper_openharmony.h"
 
+#include "core/input/input.h"
+#include "core/input/input_event.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/rendering_device.h"
 
@@ -55,7 +57,7 @@ Vector<String> DisplayServerOpenHarmony::get_rendering_drivers_func() {
 	return drivers;
 }
 
-DisplayServer *DisplayServerOpenHarmony::create_func(const String &p_rendering_driver, DisplayServer::WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, int64_t p_parent_window, Error &r_error) {
+DisplayServer *DisplayServerOpenHarmony::create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	DisplayServer *ds = memnew(DisplayServerOpenHarmony(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, p_context, p_parent_window, r_error));
 	if (r_error != OK) {
 		OS::get_singleton()->alert(
@@ -69,7 +71,7 @@ void DisplayServerOpenHarmony::register_openharmony_driver() {
 	register_create_function("openharmony", create_func, get_rendering_drivers_func);
 }
 
-DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_driver, WindowMode p_mode, DisplayServer::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, Context p_context, int64_t p_parent_window, Error &r_error) {
+DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	rendering_driver = p_rendering_driver;
 
 	rendering_context = nullptr;
@@ -78,6 +80,7 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 	if (rendering_driver != "vulkan") {
 		ERR_PRINT(vformat("Failed to create %s context.", rendering_driver));
 		r_error = ERR_UNAVAILABLE;
+		return;
 	}
 
 	rendering_context = memnew(RenderingContextDriverVulkanOpenHarmony);
@@ -91,10 +94,13 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 	}
 	RenderingContextDriverVulkanOpenHarmony::WindowPlatformData vulkan;
 	OHNativeWindow *native_window = OS_OpenHarmony::get_singleton()->get_native_window();
-	ERR_FAIL_NULL(native_window);
+	if (!native_window) {
+		r_error = ERR_UNAVAILABLE;
+		return;
+	}
 	vulkan.window = native_window;
 
-	if (rendering_context->window_create(MAIN_WINDOW_ID, &vulkan) != OK) {
+	if (rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, &vulkan) != OK) {
 		ERR_PRINT(vformat("Failed to create %s window.", rendering_driver));
 		memdelete(rendering_context);
 		rendering_context = nullptr;
@@ -103,18 +109,19 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 	}
 
 	Size2i display_size = OS_OpenHarmony::get_singleton()->get_display_size();
-	rendering_context->window_set_size(MAIN_WINDOW_ID, display_size.width, display_size.height);
-	rendering_context->window_set_vsync_mode(MAIN_WINDOW_ID, p_vsync_mode);
+	rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.width, display_size.height);
+	rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
 
 	rendering_device = memnew(RenderingDevice);
-	if (rendering_device->initialize(rendering_context, MAIN_WINDOW_ID) != OK) {
+	if (rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID) != OK) {
+		memdelete(rendering_device);
 		rendering_device = nullptr;
 		memdelete(rendering_context);
 		rendering_context = nullptr;
 		r_error = ERR_UNAVAILABLE;
 		return;
 	}
-	rendering_device->screen_create(MAIN_WINDOW_ID);
+	rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
 
 	RendererCompositorRD::make_current();
 
@@ -124,6 +131,16 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 }
 
 DisplayServerOpenHarmony::~DisplayServerOpenHarmony() {
+	virtual_keyboard_hide();
+	if (mouse_mode != DisplayServerEnums::MOUSE_MODE_VISIBLE) {
+		ohos_wrapper_set_mouse_mode(OS_OpenHarmony::get_singleton()->get_window_id(), false, true, true);
+	}
+	if (rendering_device) {
+		memdelete(rendering_device);
+	}
+	if (rendering_context) {
+		memdelete(rendering_context);
+	}
 }
 
 void DisplayServerOpenHarmony::_window_callback(const Callable &p_callable, const Variant &p_arg, bool p_deferred) const {
@@ -142,10 +159,11 @@ void DisplayServerOpenHarmony::send_input_event(const Ref<InputEvent> &p_event) 
 
 void DisplayServerOpenHarmony::resize_window(uint32_t p_width, uint32_t p_height) {
 	Size2i size = Size2i(p_width, p_height);
+	OS_OpenHarmony::get_singleton()->set_display_size(size);
 
 #if defined(RD_ENABLED)
 	if (rendering_context) {
-		rendering_context->window_set_size(MAIN_WINDOW_ID, size.x, size.y);
+		rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, size.x, size.y);
 	}
 #endif
 
@@ -153,17 +171,19 @@ void DisplayServerOpenHarmony::resize_window(uint32_t p_width, uint32_t p_height
 	_window_callback(window_resize_callback, resize_rect);
 }
 
-void DisplayServerOpenHarmony::send_window_event(DisplayServer::WindowEvent p_event) const {
+void DisplayServerOpenHarmony::send_window_event(DisplayServerEnums::WindowEvent p_event) const {
 	_window_callback(window_event_callback, int(p_event));
 }
 
-bool DisplayServerOpenHarmony::has_feature(Feature p_feature) const {
+bool DisplayServerOpenHarmony::has_feature(DisplayServerEnums::Feature p_feature) const {
 	switch (p_feature) {
-		case FEATURE_TOUCHSCREEN:
-		case FEATURE_CLIPBOARD:
-		case FEATURE_VIRTUAL_KEYBOARD:
-		case FEATURE_IME:
-		case FEATURE_KEEP_SCREEN_ON:
+		case DisplayServerEnums::FEATURE_MOUSE:
+		case DisplayServerEnums::FEATURE_CURSOR_SHAPE:
+		case DisplayServerEnums::FEATURE_TOUCHSCREEN:
+		case DisplayServerEnums::FEATURE_CLIPBOARD:
+		case DisplayServerEnums::FEATURE_VIRTUAL_KEYBOARD:
+		case DisplayServerEnums::FEATURE_IME:
+		case DisplayServerEnums::FEATURE_KEEP_SCREEN_ON:
 			return true;
 		default:
 			return false;
@@ -211,22 +231,22 @@ bool DisplayServerOpenHarmony::is_touchscreen_available() const {
 	return true;
 }
 
-void DisplayServerOpenHarmony::screen_set_orientation(DisplayServer::ScreenOrientation p_orientation, int p_screen) {
+void DisplayServerOpenHarmony::screen_set_orientation(DisplayServerEnums::ScreenOrientation p_orientation, int p_screen) {
 	// Not supported on OpenHarmony.
 }
 
-DisplayServer::ScreenOrientation DisplayServerOpenHarmony::screen_get_orientation(int p_screen) const {
+DisplayServerEnums::ScreenOrientation DisplayServerOpenHarmony::screen_get_orientation(int p_screen) const {
 	switch (ohos_wrapper_get_display_orientation()) {
 		case WrapperScreenOrientation::WRAPPER_SCREEN_LANDSCAPE:
-			return SCREEN_LANDSCAPE;
+			return DisplayServerEnums::SCREEN_LANDSCAPE;
 		case WrapperScreenOrientation::WRAPPER_SCREEN_PORTRAIT:
-			return SCREEN_PORTRAIT;
+			return DisplayServerEnums::SCREEN_PORTRAIT;
 		case WrapperScreenOrientation::WRAPPER_SCREEN_REVERSE_LANDSCAPE:
-			return SCREEN_REVERSE_LANDSCAPE;
+			return DisplayServerEnums::SCREEN_REVERSE_LANDSCAPE;
 		case WrapperScreenOrientation::WRAPPER_SCREEN_REVERSE_PORTRAIT:
-			return SCREEN_REVERSE_PORTRAIT;
+			return DisplayServerEnums::SCREEN_REVERSE_PORTRAIT;
 		default:
-			return SCREEN_PORTRAIT;
+			return DisplayServerEnums::SCREEN_PORTRAIT;
 	}
 }
 
@@ -282,29 +302,29 @@ void DisplayServerOpenHarmony::_get_text_config(InputMethod_TextEditorProxy *p_t
 	InputMethod_TextInputType input_type = IME_TEXT_INPUT_TYPE_TEXT;
 	InputMethod_EnterKeyType enter_key_type = IME_ENTER_KEY_DONE;
 	switch (get_singleton()->keyboard_type) {
-		case KEYBOARD_TYPE_DEFAULT:
+		case DisplayServerEnums::KEYBOARD_TYPE_DEFAULT:
 			input_type = IME_TEXT_INPUT_TYPE_TEXT;
 			break;
-		case KEYBOARD_TYPE_MULTILINE:
+		case DisplayServerEnums::KEYBOARD_TYPE_MULTILINE:
 			input_type = IME_TEXT_INPUT_TYPE_MULTILINE;
 			enter_key_type = IME_ENTER_KEY_NEWLINE;
 			break;
-		case KEYBOARD_TYPE_NUMBER:
+		case DisplayServerEnums::KEYBOARD_TYPE_NUMBER:
 			input_type = IME_TEXT_INPUT_TYPE_NUMBER;
 			break;
-		case KEYBOARD_TYPE_NUMBER_DECIMAL:
+		case DisplayServerEnums::KEYBOARD_TYPE_NUMBER_DECIMAL:
 			input_type = IME_TEXT_INPUT_TYPE_NUMBER_DECIMAL;
 			break;
-		case KEYBOARD_TYPE_PHONE:
+		case DisplayServerEnums::KEYBOARD_TYPE_PHONE:
 			input_type = IME_TEXT_INPUT_TYPE_PHONE;
 			break;
-		case KEYBOARD_TYPE_EMAIL_ADDRESS:
+		case DisplayServerEnums::KEYBOARD_TYPE_EMAIL_ADDRESS:
 			input_type = IME_TEXT_INPUT_TYPE_EMAIL_ADDRESS;
 			break;
-		case KEYBOARD_TYPE_PASSWORD:
+		case DisplayServerEnums::KEYBOARD_TYPE_PASSWORD:
 			input_type = IME_TEXT_INPUT_TYPE_VISIBLE_PASSWORD;
 			break;
-		case KEYBOARD_TYPE_URL:
+		case DisplayServerEnums::KEYBOARD_TYPE_URL:
 			input_type = IME_TEXT_INPUT_TYPE_URL;
 			break;
 		default:
@@ -318,7 +338,7 @@ void DisplayServerOpenHarmony::_get_text_config(InputMethod_TextEditorProxy *p_t
 void DisplayServerOpenHarmony::_insert_text(InputMethod_TextEditorProxy *p_text_editor_proxy, const char16_t *p_text, size_t length) {
 	String characters = String::utf16(p_text, length);
 
-	for (int i = 0; i < characters.size(); i++) {
+	for (int i = 0; i < characters.length(); i++) {
 		int character = characters[i];
 		Key key = Key::NONE;
 
@@ -326,7 +346,7 @@ void DisplayServerOpenHarmony::_insert_text(InputMethod_TextEditorProxy *p_text_
 			key = Key::TAB;
 		} else if (character == '\n') { // 0x0A
 			key = Key::ENTER;
-		} else if (character == 0x2006) {
+		} else if (character == ' ') {
 			key = Key::SPACE;
 		}
 
@@ -391,10 +411,12 @@ void DisplayServerOpenHarmony::_handle_extend_action(InputMethod_TextEditorProxy
 
 void DisplayServerOpenHarmony::_get_left_text_of_cursor(InputMethod_TextEditorProxy *p_text_editor_proxy, int32_t number, char16_t *p_text, size_t *p_length) {
 	// Not supported by Godot.
+	*p_length = 0;
 }
 
 void DisplayServerOpenHarmony::_get_right_text_of_cursor(InputMethod_TextEditorProxy *p_text_editor_proxy, int32_t number, char16_t *p_text, size_t *p_length) {
 	// Not supported by Godot.
+	*p_length = 0;
 }
 
 int32_t DisplayServerOpenHarmony::_get_text_index_at_cursor(InputMethod_TextEditorProxy *p_text_editor_proxy) {
@@ -429,7 +451,7 @@ void DisplayServerOpenHarmony::_input_text_key(Key p_key, char32_t p_char, Key p
 	Input::get_singleton()->parse_input_event(ev);
 }
 
-void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect, VirtualKeyboardType p_type, int p_max_length, int p_cursor_start, int p_cursor_end) {
+void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect, DisplayServerEnums::VirtualKeyboardType p_type, int p_max_length, int p_cursor_start, int p_cursor_end) {
 	if (keyboard_status == IME_KEYBOARD_STATUS_SHOW && keyboard_type == p_type) {
 		return;
 	}
@@ -492,152 +514,157 @@ int DisplayServerOpenHarmony::virtual_keyboard_get_height() const {
 	return 0;
 }
 
-void DisplayServerOpenHarmony::window_set_ime_active(const bool p_active, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window) {
 	ime_active = p_active;
 }
 
-void DisplayServerOpenHarmony::window_set_ime_position(const Point2i &p_pos, DisplayServer::WindowID p_window) {
-	if (ime_active) {
+void DisplayServerOpenHarmony::window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window) {
+	if (ime_active && input_method_proxy) {
 		InputMethod_CursorInfo *info = OH_CursorInfo_Create(p_pos.x, p_pos.y, 0, 30);
-		OH_InputMethodProxy_NotifyCursorUpdate(input_method_proxy, info);
+		if (info) {
+			OH_InputMethodProxy_NotifyCursorUpdate(input_method_proxy, info);
+			OH_CursorInfo_Destroy(info);
+		}
 	}
 }
 
-Vector<DisplayServer::WindowID> DisplayServerOpenHarmony::get_window_list() const {
-	Vector<WindowID> ret;
-	ret.push_back(MAIN_WINDOW_ID);
+Vector<DisplayServerEnums::WindowID> DisplayServerOpenHarmony::get_window_list() const {
+	Vector<DisplayServerEnums::WindowID> ret;
+	ret.push_back(DisplayServerEnums::MAIN_WINDOW_ID);
 	return ret;
 }
 
-DisplayServer::WindowID DisplayServerOpenHarmony::get_window_at_screen_position(const Point2i &p_position) const {
-	return MAIN_WINDOW_ID;
+DisplayServerEnums::WindowID DisplayServerOpenHarmony::get_window_at_screen_position(const Point2i &p_position) const {
+	return DisplayServerEnums::MAIN_WINDOW_ID;
 }
 
-void DisplayServerOpenHarmony::window_attach_instance_id(ObjectID p_instance, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_attach_instance_id(ObjectID p_instance, DisplayServerEnums::WindowID p_window) {
 	window_attached_instance_id = p_instance;
 }
 
-ObjectID DisplayServerOpenHarmony::window_get_attached_instance_id(DisplayServer::WindowID p_window) const {
+ObjectID DisplayServerOpenHarmony::window_get_attached_instance_id(DisplayServerEnums::WindowID p_window) const {
 	return window_attached_instance_id;
 }
 
-void DisplayServerOpenHarmony::window_set_window_event_callback(const Callable &p_callable, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_window_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
 	window_event_callback = p_callable;
 }
 
-void DisplayServerOpenHarmony::window_set_input_event_callback(const Callable &p_callable, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_input_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
 	input_event_callback = p_callable;
 }
 
-void DisplayServerOpenHarmony::window_set_input_text_callback(const Callable &p_callable, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_input_text_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
 	input_text_callback = p_callable;
 }
 
-void DisplayServerOpenHarmony::window_set_rect_changed_callback(const Callable &p_callable, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_rect_changed_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
 	window_resize_callback = p_callable;
 }
 
-void DisplayServerOpenHarmony::window_set_drop_files_callback(const Callable &p_callable, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_drop_files_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-void DisplayServerOpenHarmony::window_set_title(const String &p_title, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_title(const String &p_title, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-int DisplayServerOpenHarmony::window_get_current_screen(DisplayServer::WindowID p_window) const {
-	return SCREEN_OF_MAIN_WINDOW;
+int DisplayServerOpenHarmony::window_get_current_screen(DisplayServerEnums::WindowID p_window) const {
+	return DisplayServerEnums::SCREEN_OF_MAIN_WINDOW;
 }
 
-void DisplayServerOpenHarmony::window_set_current_screen(int p_screen, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_current_screen(int p_screen, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-Point2i DisplayServerOpenHarmony::window_get_position(DisplayServer::WindowID p_window) const {
+Point2i DisplayServerOpenHarmony::window_get_position(DisplayServerEnums::WindowID p_window) const {
 	return Point2i();
 }
 
-Point2i DisplayServerOpenHarmony::window_get_position_with_decorations(DisplayServer::WindowID p_window) const {
+Point2i DisplayServerOpenHarmony::window_get_position_with_decorations(DisplayServerEnums::WindowID p_window) const {
 	return Point2i();
 }
 
-void DisplayServerOpenHarmony::window_set_position(const Point2i &p_position, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_position(const Point2i &p_position, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-void DisplayServerOpenHarmony::window_set_transient(DisplayServer::WindowID p_window, DisplayServer::WindowID p_parent) {
+void DisplayServerOpenHarmony::window_set_transient(DisplayServerEnums::WindowID p_window, DisplayServerEnums::WindowID p_parent) {
 	// Not supported on OpenHarmony.
 }
 
-void DisplayServerOpenHarmony::window_set_max_size(const Size2i p_size, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_max_size(const Size2i p_size, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-Size2i DisplayServerOpenHarmony::window_get_max_size(DisplayServer::WindowID p_window) const {
+Size2i DisplayServerOpenHarmony::window_get_max_size(DisplayServerEnums::WindowID p_window) const {
 	return Size2i();
 }
 
-void DisplayServerOpenHarmony::window_set_min_size(const Size2i p_size, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_min_size(const Size2i p_size, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-Size2i DisplayServerOpenHarmony::window_get_min_size(DisplayServer::WindowID p_window) const {
+Size2i DisplayServerOpenHarmony::window_get_min_size(DisplayServerEnums::WindowID p_window) const {
 	return Size2i();
 }
 
-void DisplayServerOpenHarmony::window_set_size(const Size2i p_size, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_size(const Size2i p_size, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-Size2i DisplayServerOpenHarmony::window_get_size(DisplayServer::WindowID p_window) const {
+Size2i DisplayServerOpenHarmony::window_get_size(DisplayServerEnums::WindowID p_window) const {
 	return OS_OpenHarmony::get_singleton()->get_display_size();
 }
 
-Size2i DisplayServerOpenHarmony::window_get_size_with_decorations(DisplayServer::WindowID p_window) const {
+Size2i DisplayServerOpenHarmony::window_get_size_with_decorations(DisplayServerEnums::WindowID p_window) const {
 	return OS_OpenHarmony::get_singleton()->get_display_size();
 }
 
-void DisplayServerOpenHarmony::window_set_mode(DisplayServer::WindowMode p_mode, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-DisplayServer::WindowMode DisplayServerOpenHarmony::window_get_mode(DisplayServer::WindowID p_window) const {
-	return WINDOW_MODE_FULLSCREEN;
+DisplayServerEnums::WindowMode DisplayServerOpenHarmony::window_get_mode(DisplayServerEnums::WindowID p_window) const {
+	return DisplayServerEnums::WINDOW_MODE_WINDOWED;
 }
 
-void DisplayServerOpenHarmony::window_set_vsync_mode(VSyncMode p_vsync_mode, WindowID p_window) {
-	// Not supported on OpenHarmony.
+void DisplayServerOpenHarmony::window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window) {
+	if (rendering_context) {
+		rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
+	}
 }
 
-DisplayServer::VSyncMode DisplayServerOpenHarmony::window_get_vsync_mode(WindowID p_window) const {
-	return VSyncMode::VSYNC_ADAPTIVE;
+DisplayServerEnums::VSyncMode DisplayServerOpenHarmony::window_get_vsync_mode(DisplayServerEnums::WindowID p_window) const {
+	return rendering_context ? rendering_context->window_get_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID) : DisplayServerEnums::VSYNC_ENABLED;
 }
 
-bool DisplayServerOpenHarmony::window_is_maximize_allowed(DisplayServer::WindowID p_window) const {
+bool DisplayServerOpenHarmony::window_is_maximize_allowed(DisplayServerEnums::WindowID p_window) const {
 	return false;
 }
 
-void DisplayServerOpenHarmony::window_set_flag(DisplayServer::WindowFlags p_flag, bool p_enabled, DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_set_flag(DisplayServerEnums::WindowFlags p_flag, bool p_enabled, DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-bool DisplayServerOpenHarmony::window_get_flag(DisplayServer::WindowFlags p_flag, DisplayServer::WindowID p_window) const {
+bool DisplayServerOpenHarmony::window_get_flag(DisplayServerEnums::WindowFlags p_flag, DisplayServerEnums::WindowID p_window) const {
 	return false;
 }
 
-void DisplayServerOpenHarmony::window_request_attention(DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_request_attention(DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-void DisplayServerOpenHarmony::window_move_to_foreground(DisplayServer::WindowID p_window) {
+void DisplayServerOpenHarmony::window_move_to_foreground(DisplayServerEnums::WindowID p_window) {
 	// Not supported on OpenHarmony.
 }
 
-bool DisplayServerOpenHarmony::window_is_focused(WindowID p_window) const {
-	return true;
+bool DisplayServerOpenHarmony::window_is_focused(DisplayServerEnums::WindowID p_window) const {
+	return OS_OpenHarmony::get_singleton()->is_window_focused();
 }
 
-bool DisplayServerOpenHarmony::window_can_draw(DisplayServer::WindowID p_window) const {
+bool DisplayServerOpenHarmony::window_can_draw(DisplayServerEnums::WindowID p_window) const {
 	return true;
 }
 
@@ -647,4 +674,45 @@ bool DisplayServerOpenHarmony::can_any_window_draw() const {
 
 void DisplayServerOpenHarmony::process_events() {
 	Input::get_singleton()->flush_buffered_events();
+}
+
+void DisplayServerOpenHarmony::_mouse_update_mode() {
+	using namespace DisplayServerEnums;
+	MouseMode wanted = mouse_mode_override_enabled ? mouse_mode_override : mouse_mode_base;
+	if (wanted == mouse_mode) {
+		return;
+	}
+	int32_t id = OS_OpenHarmony::get_singleton()->get_window_id();
+	bool locked = wanted == MOUSE_MODE_CAPTURED || wanted == MOUSE_MODE_CONFINED || wanted == MOUSE_MODE_CONFINED_HIDDEN;
+	bool visible = wanted == MOUSE_MODE_VISIBLE || wanted == MOUSE_MODE_CONFINED;
+	int result = ohos_wrapper_set_mouse_mode(id, locked, wanted != MOUSE_MODE_CAPTURED, visible);
+	ERR_FAIL_COND_MSG(result != 0, vformat("Cannot change window cursor mode: %d", result));
+	mouse_mode = wanted;
+}
+
+void DisplayServerOpenHarmony::mouse_set_mode(DisplayServerEnums::MouseMode p_mode) {
+	ERR_FAIL_INDEX(p_mode, DisplayServerEnums::MOUSE_MODE_MAX);
+	mouse_mode_base = p_mode;
+	_mouse_update_mode();
+}
+void DisplayServerOpenHarmony::mouse_set_mode_override(DisplayServerEnums::MouseMode p_mode) {
+	ERR_FAIL_INDEX(p_mode, DisplayServerEnums::MOUSE_MODE_MAX);
+	mouse_mode_override = p_mode;
+	_mouse_update_mode();
+}
+void DisplayServerOpenHarmony::mouse_set_mode_override_enabled(bool p_enabled) {
+	mouse_mode_override_enabled = p_enabled;
+	_mouse_update_mode();
+}
+Point2i DisplayServerOpenHarmony::mouse_get_position() const {
+	return Input::get_singleton()->get_mouse_position();
+}
+BitField<MouseButtonMask> DisplayServerOpenHarmony::mouse_get_button_state() const {
+	return Input::get_singleton()->get_mouse_button_mask();
+}
+void DisplayServerOpenHarmony::cursor_set_shape(DisplayServerEnums::CursorShape p_shape) {
+	ERR_FAIL_INDEX(p_shape, DisplayServerEnums::CURSOR_MAX);
+	if (ohos_wrapper_set_cursor_shape(OS_OpenHarmony::get_singleton()->get_window_id(), p_shape) == 0) {
+		cursor_shape = p_shape;
+	}
 }

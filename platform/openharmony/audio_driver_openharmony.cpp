@@ -30,37 +30,31 @@
 
 #include "audio_driver_openharmony.h"
 
+#include "core/os/os.h"
+
 AudioDriverOpenHarmony::AudioDriverOpenHarmony() {
 }
 
 OH_AudioData_Callback_Result AudioDriverOpenHarmony::_buffer_callback(OH_AudioRenderer *renderer, void *userData, void *audioData, int32_t audioDataSize) {
-	bool mix = true;
-
-	if (pause) {
-		mix = false;
-	} else {
-		mix = mutex.try_lock();
+	if (!audioData || audioDataSize <= 0 || !mixdown_buffer || buffer_size == 0) {
+		return AUDIO_DATA_CALLBACK_RESULT_INVALID;
 	}
-
-	if (mix) {
-		audio_server_process(buffer_size, mixdown_buffer);
-	} else {
-		int32_t *src_buff = mixdown_buffer;
-		for (unsigned int i = 0; i < buffer_size * 2; i++) {
-			src_buff[i] = 0;
+	// The service owns this buffer; callback sizes may differ from our request.
+	memset(audioData, 0, audioDataSize);
+	if (pause.load() || !mutex.try_lock()) {
+		return AUDIO_DATA_CALLBACK_RESULT_VALID;
+	}
+	int16_t *output = static_cast<int16_t *>(audioData);
+	uint32_t remaining = audioDataSize / (2 * sizeof(int16_t));
+	while (remaining > 0) {
+		uint32_t frames = MIN(remaining, buffer_size);
+		audio_server_process(frames, mixdown_buffer);
+		for (uint32_t i = 0; i < frames * 2; i++) {
+			*output++ = mixdown_buffer[i] >> 16;
 		}
+		remaining -= frames;
 	}
-
-	if (mix) {
-		mutex.unlock();
-	}
-
-	const int32_t *src_buff = mixdown_buffer;
-	int16_t *ptr = static_cast<int16_t *>(audioData);
-
-	for (unsigned int i = 0; i < buffer_size * 2; i++) {
-		ptr[i] = src_buff[i] >> 16;
-	}
+	mutex.unlock();
 	return AUDIO_DATA_CALLBACK_RESULT_VALID;
 }
 
@@ -157,6 +151,7 @@ void AudioDriverOpenHarmony::unlock() {
 }
 
 void AudioDriverOpenHarmony::finish() {
+	input_stop();
 	if (audio_renderer) {
 		OH_AudioRenderer_Stop(audio_renderer);
 		OH_AudioRenderer_Flush(audio_renderer);
@@ -169,8 +164,8 @@ void AudioDriverOpenHarmony::finish() {
 		audio_stream_builder = nullptr;
 	}
 
-	if (!mixdown_buffer) {
-		buffer_size = 1024;
+	if (mixdown_buffer) {
+		buffer_size = 0;
 		memdelete_arr(mixdown_buffer);
 		mixdown_buffer = nullptr;
 	}

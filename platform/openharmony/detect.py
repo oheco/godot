@@ -1,12 +1,8 @@
 import os
-import sys
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from methods import print_error
 from platform_methods import validate_arch
-
-if TYPE_CHECKING:
-    from SCons.Script.SConscript import SConsEnvironment
 
 
 def get_name():
@@ -17,27 +13,20 @@ def can_build():
     return True
 
 
-def get_tools(env: "SConsEnvironment"):
+def get_tools(env):
     return ["clang", "clang++", "as", "ar", "link"]
 
 
 def get_opts():
     from SCons.Variables import BoolVariable
-
     return [
-        ("OPENHARMONY_SDK_PATH", "Path to the OpenHarmony SDK", get_default_sdk_path()),
-        BoolVariable(
-            "generate_bundle",
-            "Generate an APP bundle after building OpenHarmony binaries",
-            True,
-        ),
+        ("OPENHARMONY_SDK_PATH", "OpenHarmony SDK root (or its native component)", os.environ.get("OHOS_SDK_HOME", "")),
+        BoolVariable("generate_bundle", "Generate the DevEco project archive", False),
     ]
 
 
 def get_doc_classes():
-    return [
-        "EditorExportPlatformOpenHarmony",
-    ]
+    return ["EditorExportPlatformOpenHarmony"]
 
 
 def get_doc_path():
@@ -47,134 +36,43 @@ def get_doc_path():
 def get_flags():
     return {
         "arch": "arm64",
-        "target": "template_debug",
+        "target": "editor",
+        "supported": ["mono"],
         "builtin_pcre2_with_jit": False,
+        "vulkan": True,
         "opengl3": False,
     }
 
 
-def get_default_sdk_path():
-    return ""
-
-
-def get_sdk_path(env: "SConsEnvironment"):
-    sdk_root = env["OPENHARMONY_SDK_PATH"]
-    if sdk_root == "":
-        sdk_root = get_default_sdk_path()
-    return sdk_root
-
-
-def configure(env: "SConsEnvironment"):
-    sdk_root = get_sdk_path(env)
-    if (sdk_root == "") or (not os.path.exists(sdk_root)):
-        print_error("OpenHarmony SDK not found. Please set OPENHARMONY_SDK_PATH to the SDK path.")
-        sys.exit(255)
-
-    # Validate arch.
-    supported_arches = ["arm64", "x86_64"]
-    validate_arch(env["arch"], get_name(), supported_arches)
-
-    ## Compiler configuration
-
-    # Save this in environment for use by other modules
-    if sys.platform.startswith("win"):
-        env["ENV"]["PATH"] = f"{sdk_root}/native/llvm/bin;" + env["ENV"]["PATH"]
-    else:
-        env["ENV"]["PATH"] = f"{sdk_root}/native/llvm/bin:" + env["ENV"]["PATH"]
-
-    env["CC"] = "clang"
-    env["CXX"] = "clang++"
-    env["S_compiler"] = "clang"
-    env["AR"] = "llvm-ar"
-    env["AS"] = "llvm-as"
-    env["LINK"] = "ld.lld"
-    env["RANLIB"] = "llvm-ranlib"
-
-    env.Append(
-        CPPPATH=[
-            f"{sdk_root}/native/llvm/lib/clang/15.0.4/include",
-            f"{sdk_root}/native/llvm/include/libcxx-ohos/include/c++/v1",
-        ]
-    )
-    target_name = ""
-    if env["arch"] == "x86_64":
-        target_name = "x86_64-linux-ohos"
-        env.Append(ASFLAGS=["-arch", "x86_64"])
-    elif env["arch"] == "arm64":
-        target_name = "aarch64-linux-ohos"
-        env.Append(ASFLAGS=["-arch", "aarch64"])
-
-    env.Append(
-        CCFLAGS=[
-            "-fobjc-arc",
-            f"--target={target_name}",
-            "-fPIC",
-            "-fobjc-abi-version=2",
-            "-fobjc-legacy-dispatch",
-            "-fmessage-length=0",
-            "-fpascal-strings",
-            "-fblocks",
-            "-fasm-blocks",
-            f"-isysroot='{sdk_root}/native/sysroot'",
-        ]
-    )
-    env.Append(
-        CXXFLAGS=[
-            f"--target={target_name}",
-            f"--sysroot={sdk_root}/native/sysroot/",
-        ]
-    )
-    env.Append(
-        LINKFLAGS=[
-            f"--target={target_name}",
-            f"--sysroot={sdk_root}/native/sysroot/",
-        ]
-    )
-    env.Append(
-        CPPPATH=[
-            f"{sdk_root}/native/sysroot/usr/include/{target_name}",
-            f"{sdk_root}/native/sysroot/usr/include",
-            "#platform/openharmony",
-        ]
-    )
-    env.Append(
-        CPPDEFINES=[
-            "OPENHARMONY_ENABLED",
-            "UNIX_ENABLED",
-            "__OPEN_HARMONY__",
-            "MBEDTLS_NO_UDBL_DIVISION",
-        ]
-    )
-
-    if env["vulkan"]:
-        env.Append(CPPDEFINES=["VULKAN_ENABLED", "RD_ENABLED"])
-        if not env["use_volk"]:
-            env.Append(LIBS=["vulkan"])
-
-    if env["opengl3"]:
-        print_error("opengl3 is not support on OpenHarmony")
-        sys.exit(255)
-
-    env["ARGMAX"] = 8000
-    env["LINKCOM"] = "$LINK @${TARGET}.rsp"
-    env["SHLINKFLAGS"] = f'"--sysroot={sdk_root}/native/sysroot/" -shared -soname libgodot.so '
-
-    def create_rsp(target, source, env):
-        rsp_file = str(target[0]) + ".rsp"
-        with open(rsp_file, "w") as f:
-            f.write("\n".join(str(s) for s in source))
-        return 0
-
+def configure(env):
+    validate_arch(env["arch"], get_name(), ["arm64", "x86_64"])
+    sdk = Path(env["OPENHARMONY_SDK_PATH"]).expanduser().resolve()
+    native = sdk / "native" if (sdk / "native/sysroot").is_dir() else sdk
+    if not (native / "sysroot/usr/include").is_dir():
+        print_error("Set OPENHARMONY_SDK_PATH to a prepared OpenHarmony SDK.")
+        raise SystemExit(255)
+    if env["opengl3"] or not env["vulkan"]:
+        print_error("This OpenHarmony port requires vulkan=yes opengl3=no.")
+        raise SystemExit(255)
+    env["OPENHARMONY_NATIVE_SDK"] = str(native)
+    target = "aarch64-linux-ohos" if env["arch"] == "arm64" else "x86_64-linux-ohos"
+    compiler_dir = native / "llvm/bin"
+    exe = ".exe" if os.name == "nt" else ""
+    env["CC"] = str(compiler_dir / ("clang" + exe))
+    env["CXX"] = str(compiler_dir / ("clang++" + exe))
+    env["LINK"] = env["CXX"]
+    env["SHLINK"] = env["CXX"]
+    env["S_compiler"] = env["CC"]
+    env["AR"] = str(compiler_dir / ("llvm-ar" + exe))
+    env["RANLIB"] = str(compiler_dir / ("llvm-ranlib" + exe))
+    flags = ["--target=" + target, "--sysroot=" + str(native / "sysroot")]
+    env.Append(CCFLAGS=flags + ["-fPIC", "-pthread"])
+    env.Append(LINKFLAGS=flags + ["-fuse-ld=lld", "-pthread", "-Wl,--no-undefined", "-Wl,--build-id"])
+    env.Append(SHLINKFLAGS=["-shared", "-Wl,-soname,libgodot.so"])
+    env.Append(CPPPATH=["#platform/openharmony"])
+    env.Append(CPPDEFINES=["OPENHARMONY_ENABLED", "UNIX_ENABLED", "__OPEN_HARMONY__", "_GNU_SOURCE", "VULKAN_ENABLED", "RD_ENABLED"])
+    env.Append(LIBS=["m", "dl", "z", "hilog_ndk.z", "ace_ndk.z", "native_window", "ace_napi.z", "rawfile.z", "native_vsync", "ohaudio", "ohinput", "ohinputmethod", "native_display_manager", "native_window_manager", "native_drawing", "udmf", "pasteboard"])
+    if not env["use_volk"]:
+        env.Append(LIBS=["vulkan"])
     env["SHLIBSUFFIX"] = ".so"
-    env["LINKCOM"] = env.Action(create_rsp, "Generating RSP: ${TARGET}.rsp") + env["LINKCOM"]
-
-    env["ARCOM"] = "$AR $ARFLAGS $TARGET @${TARGET}.rsp"
-
-    def create_ar_rsp(target, source, env):
-        obj_files = [str(s) for s in source if s.get_suffix() in [".o", ".obj"]]
-        rsp_file = str(target[0]) + ".rsp"
-        with open(rsp_file, "w") as f:
-            f.write("\n".join(obj_files))
-        return 0
-
-    env["ARCOM"] = env.Action(create_ar_rsp, "Generating AR RSP: ${TARGET}.rsp") + env["ARCOM"]
+    env["SHLINKCOM"] = '${TEMPFILE("$SHLINK -o $TARGET $SHLINKFLAGS $__RPATH $SOURCES $_LIBDIRFLAGS $_LIBFLAGS", "$SHLINKCOMSTR")}'

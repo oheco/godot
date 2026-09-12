@@ -6,7 +6,7 @@ import os
 import os.path
 import shlex
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 def find_dotnet_cli():
@@ -117,6 +117,7 @@ class ToolsLocation:
     msbuild_standalone: str = ""
     msbuild_mono: str = ""
     mono_bin_dir: str = ""
+    extra_args: list[str] = field(default_factory=list)
 
 
 def find_any_msbuild_tool(mono_prefix):
@@ -165,6 +166,7 @@ def run_msbuild(tools: ToolsLocation, sln: str, chdir_to: str, msbuild_args: lis
 
     if msbuild_args:
         args += msbuild_args
+    args += tools.extra_args
 
     print("Running MSBuild: ", " ".join(shlex.quote(arg) for arg in args), flush=True)
 
@@ -232,7 +234,7 @@ def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, pre
             os.makedirs(editor_api_dir)
 
         def copy_target(target_path):
-            from shutil import copy
+            from shutil import copyfile
 
             filename = os.path.basename(target_path)
 
@@ -243,7 +245,7 @@ def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, pre
                 src_path = os.path.join(plugins_src_dir, filename)
 
             print(f"Copying assembly to {target_path}...")
-            copy(src_path, target_path)
+            copyfile(src_path, target_path)
 
         for scons_target in targets:
             copy_target(scons_target)
@@ -251,7 +253,7 @@ def build_godot_api(msbuild_tool, module_dir, output_dir, push_nupkgs_local, pre
     return 0
 
 
-def generate_sdk_package_versions():
+def generate_sdk_package_versions(package_version=""):
     # I can't believe importing files in Python is so convoluted when not
     # following the golden standard for packages/modules.
     import os
@@ -302,6 +304,14 @@ def generate_sdk_package_versions():
 
         godotsharp_version_str += f"-{godotsharp_version_status}"
         godot_dotnet_version_str += f"-{godot_dotnet_version_status}"
+
+    if package_version:
+        import re
+
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", package_version):
+            raise ValueError("Expected an explicit NuGet package version")
+        godotsharp_version_str = package_version
+        godot_dotnet_version_str = package_version
 
     import version
 
@@ -358,10 +368,11 @@ def generate_sdk_package_versions():
 
 
 def build_all(
-    msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, push_nupkgs_local, precision, no_deprecated, werror
+    msbuild_tool, module_dir, output_dir, godot_platform, dev_debug, push_nupkgs_local, precision, no_deprecated, werror,
+    package_version="",
 ):
     # Generate SdkPackageVersions.props and VersionDocsUrl constant
-    generate_sdk_package_versions()
+    generate_sdk_package_versions(package_version)
 
     # Godot API
     exit_code = build_godot_api(
@@ -372,6 +383,8 @@ def build_all(
 
     # GodotTools
     sln = os.path.join(module_dir, "editor/GodotTools/GodotTools.sln")
+    if godot_platform == "openharmony":
+        sln = os.path.join(module_dir, "editor/GodotTools/GodotTools.OpenHarmony.slnf")
     args = ["/restore", "/t:Build", "/p:Configuration=" + ("Debug" if dev_debug else "Release")] + (
         ["/p:GodotPlatform=" + godot_platform] if godot_platform else []
     )
@@ -392,6 +405,8 @@ def build_all(
     if no_deprecated:
         args += ["/p:GodotNoDeprecated=true"]
     sln = os.path.join(module_dir, "editor/Godot.NET.Sdk/Godot.NET.Sdk.sln")
+    if godot_platform == "openharmony":
+        sln = os.path.join(module_dir, "editor/Godot.NET.Sdk/Godot.NET.Sdk.OpenHarmony.slnf")
     exit_code = run_msbuild(msbuild_tool, sln=sln, chdir_to=module_dir, msbuild_args=args)
     if exit_code != 0:
         return exit_code
@@ -412,6 +427,8 @@ def main():
         help="Build GodotTools and Godot.NET.Sdk with 'Configuration=Debug'",
     )
     parser.add_argument("--godot-platform", type=str, default="")
+    parser.add_argument("--package-version", default="", help="Pin all Godot NuGet packages to a downstream version")
+    parser.add_argument("--msbuild-arg", action="append", default=[], help="Additional MSBuild argument (repeatable)")
     parser.add_argument("--mono-prefix", type=str, default="")
     parser.add_argument("--push-nupkgs-local", type=str, default="")
     parser.add_argument(
@@ -440,6 +457,8 @@ def main():
         print("Unable to find MSBuild")
         sys.exit(1)
 
+    msbuild_tool.extra_args = args.msbuild_arg
+
     exit_code = build_all(
         msbuild_tool,
         module_dir,
@@ -450,6 +469,7 @@ def main():
         args.precision,
         args.no_deprecated,
         args.werror,
+        args.package_version,
     )
     sys.exit(exit_code)
 

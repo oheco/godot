@@ -30,16 +30,18 @@
 
 #pragma once
 
-#include "servers/audio_server.h"
+#include "servers/audio/audio_server.h"
 
 #include <ohaudio/native_audiocapturer.h>
 #include <ohaudio/native_audiorenderer.h>
 #include <ohaudio/native_audiostreambuilder.h>
 
+#include <atomic>
+
 class AudioDriverOpenHarmony : public AudioDriver {
 	bool active = false;
 	Mutex mutex;
-	bool pause = false;
+	std::atomic<bool> pause{ false };
 
 	uint32_t buffer_size = 0;
 	int32_t *mixdown_buffer = nullptr;

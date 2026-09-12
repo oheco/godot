@@ -1,0 +1,9 @@
+{
+  "solution": {
+    "path": "Godot.NET.Sdk.sln",
+    "projects": [
+      "Godot.NET.Sdk\\Godot.NET.Sdk.csproj",
+      "Godot.SourceGenerators\\Godot.SourceGenerators.csproj"
+    ]
+  }
+}

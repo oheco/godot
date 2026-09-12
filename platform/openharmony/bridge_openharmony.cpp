@@ -31,11 +31,13 @@
 #include "bridge_openharmony.h"
 
 #include "dir_access_openharmony.h"
+#include "display_server_openharmony.h"
 #include "file_access_openharmony.h"
 #include "os_openharmony.h"
 
 #include "core/config/project_settings.h"
-#include "display_server_openharmony.h"
+#include "core/input/input.h"
+#include "core/input/input_event.h"
 #include "main/main.h"
 
 #include <native_vsync/native_vsync.h>
@@ -111,7 +113,7 @@ void godot_step(long long timestamp, void *data) {
 			if (current_window_width != 0 && current_window_height != 0) {
 				DisplayServerOpenHarmony::get_singleton()->resize_window(current_window_width, current_window_height);
 			}
-			if (latest_window_event != 0) {
+			if (current_window_event != 0) {
 				switch (current_window_event) {
 					case 1: // SHOWN
 					case 2: // ACTIVE
@@ -257,6 +259,12 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev->set_global_position(ev->get_position());
 			ev->set_button_index(MouseButton(event.button));
 			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
+			ev->set_double_click(event.double_click);
+			ev->set_factor(event.factor > 0 ? event.factor : 1.0);
+			ev->set_alt_pressed(event.alt);
+			ev->set_ctrl_pressed(event.ctrl);
+			ev->set_shift_pressed(event.shift);
+			ev->set_meta_pressed(event.meta);
 			Input::get_singleton()->parse_input_event(ev);
 		} break;
 		case 1: { // Mouse up
@@ -266,6 +274,11 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
 			ev->set_button_index(MouseButton(event.button));
+			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
+			ev->set_alt_pressed(event.alt);
+			ev->set_ctrl_pressed(event.ctrl);
+			ev->set_shift_pressed(event.shift);
+			ev->set_meta_pressed(event.meta);
 			Input::get_singleton()->parse_input_event(ev);
 		} break;
 		case 2: { // Mouse move
@@ -273,8 +286,13 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev.instantiate();
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
-			ev->set_relative(Vector2(event.x - last_mouse_event.x, event.y - last_mouse_event.y));
+			ev->set_relative(event.has_relative ? Vector2(event.relative_x, event.relative_y) : Vector2(event.x - last_mouse_event.x, event.y - last_mouse_event.y));
 			ev->set_relative_screen_position(ev->get_relative());
+			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
+			ev->set_alt_pressed(event.alt);
+			ev->set_ctrl_pressed(event.ctrl);
+			ev->set_shift_pressed(event.shift);
+			ev->set_meta_pressed(event.meta);
 			Input::get_singleton()->parse_input_event(ev);
 		} break;
 	}
@@ -286,7 +304,7 @@ void godot_key(GodotKeyEvent *p_event) {
 	Ref<InputEventKey> ev;
 	ev.instantiate();
 	ev->set_pressed(event.pressed);
-	ev->set_echo(false);
+	ev->set_echo(event.echo);
 	ev->set_keycode(Key(event.code));
 	ev->set_physical_keycode(Key(event.code));
 	ev->set_key_label(Key(event.code));

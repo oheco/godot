@@ -31,6 +31,7 @@
 #pragma once
 
 #include <rawfile/raw_file_manager.h>
+
 #include <cstdint>
 
 extern "C" {
@@ -49,6 +50,7 @@ typedef struct GodotKeyEvent {
 	bool ctrl;
 	bool shift;
 	bool meta;
+	bool echo;
 } GodotKeyEvent;
 
 typedef struct GodotMouseEvent {
@@ -57,6 +59,15 @@ typedef struct GodotMouseEvent {
 	uint32_t mask;
 	float x;
 	float y;
+	bool alt;
+	bool ctrl;
+	bool shift;
+	bool meta;
+	bool double_click;
+	float factor;
+	bool has_relative;
+	float relative_x;
+	float relative_y;
 } GodotMouseEvent;
 
 int64_t godot_init(NativeResourceManager *p_resource_manager, void *p_native_window, int32_t window_id, int64_t window_width, int64_t window_height, const char *p_allowed_permissions);

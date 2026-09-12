@@ -35,7 +35,7 @@
 #include "core/os/main_loop.h"
 #include "drivers/unix/os_unix.h"
 #include "drivers/vulkan/godot_vulkan.h"
-#include "servers/audio_server.h"
+#include "servers/audio/audio_server.h"
 
 struct OH_Drawing_FontDescriptor;
 
@@ -47,6 +47,8 @@ class OS_OpenHarmony : public OS_Unix {
 	int32_t window_id = -1;
 	bool is_focused = false;
 	HashSet<String> allowed_permissions;
+	bool ui_ability = true;
+	HashSet<ProcessID> ability_processes;
 
 	struct FontInfo {
 		String font_name;
@@ -73,7 +75,7 @@ public:
 
 	static OS_OpenHarmony *get_singleton();
 
-	OS_OpenHarmony();
+	OS_OpenHarmony(bool p_use_hilog = true);
 
 	void set_native_window(OHNativeWindow *p_native_window);
 	OHNativeWindow *get_native_window() const;
@@ -100,6 +102,16 @@ public:
 	virtual String get_user_data_dir(const String &p_user_dir) const override;
 	virtual String get_bundle_resource_dir() const override;
 	virtual String get_executable_path() const override;
+	virtual String get_name() const override { return "OpenHarmony"; }
+	virtual String get_data_path() const override;
+	virtual String get_config_path() const override;
+	virtual String get_cache_path() const override;
+	virtual String get_temp_path() const override;
+	virtual Error create_instance(const List<String> &p_arguments, ProcessID *r_child_id = nullptr) override;
+	virtual Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) override;
+	virtual Error kill(const ProcessID &p_pid) override;
+	virtual bool is_process_running(const ProcessID &p_pid) const override;
+	virtual int get_process_exit_code(const ProcessID &p_pid) const override;
 
 	virtual Vector<String> get_system_fonts() const override;
 	virtual String get_system_font_path(const String &p_font_name, int p_weight = 400, int p_stretch = 100, bool p_italic = false) const override;
@@ -112,6 +124,7 @@ public:
 	void main_loop_end();
 
 	void on_focus_out();
+	bool is_window_focused() const { return is_focused; }
 	void on_focus_in();
 	void on_enter_background();
 	void on_exit_background();

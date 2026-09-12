@@ -364,7 +364,17 @@ bool load_coreclr(void *&r_coreclr_dll_handle) {
 #ifdef TOOLS_ENABLED
 load_assembly_and_get_function_pointer_fn initialize_hostfxr_for_config(const char_t *p_config_path) {
 	hostfxr_handle cxt = nullptr;
+#ifdef OPENHARMONY_ENABLED
+	// The HAP extracts its managed runtime into an application-private directory.
+	// Resolve the framework there even when libhostfxr is loaded by an app module.
+	CharString dotnet_root = OS::get_singleton()->get_environment("DOTNET_ROOT").utf8();
+	hostfxr_initialize_parameters parameters = {};
+	parameters.size = sizeof(parameters);
+	parameters.dotnet_root = dotnet_root.get_data();
+	int rc = hostfxr_initialize_for_runtime_config(p_config_path, dotnet_root.is_empty() ? nullptr : &parameters, &cxt);
+#else
 	int rc = hostfxr_initialize_for_runtime_config(p_config_path, nullptr, &cxt);
+#endif
 	if (rc != 0 || cxt == nullptr) {
 		hostfxr_close(cxt);
 		ERR_FAIL_V_MSG(nullptr, "hostfxr_initialize_for_runtime_config failed with code: " + itos(rc));
