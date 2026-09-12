@@ -156,13 +156,22 @@ def main():
             archive.write(args.nuget_feed / item['archive'], 'nuget/' + item['archive'])
         for package in sorted((args.godotsharp / 'Tools/nupkgs').glob('*.nupkg')):
             archive.write(package, 'nuget/' + package.name)
-        archive.writestr('NuGet.Config', '<configuration><packageSources><clear/><add key="bundled" value="nuget"/></packageSources></configuration>\n')
-        archive.writestr('nuget-inputs.json', json.dumps(manifest, indent=2) + '\n')
-        archive.writestr('dotnet-inventory.json', json.dumps([
-            {'path': path.relative_to(args.dotnet_sdk).as_posix(),
-             'size': path.stat().st_size, 'sha256': sha256(path)}
-            for path in sdk_files
-        ], indent=2) + '\n')
+        # Pin the timestamp of the generated metadata entries too: writestr()
+        # would otherwise stamp the current time and make an otherwise identical
+        # runtime archive unreproducible.
+        metadata = (
+            ('NuGet.Config', '<configuration><packageSources><clear/><add key="bundled" value="nuget"/></packageSources></configuration>\n'),
+            ('nuget-inputs.json', json.dumps(manifest, indent=2) + '\n'),
+            ('dotnet-inventory.json', json.dumps([
+                {'path': path.relative_to(args.dotnet_sdk).as_posix(),
+                 'size': path.stat().st_size, 'sha256': sha256(path)}
+                for path in sdk_files
+            ], indent=2) + '\n'),
+        )
+        for name, text in metadata:
+            info = zipfile.ZipInfo(name, date_time=(2026, 9, 12, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            archive.writestr(info, text)
     runtime_manifest = {'version': '4.7.2-ohos.2', 'sha256': sha256(runtime), 'size': runtime.stat().st_size}
     (raw / 'runtime-manifest.json').write_text(json.dumps(runtime_manifest, indent=2) + '\n')
     notices = args.output / 'licenses'
