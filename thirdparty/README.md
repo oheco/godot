@@ -1311,3 +1311,13 @@ Files extracted from upstream source:
 
 - `lib/{common/,compress/,decompress/,zstd.h,zstd_errors.h}`
 - `LICENSE`
+
+## OpenHarmony platform patches
+
+Reused from kdada/godot port-to-openharmony at bc9e9662253b879384a7332de99a1e8d6f7e0b1c:
+
+- `embree/patches/0006-support-open-harmony.patch`
+- `zstd/patches/0001-support-open-harmony.patch`
+
+The Vulkan headers and volk supplied by the current Godot baseline already contain
+`VK_OHOS_surface`; the older private extension patch is not reapplied.
