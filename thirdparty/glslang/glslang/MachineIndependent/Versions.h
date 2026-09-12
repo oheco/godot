@@ -186,6 +186,7 @@ const char* const E_GL_EXT_shader_image_load_formatted = "GL_EXT_shader_image_lo
 
 const char* const E_GL_EXT_shader_16bit_storage             = "GL_EXT_shader_16bit_storage";
 const char* const E_GL_EXT_shader_8bit_storage              = "GL_EXT_shader_8bit_storage";
+const char* const E_GL_EXT_abort                            = "GL_EXT_abort";
 
 
 // EXT extensions
@@ -218,6 +219,7 @@ const char* const E_GL_EXT_spirv_intrinsics                 = "GL_EXT_spirv_intr
 const char* const E_GL_EXT_fragment_shader_barycentric      = "GL_EXT_fragment_shader_barycentric";
 const char* const E_GL_EXT_mesh_shader                      = "GL_EXT_mesh_shader";
 const char* const E_GL_EXT_opacity_micromap                 = "GL_EXT_opacity_micromap";
+const char* const E_GL_EXT_opacity_micromap_ray_query_mode  = "GL_EXT_opacity_micromap_ray_query_mode";
 const char* const E_GL_EXT_shader_quad_control              = "GL_EXT_shader_quad_control";
 const char* const E_GL_EXT_draw_instanced                   = "GL_EXT_draw_instanced";
 const char* const E_GL_EXT_texture_array                    = "GL_EXT_texture_array";
@@ -229,6 +231,8 @@ const char* const E_GL_EXT_texture_offset_non_const         = "GL_EXT_texture_of
 const char* const E_GL_EXT_nontemporal_keyword              = "GL_EXT_nontemporal_keyword";
 const char* const E_GL_EXT_uniform_buffer_unsized_array     = "GL_EXT_uniform_buffer_unsized_array";
 const char* const E_GL_EXT_conservative_depth               = "GL_EXT_conservative_depth";
+const char* const E_GL_EXT_descriptor_heap                  = "GL_EXT_descriptor_heap";
+const char* const E_GL_EXT_structured_descriptor_heap       = "GL_EXT_structured_descriptor_heap";
 
 // Arrays of extensions for the above viewportEXTs duplications
 
@@ -278,6 +282,7 @@ const char* const E_GL_NV_shading_rate_image                    = "GL_NV_shading
 const char* const E_GL_NV_ray_tracing                           = "GL_NV_ray_tracing";
 const char* const E_GL_NV_ray_tracing_motion_blur               = "GL_NV_ray_tracing_motion_blur";
 const char* const E_GL_NV_fragment_shader_barycentric           = "GL_NV_fragment_shader_barycentric";
+const char* const E_GL_KHR_compute_shader_derivatives           = "GL_KHR_compute_shader_derivatives";
 const char* const E_GL_NV_compute_shader_derivatives            = "GL_NV_compute_shader_derivatives";
 const char* const E_GL_NV_shader_texture_footprint              = "GL_NV_shader_texture_footprint";
 const char* const E_GL_NV_mesh_shader                           = "GL_NV_mesh_shader";
@@ -289,14 +294,21 @@ const char* const E_GL_EXT_ray_tracing_position_fetch           = "GL_EXT_ray_tr
 const char* const E_GL_NV_displacement_micromap                 = "GL_NV_displacement_micromap";
 const char* const E_GL_NV_shader_atomic_fp16_vector             = "GL_NV_shader_atomic_fp16_vector";
 const char* const E_GL_NV_cooperative_matrix2                   = "GL_NV_cooperative_matrix2";
+const char* const E_GL_NV_cooperative_matrix_decode_vector      = "GL_NV_cooperative_matrix_decode_vector";
 const char* const E_GL_NV_cooperative_vector                    = "GL_NV_cooperative_vector";
 const char* const E_GL_NV_cluster_acceleration_structure        = "GL_NV_cluster_acceleration_structure";
 const char* const E_GL_NV_linear_swept_spheres                  = "GL_NV_linear_swept_spheres";
+const char* const E_GL_NV_desktop_lowp_mediump                  = "GL_NV_desktop_lowp_mediump";
 const char* const E_GL_NV_gpu_shader5                           = "GL_NV_gpu_shader5";
+const char* const E_GL_NV_push_constant_bank                    = "GL_NV_push_constant_bank";
+const char* const E_GL_NV_explicit_typecast                     = "GL_NV_explicit_typecast";
 
 // ARM
 const char* const E_GL_ARM_shader_core_builtins                 = "GL_ARM_shader_core_builtins";
 const char* const E_GL_ARM_tensors                              = "GL_ARM_tensors";
+const char* const E_GL_ARM_tensors_bfloat16                     = "GL_ARM_tensors_bfloat16";
+const char* const E_GL_ARM_tensors_float_e5m2                   = "GL_ARM_tensors_float_e5m2";
+const char* const E_GL_ARM_tensors_float_e4m3                   = "GL_ARM_tensors_float_e4m3";
 
 // Arrays of extensions for the above viewportEXTs duplications
 
@@ -366,6 +378,12 @@ const char* const E_GL_EXT_integer_dot_product                    = "GL_EXT_inte
 const char* const E_GL_EXT_bfloat16 = "GL_EXT_bfloat16";
 const char* const E_GL_EXT_float_e5m2 = "GL_EXT_float_e5m2";
 const char* const E_GL_EXT_float_e4m3 = "GL_EXT_float_e4m3";
+const char* const E_GL_EXT_float_e2m1 = "GL_EXT_float_e2m1";
+const char* const E_GL_EXT_float_e3m2 = "GL_EXT_float_e3m2";
+const char* const E_GL_EXT_float_e2m3 = "GL_EXT_float_e2m3";
+const char* const E_GL_EXT_float_ue8m0 = "GL_EXT_float_ue8m0";
+const char* const E_GL_EXT_float_mxint8 = "GL_EXT_float_mxint8";
+const char* const E_GL_EXT_long_vector = "GL_EXT_long_vector";
 
 const char* const E_GL_EXT_shader_64bit_indexing = "GL_EXT_shader_64bit_indexing";
 

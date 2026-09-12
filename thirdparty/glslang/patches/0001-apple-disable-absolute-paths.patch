@@ -1,33 +1,37 @@
 diff --git a/thirdparty/glslang/glslang/Include/InfoSink.h b/thirdparty/glslang/glslang/Include/InfoSink.h
-index 262933941d..dec05e651c 100644
 --- a/thirdparty/glslang/glslang/Include/InfoSink.h
 +++ b/thirdparty/glslang/glslang/Include/InfoSink.h
-@@ -36,7 +36,7 @@
+@@ -36,9 +36,6 @@
  #define _INFOSINK_INCLUDED_
  
  #include "../Include/Common.h"
+-#if __has_include(<filesystem>)
 -#include <filesystem>
-+//#include <filesystem>
+-#endif
  #include <cmath>
  
  namespace glslang {
-@@ -105,14 +105,14 @@ public:
+@@ -107,22 +104,10 @@
          }
  
          if(loc.getFilename() == nullptr && shaderFileName != nullptr && absolute) {
+-        #if defined(__cpp_lib_filesystem)
 -            append(std::filesystem::absolute(shaderFileName).string());
-+            //append(std::filesystem::absolute(shaderFileName).string());
+-        #else
+             append(shaderFileName);
+-        #endif
          } else {
              std::string location = loc.getStringNameOrNum(false);
 -            if (absolute) {
+-        #if defined(__cpp_lib_filesystem)
 -                append(std::filesystem::absolute(location).string());
+-        #else
+-                append(location);
+-        #endif
 -            } else {
-+            //if (absolute) {
-+            //    append(std::filesystem::absolute(location).string());
-+            //} else {
-                 append(location);
+-                append(location);
 -            }
-+            //}
++            append(location);
          }
  
          append(locText);

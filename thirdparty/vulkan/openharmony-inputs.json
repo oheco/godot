@@ -1,0 +1,91 @@
+{
+  "headers": "1.4.362",
+  "shader_sdk": "1.4.357.0",
+  "volk_registry": "1.4.362",
+  "archives": [
+    {
+      "name": "Vulkan-Headers",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Headers",
+      "tag": "v1.4.362",
+      "url": "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.362.tar.gz",
+      "file": "Vulkan-Headers-v1.4.362.tar.gz",
+      "size": 3415491,
+      "sha256": "8ec03e69ddb7281570823509c9d78124d2f4b27f77f5097c99191aa6e2191b1d",
+      "license": "Apache-2.0 OR MIT",
+      "license_file": "thirdparty/vulkan/LICENSE.md",
+      "local_modifications": "Copied headers and vk.xml without the old private OHOS extension patch"
+    },
+    {
+      "name": "volk",
+      "upstream": "https://github.com/zeux/volk",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/zeux/volk/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "volk-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 86049,
+      "sha256": "6400c7b23e24d17e4f04bac49b55b06c4e87677d33398e90344743ec73560ca6",
+      "license": "MIT",
+      "license_file": "thirdparty/volk/LICENSE.md",
+      "local_modifications": "Regenerated using the pinned Vulkan-Headers vk.xml"
+    },
+    {
+      "name": "glslang",
+      "upstream": "https://github.com/KhronosGroup/glslang",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/KhronosGroup/glslang/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "glslang-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 4412438,
+      "sha256": "81038794e20494556edbcc0fc70fa984d71d1b440f9c49adf2cbaaa60a519757",
+      "license": "LicenseRef-glslang",
+      "license_file": "thirdparty/glslang/LICENSE.txt",
+      "local_modifications": "Godot source subset, generated version header, rebased 0001 and retained 0002 Apple patches"
+    },
+    {
+      "name": "SPIRV-Headers",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Headers",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/KhronosGroup/SPIRV-Headers/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "SPIRV-Headers-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 571830,
+      "sha256": "4d703067a7e06331ccb37bdfed3f9b7879cc61969a2689ae95c95db34a47ff07",
+      "license": "MIT",
+      "license_file": "thirdparty/spirv-headers/LICENSE",
+      "local_modifications": "Godot header subset"
+    },
+    {
+      "name": "SPIRV-Cross",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Cross",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/KhronosGroup/SPIRV-Cross/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "SPIRV-Cross-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 2012325,
+      "sha256": "97c910326afdd44d794ce8561326fa675fd1958b27142f03295403044d639639",
+      "license": "Apache-2.0",
+      "license_file": "thirdparty/spirv-cross/LICENSE",
+      "local_modifications": "Godot source subset; see thirdparty/README.md"
+    },
+    {
+      "name": "SPIRV-Reflect",
+      "upstream": "https://github.com/KhronosGroup/SPIRV-Reflect",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/KhronosGroup/SPIRV-Reflect/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "SPIRV-Reflect-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 378812,
+      "sha256": "c865bd55459c5b8020a6ac962e462fc33eb4bf2dae8bf7c474357c58ce22a95d",
+      "license": "Apache-2.0",
+      "license_file": "thirdparty/spirv-reflect/LICENSE",
+      "local_modifications": "Godot 0001 zero-size array and 0002 shared SPIRV header patches"
+    },
+    {
+      "name": "Vulkan-Utility-Libraries",
+      "upstream": "https://github.com/KhronosGroup/Vulkan-Utility-Libraries",
+      "tag": "vulkan-sdk-1.4.357.0",
+      "url": "https://github.com/KhronosGroup/Vulkan-Utility-Libraries/archive/refs/tags/vulkan-sdk-1.4.357.0.tar.gz",
+      "file": "Vulkan-Utility-Libraries-vulkan-sdk-1.4.357.0.tar.gz",
+      "size": 1342012,
+      "sha256": "6d450436aea4a821d7b0d8bb914c2e375088d98eeeaad0fbf059fdb06ac937f4",
+      "license": "Apache-2.0",
+      "license_file": "thirdparty/vulkan/UTILITY-LICENSE.md",
+      "local_modifications": "vk_enum_string_helper.h with Godot 0001 Vulkan include patch"
+    }
+  ]
+}

@@ -414,7 +414,7 @@ Patches:
 ## glslang
 
 - Upstream: https://github.com/KhronosGroup/glslang
-- Version: vulkan-sdk-1.4.335.0 (b5782e52ee2f7b3e40bb9c80d15b47016e008bc9, 2025)
+- Version: vulkan-sdk-1.4.357.0 (2026; fixed archives in vulkan/openharmony-inputs.json)
 - License: glslang
 
 Version should be kept in sync with the one of the used Vulkan SDK (see `vulkan`
@@ -430,11 +430,13 @@ Files extracted from upstream source:
 - Run `cmake . && make` and copy generated `include/glslang/build_info.h`
   to `glslang/build_info.h`
 - `LICENSE.txt`
-- Unnecessary files like `CMakeLists.txt` or `updateGrammar` removed
+- The OpenHarmony offline updater retains `CMakeLists.txt` and `updateGrammar`
+  metadata; SCons still builds only the selected Godot source subset.
 
 Patches:
 
 - `0001-apple-disable-absolute-paths.patch` ([GH-92010](https://github.com/godotengine/godot/pull/92010))
+  rebased for the newer optional `<filesystem>` handling.
 - `0002-apple-m1-msaa-fix.patch` ([GH-115893](https://github.com/godotengine/godot/issues/115893))
 
 
@@ -1025,7 +1027,7 @@ Patches:
 ## spirv-cross
 
 - Upstream: https://github.com/KhronosGroup/SPIRV-Cross
-- Version: git (fb0c1a307cca4b4a9d891837bf4c44d17fe2d324, 2025)
+- Version: vulkan-sdk-1.4.357.0 (2026; fixed archives in vulkan/openharmony-inputs.json)
 - License: Apache 2.0
 
 Files extracted from upstream source:
@@ -1041,7 +1043,7 @@ to generate Metal source from Vulkan SPIR-V.
 ## spirv-headers
 
 - Upstream: https://github.com/KhronosGroup/SPIRV-Headers
-- Version: vulkan-sdk-1.4.335.0 (b824a462d4256d720bebb40e78b9eb8f78bbb305, 2025)
+- Version: vulkan-sdk-1.4.357.0 (2026; fixed archives in vulkan/openharmony-inputs.json)
 - License: MIT
 
 Files extracted from upstream source:
@@ -1053,7 +1055,7 @@ Files extracted from upstream source:
 ## spirv-reflect
 
 - Upstream: https://github.com/KhronosGroup/SPIRV-Reflect
-- Version: vulkan-sdk-1.4.335.0 (ef913b3ab3da1becca3cf46b15a10667c67bebe5, 2025)
+- Version: vulkan-sdk-1.4.357.0 (2026; fixed archives in vulkan/openharmony-inputs.json)
 - License: Apache 2.0
 
 Version should be kept in sync with the one of the used Vulkan SDK (see `vulkan`
@@ -1153,7 +1155,7 @@ Patches:
 ## volk
 
 - Upstream: https://github.com/zeux/volk
-- Version: vulkan-sdk-1.4.335.0 (4f3bcee79618a9abe79f4c717c50379197c77512, 2025)
+- Version: vulkan-sdk-1.4.357.0 (2026; fixed archives in vulkan/openharmony-inputs.json); regenerated against Vulkan registry 1.4.362
 - License: MIT
 
 Version should be kept in sync with the one of the used Vulkan SDK (see `vulkan`
@@ -1168,7 +1170,7 @@ Files extracted from upstream source:
 ## vulkan
 
 - Upstream: https://github.com/KhronosGroup/Vulkan-Headers
-- Version: vulkan-sdk-1.4.335.0 (2fa203425eb4af9dfc6b03f97ef72b0b5bcb8350, 2025)
+- Version: v1.4.362 (2026; fixed archives in vulkan/openharmony-inputs.json)
 - License: Apache 2.0
 
 Unless there is a specific reason to package a more recent version, please stick
@@ -1321,3 +1323,9 @@ Reused from kdada/godot port-to-openharmony at bc9e9662253b879384a7332de99a1e8d6
 
 The Vulkan headers and volk supplied by the current Godot baseline already contain
 `VK_OHOS_surface`; the older private extension patch is not reapplied.
+
+Vulkan refresh reproducibility: `python3 misc/scripts/update-vulkan-openharmony.py --archives <prepared-archives>`.
+All input URLs, sizes and SHA-256 values are fixed in `vulkan/openharmony-inputs.json`.
+The user requested the latest Vulkan headers (1.4.362), ahead of the latest tagged SDK
+(1.4.357.0); volk is regenerated from that exact registry. Shader components use
+the tagged SDK. The system Vulkan loader and GPU driver are not replaced.

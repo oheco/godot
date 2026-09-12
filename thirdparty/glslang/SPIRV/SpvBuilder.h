@@ -56,7 +56,7 @@
 namespace spv {
     #include "GLSL.ext.KHR.h"
     #include "GLSL.ext.EXT.h"
-    #include "NonSemanticShaderDebugInfo100.h"
+    #include "NonSemanticShaderDebugInfo.h"
 }
 
 #include <algorithm>
@@ -230,6 +230,7 @@ public:
     Id makePointer(StorageClass, Id pointee);
     Id makeForwardPointer(StorageClass);
     Id makePointerFromForwardPointer(StorageClass, Id forwardPointerType, Id pointee);
+    Id makeUntypedPointer(StorageClass storageClass, bool setBufferPointer = false);
     Id makeIntegerType(int width, bool hasSign);   // generic
     Id makeIntType(int width) { return makeIntegerType(width, true); }
     Id makeUintType(int width) { return makeIntegerType(width, false); }
@@ -237,6 +238,12 @@ public:
     Id makeBFloat16Type();
     Id makeFloatE5M2Type();
     Id makeFloatE4M3Type();
+    Id makeFloatE2M1Type();
+    Id makeFloatE3M2Type();
+    Id makeFloatE2M3Type();
+    Id makeFloatUE8M0Type();
+    Id makeFloatMXINT8Type();
+    Id makeFloatOcpMicroscalingType(uint32_t width, FPEncoding encoding, Capability cap);
     Id makeStructType(const std::vector<Id>& members, const std::vector<spv::StructMemberDebugInfo>& memberDebugInfo,
                       const char* name, bool const compilerGenerated = true);
     Id makeStructResultType(Id type0, Id type1);
@@ -259,15 +266,17 @@ public:
     Id makeDebugInfoNone();
     Id makeBoolDebugType(int const size);
     Id makeIntegerDebugType(int const width, bool const hasSign);
-    Id makeFloatDebugType(int const width);
-    Id makeSequentialDebugType(Id const baseType, Id const componentCount, NonSemanticShaderDebugInfo100Instructions const sequenceType);
+    Id makeFloatDebugType(int const width, Id const fpEncoding = NoType);
+    Id makeSequentialDebugType(Id const baseType, Id const componentCount, NonSemanticShaderDebugInfoInstructions const sequenceType);
     Id makeArrayDebugType(Id const baseType, Id const componentCount);
     Id makeVectorDebugType(Id const baseType, int const componentCount);
     Id makeMatrixDebugType(Id const vectorType, int const vectorCount, bool columnMajor = true);
     Id makeMemberDebugType(Id const memberType, StructMemberDebugInfo const& debugTypeLoc);
     Id makeCompositeDebugType(std::vector<Id> const& memberTypes, std::vector<StructMemberDebugInfo> const& memberDebugInfo,
-                              char const* const name, NonSemanticShaderDebugInfo100DebugCompositeType const tag);
+                              char const* const name, NonSemanticShaderDebugInfoDebugCompositeType const tag);
     Id makeOpaqueDebugType(char const* const name);
+    Id makeVectorIdDebugType(Id componentType, Id componentCount);
+    Id makeCooperativeMatrixDebugTypeKHR(Id componentType, Id scope, Id rows, Id cols, Id use);
     Id makePointerDebugType(StorageClass storageClass, Id const baseType);
     Id makeForwardPointerDebugType(StorageClass storageClass);
     Id makeDebugSource(const Id fileName);
@@ -317,6 +326,14 @@ public:
     Id getCooperativeVectorNumComponents(Id typeId) const { return module.getInstruction(typeId)->getIdOperand(1); }
 
     bool isPointer(Id resultId)      const { return isPointerType(getTypeId(resultId)); }
+    bool isUntypedPointer(Id resultId) const
+    {
+        const Id tid = getTypeId(resultId);
+        // Expect that OpString have no type
+        if (tid == 0)
+            return false;
+        return isUntypedPointerType(tid);
+    }
     bool isScalar(Id resultId)       const { return isScalarType(getTypeId(resultId)); }
     bool isVector(Id resultId)       const { return isVectorType(getTypeId(resultId)); }
     bool isMatrix(Id resultId)       const { return isMatrixType(getTypeId(resultId)); }
@@ -334,6 +351,7 @@ public:
         { return getTypeClass(typeId) == Op::OpTypeInt && module.getInstruction(typeId)->getImmediateOperand(1) == 0; }
     bool isFloatType(Id typeId)        const { return getTypeClass(typeId) == Op::OpTypeFloat; }
     bool isPointerType(Id typeId)      const { return getTypeClass(typeId) == Op::OpTypePointer; }
+    bool isUntypedPointerType(Id typeId) const { return getTypeClass(typeId) == Op::OpTypeUntypedPointerKHR; }
     bool isScalarType(Id typeId)       const
         { return getTypeClass(typeId) == Op::OpTypeFloat || getTypeClass(typeId) == Op::OpTypeInt ||
           getTypeClass(typeId) == Op::OpTypeBool; }
@@ -444,9 +462,19 @@ public:
     Id makeBFloat16Constant(float bf16, bool specConstant = false);
     Id makeFloatE5M2Constant(float fe5m2, bool specConstant = false);
     Id makeFloatE4M3Constant(float fe4m3, bool specConstant = false);
+    Id makeFloatE2M1Constant(float fe2m1, bool specConstant = false);
+    Id makeFloatE3M2Constant(float fe3m2, bool specConstant = false);
+    Id makeFloatE2M3Constant(float fe2m3, bool specConstant = false);
+    Id makeFloatUE8M0Constant(float fue8m0, bool specConstant = false);
+    Id makeFloatMXINT8Constant(float mxint8, bool specConstant = false);
     Id makeFpConstant(Id type, double d, bool specConstant = false);
 
     Id importNonSemanticShaderDebugInfoInstructions();
+    // Ensure the NonSemantic.Shader.DebugInfo import string names at least `version`.
+    // If the import instruction already exists, its name is patched in place.
+    // If it has not been created yet, importNonSemanticShaderDebugInfoInstructions()
+    // will use the updated version when it runs.
+    void requireNonSemanticShaderDebugInfoVersion(unsigned version);
 
     // Turn the array of constants into a proper spv constant of the requested type.
     Id makeCompositeConstant(Id type, const std::vector<Id>& comps, bool specConst = false);
@@ -469,11 +497,13 @@ public:
     void addMemberDecoration(Id, unsigned int member, Decoration, const char*);
     void addMemberDecoration(Id, unsigned int member, Decoration, const std::vector<unsigned>& literals);
     void addMemberDecoration(Id, unsigned int member, Decoration, const std::vector<const char*>& strings);
+    void addMemberDecorationIdEXT(Id, unsigned int member, Decoration, const std::vector<unsigned>& operands);
 
     // At the end of what block do the next create*() instructions go?
     // Also reset current last DebugScope and current source line to unknown
     void setBuildPoint(Block* bp) {
         buildPoint = bp;
+        descHeapShiftedBaseCache.clear();
         dirtyLineTracker = true;
         dirtyScopeTracker = true;
     }
@@ -531,8 +561,15 @@ public:
     Id createVariable(Decoration precision, StorageClass storageClass, Id type, const char* name = nullptr,
         Id initializer = NoResult, bool const compilerGenerated = true);
 
+    // Create an untyped global or function local or IO variable.
+    Id createUntypedVariable(Decoration precision, StorageClass storageClass, const char* name = nullptr,
+                             Id dataType = NoResult, Id initializer = NoResult);
+
     // Create an intermediate with an undefined value.
     Id createUndefined(Id type);
+
+    // Create load/store instruction with a remapped descriptor heap base.
+    Instruction* createDescHeapLoadStoreBaseRemap(Id base, Op op);
 
     // Store into an Id and return the l-value
     void createStore(Id rValue, Id lValue, spv::MemoryAccessMask memoryAccess = spv::MemoryAccessMask::MaskNone,
@@ -545,6 +582,9 @@ public:
 
     // Create an OpAccessChain instruction
     Id createAccessChain(StorageClass, Id base, const std::vector<Id>& offsets);
+
+    // Create an OpUntypedAccessChainKHR instruction
+    Id createUntypedAccessChain(Id resultType, Id base, const std::vector<Id>& offsets, Id resultId = NoResult);
 
     // Create an OpArrayLength instruction
     Id createArrayLength(Id base, unsigned int member, unsigned int bits);
@@ -574,8 +614,11 @@ public:
     Id createTriOp(Op, Id typeId, Id operand1, Id operand2, Id operand3);
     Id createOp(Op, Id typeId, const std::vector<Id>& operands);
     Id createOp(Op, Id typeId, const std::vector<IdImmediate>& operands);
+    Id createConstData(Op opCode, Id typeId, const std::vector<const char*> operands);
     Id createFunctionCall(spv::Function*, const std::vector<spv::Id>&);
     Id createSpecConstantOp(Op, Id typeId, const std::vector<spv::Id>& operands, const std::vector<unsigned>& literals);
+    Id createSpecConstantAlignTo(Id value, Id alignment);
+    Id createSpecConstantSelectMax(Id lhs, Id rhs);
 
     // Take an rvalue (source) and a set of channels to extract from it to
     // make a new rvalue, which is returned.
@@ -790,6 +833,19 @@ public:
         unsigned int alignment;        // bitwise OR of alignment values passed in. Accumulates worst alignment.
                                        // Only tracks base and (optional) component selection alignment.
 
+        struct DescHeapInfo {
+            Id descHeapBaseTy;                  // for descriptor heap, record its base data type.
+            Id descHeapBaseOffset;              // byte offset applied to the heap base before descriptor lookup.
+            std::vector<Id> descHeapIndexChain;
+            Id descTy;                          // for target resource type
+            StorageClass descStorageClass;      // for descriptor heap, record its basic storage class.
+            bool descReadonly;                  // for decorating OpBufferPointerEXT results.
+            bool descWriteonly;                 // for decorating OpBufferPointerEXT results.
+            std::vector<Instruction*> descHeapInstId;
+                                                // for descriptor heap, record its data type for loading/store results.
+        };
+        DescHeapInfo descHeapInfo;
+
         // Accumulate whether anything in the chain of structures has coherent decorations.
         struct CoherentFlags {
             CoherentFlags() { clear(); }
@@ -853,13 +909,37 @@ public:
     AccessChain getAccessChain() { return accessChain; }
     void setAccessChain(AccessChain newChain) { accessChain = newChain; }
 
+    // for EXT_descriptor_heap and EXT_structured_descriptor_heap
+    Id getAccessChainDescHeapBaseType() const { return accessChain.descHeapInfo.descHeapBaseTy; }
+    void setAccessChainDescHeapBaseType(Id baseType) { accessChain.descHeapInfo.descHeapBaseTy = baseType; }
+    void setAccessChainDescHeapBaseOffset(Id baseOffset) { accessChain.descHeapInfo.descHeapBaseOffset = baseOffset; }
+    const std::vector<Id>& getAccessChainDescHeapIndexChain() const { return accessChain.descHeapInfo.descHeapIndexChain; }
+    void accessChainPushDescHeapIndex(Id index) { accessChain.descHeapInfo.descHeapIndexChain.push_back(index); }
+    bool hasAccessChainIndex() const { return !accessChain.indexChain.empty(); }
+    void moveAccessChainIndexToDescHeapIndexChain()
+    {
+        assert(accessChain.indexChain.size() == 1);
+        accessChainPushDescHeapIndex(accessChain.indexChain.back());
+        accessChain.indexChain.pop_back();
+    }
+    void setAccessChainDescHeapDescriptorType(Id descTy, StorageClass storageClass, bool readonly, bool writeonly)
+    {
+        accessChain.descHeapInfo.descTy = descTy;
+        accessChain.descHeapInfo.descStorageClass = storageClass;
+        accessChain.descHeapInfo.descReadonly = readonly;
+        accessChain.descHeapInfo.descWriteonly = writeonly;
+    }
+
     // clear accessChain
     void clearAccessChain();
+
+    Id createDescHeapAccessChain();
+    Id createConstantSizeOfEXT(Id typeId);
 
     // set new base as an l-value base
     void setAccessChainLValue(Id lValue)
     {
-        assert(isPointer(lValue));
+        assert(isPointer(lValue) || isUntypedPointer(lValue));
         accessChain.base = lValue;
     }
 
@@ -962,6 +1042,7 @@ protected:
     Id findCompositeConstant(Op typeClass, Op opcode, Id typeId, const std::vector<Id>& comps, size_t numMembers);
     Id findStructConstant(Id typeId, const std::vector<Id>& comps);
     Id collapseAccessChain();
+    Id getOrCreateDescHeapByteArrayType();
     void remapDynamicSwizzle();
     void transferAccessChainSwizzle(bool dynamic);
     void simplifyAccessChainSwizzle();
@@ -976,12 +1057,20 @@ protected:
     struct DecorationInstructionLessThan {
         bool operator()(const std::unique_ptr<Instruction>& lhs, const std::unique_ptr<Instruction>& rhs) const;
     };
+    template <typename SpvUtilsType>
+    Id makeFloatConstantHelper(float f, Id typeId, bool specConstant);
 
     unsigned int spvVersion;     // the version of SPIR-V to emit in the header
     SourceLanguage sourceLang;
     int sourceVersion;
     spv::Id nonSemanticShaderCompilationUnitId {0};
     spv::Id nonSemanticShaderDebugInfo {0};
+    // Pointer to the OpExtInstImport instruction for NonSemantic.Shader.DebugInfo.
+    // Kept so requireNonSemanticShaderDebugInfoVersion() can patch the name in place.
+    Instruction* nonSemanticShaderDebugInfoImportInst {nullptr};
+    // Spec version encoded in the NonSemantic.Shader.DebugInfo import name.
+    // Defaults to 100. Promoted to N the first time a version-N opcode is emitted.
+    unsigned int nonSemanticShaderDebugInfoVersion{100};
     spv::Id debugInfoNone {0};
     spv::Id debugExpression {0}; // Debug expression with zero operations.
     std::string sourceText;
@@ -1103,6 +1192,14 @@ protected:
     std::vector<Instruction*> nullConstants;
     // map scalar constants to result IDs
     std::unordered_map<ScalarConstantKey, Id, ScalarConstantKeyHash> groupedScalarConstantResultIDs;
+    // map type ids to OpConstantSizeOfEXT result IDs
+    std::unordered_map<Id, Id> constantSizeOfEXTIds;
+
+    // Descriptor heap shifted base cache.
+    std::map<std::pair<Id, Id>, Id> descHeapShiftedBaseCache;
+
+    // Descriptor heap byte array type.
+    Id descHeapByteArrayType;
 
     // Track which types have explicit layouts, to avoid reusing in storage classes without layout.
     // Currently only tracks array types.
