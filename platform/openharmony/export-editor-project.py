@@ -14,6 +14,21 @@ def sha256(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+# DevEco owns these files once the project has been opened: signing
+# configuration, resolved dependency locks and local overrides. An in-place
+# update must keep them, otherwise the user has to reconfigure signing after
+# every new export.
+PROTECTED = {
+    '.clang-tidy',
+    '.clangd',
+    'build-profile.json5',
+    'entry/build-profile.json5',
+    'oh-package-lock.json5',
+    'entry/oh-package-lock.json5',
+    'local.properties',
+}
+
+
 def files(root, project=False):
     """Walk logical paths, including in-tree directory links, without losing SDK packs."""
     boundary = root.resolve(strict=True)
@@ -58,11 +73,13 @@ def main():
     parser.add_argument('--godotsharp', type=Path, required=True)
     parser.add_argument('--dotnet-sdk', type=Path, required=True, help='Complete signed native OpenHarmony SDK layout')
     parser.add_argument('--nuget-feed', type=Path, required=True, help='Verified pinned NuGet archives')
-    parser.add_argument('--output', type=Path, required=True, help='New DevEco project directory')
+    parser.add_argument('--output', type=Path, required=True, help='DevEco project directory')
     parser.add_argument('--archive', type=Path, help='Optional project ZIP')
+    parser.add_argument('--update', action='store_true',
+                        help='Update an existing project directory in place, preserving DevEco-owned files')
     args = parser.parse_args()
-    if args.output.exists() or (args.archive and args.archive.exists()):
-        raise SystemExit('Refusing to overwrite an existing project or archive')
+    if (args.output.exists() and not args.update) or (args.archive and args.archive.exists()):
+        raise SystemExit('Refusing to overwrite an existing project or archive; pass --update to refresh a project in place')
     source = Path(__file__).resolve().parents[2]
     template = source / 'misc/dist/openharmony_editor'
     # The packaged OpenHarmony .NET SDK records its provenance as
@@ -108,24 +125,28 @@ def main():
             raise SystemExit(f'NuGet input mismatch: {path}')
     if not list((args.godotsharp / 'Tools/nupkgs').glob('Godot.NET.Sdk.*.nupkg')):
         raise SystemExit('GodotSharp/Tools/nupkgs must contain the adapted Godot.NET.Sdk package')
-    args.output.mkdir(parents=True, exist_ok=False)
+    args.output.mkdir(parents=True, exist_ok=True)
     generated = ('entry/libs/', 'entry/src/main/cpp/include/', 'entry/src/main/resources/rawfile/')
+    preserved = []
     for path in files(template, project=True):
         name = path.relative_to(template).as_posix()
         if name.startswith(generated) or name in ('.gitignore', 'local.properties') or path.suffix in ('.p12', '.p7b', '.cer'):
             continue
         target = args.output / name
+        if name in PROTECTED and target.exists():
+            preserved.append(name)
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     native = args.output / 'entry/libs/arm64-v8a'
-    native.mkdir(parents=True)
+    native.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.library, native / 'libgodot.so')
     include = args.output / 'entry/src/main/cpp/include'
-    include.mkdir(parents=True)
+    include.mkdir(parents=True, exist_ok=True)
     for name in ('bridge_openharmony.h', 'editor_bridge_openharmony.h'):
         shutil.copyfile(source / 'platform/openharmony' / name, include / name)
     raw = args.output / 'entry/src/main/resources/rawfile'
-    raw.mkdir(parents=True)
+    raw.mkdir(parents=True, exist_ok=True)
     runtime = raw / 'runtime.zip'
     with zipfile.ZipFile(runtime, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
         zip_tree(archive, args.dotnet_sdk, 'dotnet')
@@ -145,7 +166,7 @@ def main():
     runtime_manifest = {'version': '4.7.2-ohos.2', 'sha256': sha256(runtime), 'size': runtime.stat().st_size}
     (raw / 'runtime-manifest.json').write_text(json.dumps(runtime_manifest, indent=2) + '\n')
     notices = args.output / 'licenses'
-    notices.mkdir()
+    notices.mkdir(exist_ok=True)
     for name in ('LICENSE.txt', 'COPYRIGHT.txt', 'AUTHORS.md'):
         shutil.copyfile(source / name, notices / name)
     vulkan_inputs = json.loads((source / 'thirdparty/vulkan/openharmony-inputs.json').read_text())
@@ -169,6 +190,8 @@ def main():
         with zipfile.ZipFile(args.archive, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             zip_tree(archive, args.output, args.output.name)
         args.archive.with_suffix(args.archive.suffix + '.sha256').write_text(sha256(args.archive) + '  ' + args.archive.name + '\n')
+    if preserved:
+        print('Preserved DevEco-owned files: ' + ', '.join(sorted(preserved)))
     print(args.output)
 
 

@@ -103,7 +103,9 @@ and Vulkan presentation acceptance remain separate checks.
 
 ## Assemble a DevEco project
 
-After the native editor and managed assemblies have been validated:
+After the native editor and managed assemblies have been validated, export once
+into a directory you keep open in DevEco, then refresh that same directory in
+place on every later iteration:
 
 ```sh
 python3 platform/openharmony/export-editor-project.py \
@@ -111,8 +113,15 @@ python3 platform/openharmony/export-editor-project.py \
   --godotsharp bin/GodotSharp \
   --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
-  --output /path/to/new-GodotEditor-project \
-  --archive /path/to/GodotEditor-4.7.2-ohos.2-project.zip
+  --output /path/to/GodotEditor
+
+# later iterations: same directory, no new copy to open
+python3 platform/openharmony/export-editor-project.py \
+  --library /path/to/new-cli-directory/libgodot.so \
+  --godotsharp bin/GodotSharp \
+  --dotnet-sdk "$DOTNET_SDK" \
+  --nuget-feed /path/to/pinned-nuget-feed \
+  --output /path/to/GodotEditor --update
 ```
 
 The script verifies the ARM64 inputs, the packaged SDK RID and the presence of
@@ -122,14 +131,21 @@ resource digest manifest. Runtime extraction uses the application's private file
 and cache directories. Project files contain no maintainer signing profile,
 account or absolute SDK path.
 
-The packager stops at the project: it neither builds nor signs a HAP, and it does
-not publish anything. Published adaptation packages carry this project in the
-`projects` field of their version descriptor, which `oo export` downloads,
-verifies and extracts.
+With `--update`, files DevEco owns after the first build are preserved:
+`build-profile.json5` (automatic signing configuration), `oh-package-lock.json5`
+and `entry/oh-package-lock.json5`, `local.properties`, and `.clang-tidy`/
+`.clangd`. Everything the packager generates is replaced, so the signing
+configuration and cached build state survive across iterations. A ZIP via
+`--archive` is optional and not needed while iterating.
 
-Open the extracted root directory in DevEco, select the SDK, configure automatic
-signing with your own account, and build the `entry` module. The current shell
-targets **2-in-1 devices**, API 22 or newer, and Vulkan only.
+The packager stops at the project: it neither builds nor signs a HAP, and it does
+not publish anything. Published adaptation packages carry immutable project
+archives in the `projects` field of their version descriptor, which `oo export`
+downloads, verifies and extracts.
+
+Open the project root in DevEco, select the SDK, configure automatic signing with
+your own account, and build the `entry` module. The current shell targets
+**2-in-1 devices**, API 22 or newer, and Vulkan only.
 
 ## Design and verification scope
 
