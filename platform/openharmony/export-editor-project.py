@@ -65,16 +65,28 @@ def main():
         raise SystemExit('Refusing to overwrite an existing project or archive')
     source = Path(__file__).resolve().parents[2]
     template = source / 'misc/dist/openharmony_editor'
+    # The packaged OpenHarmony .NET SDK records its provenance as
+    # BUILDINFO.aspnetcore.json; an in-tree SDK build uses BUILDINFO.json.
+    dotnet_buildinfo_path = next(
+        (candidate for candidate in (args.dotnet_sdk / 'BUILDINFO.json',
+                                     args.dotnet_sdk / 'BUILDINFO.aspnetcore.json')
+         if candidate.is_file()), None)
+    if dotnet_buildinfo_path is None:
+        raise SystemExit('Missing native .NET SDK provenance (BUILDINFO.json or BUILDINFO.aspnetcore.json)')
+    dotnet_buildinfo = json.loads(dotnet_buildinfo_path.read_text())
+    if dotnet_buildinfo.get('rid') != 'openharmony-arm64':
+        raise SystemExit(f'Expected .NET RID openharmony-arm64, found {dotnet_buildinfo.get("rid")!r}')
     required = [(args.library, 'native Godot editor'),
                 (args.library.parent / 'build-info.json', 'native editor build provenance from build-cli.py'),
                 (args.dotnet_sdk / 'dotnet', 'native .NET SDK host'),
-                (args.dotnet_sdk / 'BUILDINFO.json', 'native .NET SDK provenance'),
                 (args.godotsharp / 'Api/Debug/GodotSharp.dll', 'GodotSharp API'),
                 (args.godotsharp / 'Tools/GodotTools.dll', 'Godot C# editor tools')]
     for path, description in required:
         if not path.is_file():
             raise SystemExit(f'Missing {description}: {path}')
-    for name in ('sdk', 'host/fxr', 'shared/Microsoft.NETCore.App', 'packs'):
+    for name in ('sdk', 'host/fxr', 'shared/Microsoft.NETCore.App',
+                 'packs/Microsoft.NETCore.App.Ref',
+                 'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
         if not (args.dotnet_sdk / name).is_dir():
             raise SystemExit(f'Missing native SDK directory: {name}')
     # Validate links before creating output. ZIP entries are regular files, so
@@ -130,7 +142,7 @@ def main():
              'size': path.stat().st_size, 'sha256': sha256(path)}
             for path in sdk_files
         ], indent=2) + '\n')
-    runtime_manifest = {'version': '4.7.2-ohos.1', 'sha256': sha256(runtime), 'size': runtime.stat().st_size}
+    runtime_manifest = {'version': '4.7.2-ohos.2', 'sha256': sha256(runtime), 'size': runtime.stat().st_size}
     (raw / 'runtime-manifest.json').write_text(json.dumps(runtime_manifest, indent=2) + '\n')
     notices = args.output / 'licenses'
     notices.mkdir()
@@ -146,10 +158,10 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
-    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.1',
+    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.2',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
                   'dotnet_host_sha256': sha256(args.dotnet_sdk / 'dotnet'), 'runtime': runtime_manifest}
-    provenance['dotnet_buildinfo'] = json.loads((args.dotnet_sdk / 'BUILDINFO.json').read_text())
+    provenance['dotnet_buildinfo'] = dotnet_buildinfo
     provenance['native_build'] = native_info
     (args.output / 'build-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
     if args.archive:

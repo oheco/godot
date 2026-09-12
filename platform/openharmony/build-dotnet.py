@@ -13,13 +13,18 @@ parser.add_argument('--godot', type=Path, required=True, help='Signed native God
 parser.add_argument('--dotnet-sdk', type=Path, required=True)
 parser.add_argument('--nuget-feed', type=Path, required=True)
 parser.add_argument('--log', type=Path, required=True)
-parser.add_argument('--package-version', default='4.7.2-ohos.1')
+parser.add_argument('--package-version', default='4.7.2-ohos.2')
 args = parser.parse_args()
 if sys.platform != 'ohos':
     raise SystemExit('Run this build on the native OpenHarmony host')
 source = Path(__file__).resolve().parents[2]
 dotnet = args.dotnet_sdk.resolve()
 feed = args.nuget_feed.resolve()
+# The managed build publishes for `openharmony-arm64`, so it must use the adapted
+# OpenHarmony SDK rather than a generic Linux ARM64 one.
+for name in ('dotnet', 'sdk', 'host/fxr', 'shared/Microsoft.NETCore.App', 'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
+    if not (dotnet / name).exists():
+        raise SystemExit(f'Not an adapted OpenHarmony .NET SDK (missing {name}): {dotnet}')
 subprocess.run([sys.executable, str(source / 'platform/openharmony/dotnet/prepare-feed.py'), str(feed)], check=True)
 with tempfile.TemporaryDirectory(prefix='godot-managed-build-', dir='/data/storage/el2/base/cache') as private:
     env = dict(os.environ)

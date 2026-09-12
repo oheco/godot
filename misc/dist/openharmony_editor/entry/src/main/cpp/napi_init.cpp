@@ -187,7 +187,7 @@ napi_value configure(napi_env env, napi_callback_info info) {
 			return nullptr;
 		}
 	}
-	const std::string sample = files + "/Projects/CSharpSmoke-4.7.2-ohos.1";
+	const std::string sample = files + "/Projects/CSharpSmoke-4.7.2-ohos.2";
 	if (!std::filesystem::exists(sample, error)) {
 		std::filesystem::copy(runtime + "/Examples/CSharpSmoke", sample, std::filesystem::copy_options::recursive, error);
 		if (error) {
