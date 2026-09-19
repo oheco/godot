@@ -174,9 +174,17 @@ napi_value configure(napi_env env, napi_callback_info info) {
 		napi_throw_error(env, nullptr, "Invalid runtime configuration");
 		return nullptr;
 	}
-	const std::string dotnet = runtime + "/dotnet";
-	if (access((dotnet + "/dotnet").c_str(), F_OK) != 0 || access((runtime + "/GodotSharp/Api/Debug/GodotSharp.dll").c_str(), F_OK) != 0) {
-		napi_throw_error(env, nullptr, "The packaged .NET SDK or GodotSharp assemblies are missing");
+	// The .NET SDK is not shipped with the application: it is resolved from the
+	// oheco package installation so the engine stays decoupled from its version.
+	const std::string dotnet = resolve_dotnet_root();
+	if (dotnet.empty()) {
+		const std::string message = "No usable .NET SDK found. Install one with 'oo install dotnet-sdk'; "
+				"the oheco package root is searched by default and GODOT_OHOS_DOTNET_ROOT overrides it.";
+		napi_throw_error(env, nullptr, message.c_str());
+		return nullptr;
+	}
+	if (access((runtime + "/GodotSharp/Api/Debug/GodotSharp.dll").c_str(), F_OK) != 0) {
+		napi_throw_error(env, nullptr, "The packaged GodotSharp assemblies are missing");
 		return nullptr;
 	}
 	std::error_code error;
@@ -207,21 +215,6 @@ napi_value configure(napi_env env, napi_callback_info info) {
 		if (!output) {
 			napi_throw_error(env, nullptr, "Unable to prepare the local NuGet feed configuration");
 			return nullptr;
-		}
-	}
-	// Restore execute permissions if the platform ZIP extractor did not preserve them.
-	for (const auto &entry : std::filesystem::recursive_directory_iterator(dotnet, error)) {
-		if (!entry.is_regular_file(error)) {
-			continue;
-		}
-		std::ifstream input(entry.path(), std::ios::binary);
-		char magic[4]{};
-		input.read(magic, 4);
-		if (input.gcount() == 4 && magic[0] == '\x7f' && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
-			if (chmod(entry.path().c_str(), 0755) != 0) {
-				napi_throw_error(env, nullptr, "Unable to set executable permission on packaged .NET tools");
-				return nullptr;
-			}
 		}
 	}
 	auto set = [](const char *key, const std::string &value) { setenv(key, value.c_str(), 1); };

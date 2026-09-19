@@ -71,7 +71,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--library', type=Path, required=True, help='Final ARM64 libgodot.so; do not strip after signing')
     parser.add_argument('--godotsharp', type=Path, required=True)
-    parser.add_argument('--dotnet-sdk', type=Path, required=True, help='Complete signed native OpenHarmony SDK layout')
+    parser.add_argument('--dotnet-sdk', type=Path, required=True, help='Build input: the native OpenHarmony .NET SDK used for GodotSharp; it is not shipped')
     parser.add_argument('--nuget-feed', type=Path, required=True, help='Verified pinned NuGet archives')
     parser.add_argument('--output', type=Path, required=True, help='DevEco project directory')
     parser.add_argument('--archive', type=Path, help='Optional project ZIP')
@@ -106,9 +106,8 @@ def main():
                  'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
         if not (args.dotnet_sdk / name).is_dir():
             raise SystemExit(f'Missing native SDK directory: {name}')
-    # Validate links before creating output. ZIP entries are regular files, so
-    # both DevEco extraction and the in-app extractor get a relocatable layout.
-    sdk_files = list(files(args.dotnet_sdk))
+    # The SDK is only a build input and the version the application must find at
+    # runtime; it is not part of the project, so validate it but do not walk it.
     for path in (args.library, args.dotnet_sdk / 'dotnet'):
         with path.open('rb') as stream:
             header = stream.read(20)
@@ -149,7 +148,10 @@ def main():
     raw.mkdir(parents=True, exist_ok=True)
     runtime = raw / 'runtime.zip'
     with zipfile.ZipFile(runtime, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        zip_tree(archive, args.dotnet_sdk, 'dotnet')
+        # The .NET SDK is deliberately not shipped: the application resolves it
+        # from the oheco package installation so it stays decoupled from the
+        # SDK version. Only Godot's own managed assemblies and the pinned feed
+        # travel with the project.
         zip_tree(archive, args.godotsharp, 'GodotSharp')
         zip_tree(archive, source / 'platform/openharmony/tests/dotnet-smoke', 'Examples/CSharpSmoke')
         for item in manifest['packages']:
@@ -159,14 +161,17 @@ def main():
         # Pin the timestamp of the generated metadata entries too: writestr()
         # would otherwise stamp the current time and make an otherwise identical
         # runtime archive unreproducible.
+        requirement = {
+            'rid': dotnet_buildinfo.get('rid'),
+            'sdk_version': dotnet_buildinfo.get('sdk_version'),
+            'runtime_version': dotnet_buildinfo.get('runtime_version'),
+            'resolution': "oheco package directory ('oo install dotnet-sdk')",
+            'override_environment': 'GODOT_OHOS_DOTNET_ROOT',
+        }
         metadata = (
             ('NuGet.Config', '<configuration><packageSources><clear/><add key="bundled" value="nuget"/></packageSources></configuration>\n'),
             ('nuget-inputs.json', json.dumps(manifest, indent=2) + '\n'),
-            ('dotnet-inventory.json', json.dumps([
-                {'path': path.relative_to(args.dotnet_sdk).as_posix(),
-                 'size': path.stat().st_size, 'sha256': sha256(path)}
-                for path in sdk_files
-            ], indent=2) + '\n'),
+            ('dotnet-requirement.json', json.dumps(requirement, indent=2) + '\n'),
         )
         for name, text in metadata:
             info = zipfile.ZipInfo(name, date_time=(2026, 9, 12, 0, 0, 0))
@@ -190,7 +195,8 @@ def main():
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
     provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.2',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
-                  'dotnet_host_sha256': sha256(args.dotnet_sdk / 'dotnet'), 'runtime': runtime_manifest}
+                  'runtime': runtime_manifest,
+                  'dotnet_resolution': "resolved at runtime from the oheco package installation; not shipped"}
     provenance['dotnet_buildinfo'] = dotnet_buildinfo
     provenance['native_build'] = native_info
     (args.output / 'build-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')

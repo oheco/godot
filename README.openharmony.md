@@ -28,9 +28,19 @@ editor. The earlier ArkTS compiler fixture is not an installable Godot editor.
 - Native .NET runtime **10.0.12** and SDK **10.0.401** from the packaged
   <https://github.com/oheco/dotnet-sdk> release, installed with
   `oo install dotnet-sdk` (version `10.0.401-ohos.2`). Its target RID is
-  **openharmony-arm64**, and it ships the matching reference, runtime, host and
-  NativeAOT packs, so managed restores and publishes stay offline. A generic
-  Linux ARM64 .NET SDK cannot replace it.
+  **openharmony-arm64**. A generic Linux ARM64 .NET SDK cannot replace it.
+- The SDK is a **build input and a runtime dependency, never a shipped one**:
+  GodotSharp is compiled against it, and the application resolves the installed
+  package at startup (`~/.oheco/packages/dotnet-sdk/<version>`, honouring
+  `OHECO_ROOT`, with `GODOT_OHOS_DOTNET_ROOT` as a test override). The project
+  therefore carries no .NET SDK and stays decoupled from its version; upgrading
+  it is `oo install dotnet-sdk` on the device.
+- Because the SDK lives outside the application sandbox, the application needs
+  the restricted permissions `ohos.permission.READ_WRITE_USER_FILE` and
+  `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`, which only 2-in-1 device
+  applications may request. They must also be present in the signing profile's
+  ACL list. Without them the platform refuses to read or execute anything under
+  the user directory.
 - The managed build uses the pinned NuGet archives listed in
   [`platform/openharmony/dotnet/nuget-inputs.json`](platform/openharmony/dotnet/nuget-inputs.json).
   Every entry records its source, version, size, digest and license metadata.
@@ -124,12 +134,13 @@ python3 platform/openharmony/export-editor-project.py \
   --output /path/to/GodotEditor --update
 ```
 
-The script verifies the ARM64 inputs, the packaged SDK RID and the presence of
-its OpenHarmony reference and runtime packs, and the fixed feed. It packages the
-signed editor library, the SDK, managed tools, native headers, licenses and a
-resource digest manifest. Runtime extraction uses the application's private files
-and cache directories. Project files contain no maintainer signing profile,
-account or absolute SDK path.
+The script verifies the ARM64 inputs, the .NET SDK it was built against (RID,
+reference and runtime packs) and the fixed feed. It packages the signed editor
+library, Godot's managed assemblies and native tools, the pinned NuGet feed,
+native headers, licenses and a resource digest manifest — but **no .NET SDK**,
+which the application resolves from the `oo` installation at startup. Runtime
+extraction uses the application's private files and cache directories. Project
+files contain no maintainer signing profile, account or absolute SDK path.
 
 With `--update`, files DevEco owns after the first build are preserved:
 `build-profile.json5` (automatic signing configuration), `oh-package-lock.json5`
@@ -147,6 +158,12 @@ Open the project root in DevEco, select the SDK, configure automatic signing wit
 your own account, and build the `entry` module. The shell targets **2-in-1
 devices** with the HarmonyOS SDK **6.1.0(23)** and Vulkan only. The engine itself
 is still compiled against the OpenHarmony native SDK, which is a separate input.
+
+The module requests `ohos.permission.READ_WRITE_USER_FILE` and
+`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. Both are restricted permissions, so
+the signing profile has to carry them in its ACL list; automatic signing alone
+does not grant them. They are what allow the application to read and run the
+`oo`-installed .NET SDK outside its sandbox.
 
 ## Design and verification scope
 
@@ -172,9 +189,10 @@ Checks for the **4.7.2-ohos.2** project:
   source and an empty NuGet cache. The self-contained output contains
   `libcoreclr.so`, `libclrjit.so`, `libclrgc.so`, `libhostfxr.so`, ICU and
   OpenSSL as musl AArch64 ELF, plus `Smoke.dll` and `GodotSharp.dll`.
-- DevEco project assembly and independent audit (24 checks): all 5,452 packaged
-  SDK files matched the recorded inventory, the runtime manifest matched the
-  archive, and the project contains no signing material or absolute host path.
+- DevEco project assembly and independent audit: the runtime manifest matched the
+  archive, the project bundles no .NET SDK and records the SDK requirement it
+  expects to find on the device, and it contains no signing material or absolute
+  host path.
 
 Earlier rounds additionally passed the ArkTS/Hvigor build of the DevEco project
 and an unsigned HAP, offline Vulkan dependency regeneration, and runtime

@@ -15,6 +15,12 @@
       },
       {
         "name": "ohos.permission.LOCK_WINDOW_CURSOR"
+      },
+      {
+        "name": "ohos.permission.READ_WRITE_USER_FILE"
+      },
+      {
+        "name": "ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE"
       }
     ],
     "abilities": [
