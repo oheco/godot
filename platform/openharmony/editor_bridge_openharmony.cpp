@@ -1,6 +1,7 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #include "editor_bridge_openharmony.h"
 
+#include "crash_handler_openharmony.h"
 #include "dir_access_openharmony.h"
 #include "display_server_openharmony.h"
 #include "file_access_openharmony.h"
@@ -60,6 +61,9 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 	// happen on this single thread; VSync callbacks only wake it.
 	OS_OpenHarmony os;
 	OS_OpenHarmony::EXEC_PATH = "godot-editor";
+	// A crash here kills the whole editor process, and the launcher that started
+	// it stays alive: leave the backtrace where the application can read it.
+	ohos_crash_handler_install((os.get_data_path() + "/godot-crash.log").utf8().get_data());
 	FileAccessOpenHarmony::setup(resources);
 	DirAccessOpenHarmony::setup(resources);
 	os.set_native_window(static_cast<OHNativeWindow *>(window));

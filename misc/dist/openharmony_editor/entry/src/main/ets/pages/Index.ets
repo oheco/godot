@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
-import { describe, fail, initDiagnostics, logPermissionState, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { clearCrashLog, describe, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -65,11 +65,18 @@ struct Index {
         record(`dotnet --version check failed, continuing: ${describe(error as BusinessError)}`);
       }
       setStep('editor:start-engine');
+      // A crash log from an earlier start must not hide a clean one.
+      clearCrashLog();
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       const args = AppStorage.get<string[]>('godotArguments') ?? ['--project-manager'];
-      record(`godot arguments: ${args.join(' ')}`);
-      plugin.setup(['--single-window', '--rendering-driver', 'vulkan', ...args]);
+      // The engine writes its own output into application storage and --verbose
+      // records how far startup reached. Both are temporary while engine startup
+      // is still being stabilised on OpenHarmony.
+      const engineArgs = ['--single-window', '--rendering-driver', 'vulkan', '--verbose',
+        '--log-file', `${context.filesDir}/godot-engine.log`, ...args];
+      record(`godot command line: ${engineArgs.join(' ')}`);
+      plugin.setup(engineArgs);
       record('engine thread started');
       this.ready = true;
       this.timer = setInterval(() => {
@@ -179,7 +186,7 @@ struct Index {
         Column({ space: 16 }) {
           Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
           Button('显示日志').onClick(() => {
-            this.logText = readDiagnostics();
+            this.logText = readFullDiagnostics();
             this.showLog = !this.showLog;
           })
           if (this.showLog) {

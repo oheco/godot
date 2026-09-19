@@ -7,6 +7,8 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 
 let logFile: string = '';
+let engineLogFile: string = '';
+let crashLogFile: string = '';
 let step: string = 'startup';
 
 export function describe(error: BusinessError): string {
@@ -69,6 +71,11 @@ function listDirectory(path: string): string {
 export function initDiagnostics(context: common.UIAbilityContext): void {
   if (logFile.length > 0) { return; }
   logFile = `${context.filesDir}/godot-diagnostics.log`;
+  // The engine writes its own output to the first file (see --log-file) and the
+  // native crash handler writes to the second one. Both survive the editor
+  // process, which is why the launcher can still report them after a crash.
+  engineLogFile = `${context.filesDir}/godot-engine.log`;
+  crashLogFile = `${context.filesDir}/godot-crash.log`;
   record('--- session ---');
   record(`filesDir=${context.filesDir}`);
   record(`cacheDir=${context.cacheDir}`);
@@ -103,6 +110,54 @@ export function readDiagnostics(): string {
 
 export function diagnosticsPath(): string {
   return logFile;
+}
+
+// Reads only the tail of a file the engine process wrote, so a long engine log
+// cannot exhaust memory while the panel is built.
+function readTail(path: string, label: string): string {
+  try {
+    if (path.length === 0) { return `${label}: not initialised yet`; }
+    if (!fs.accessSync(path)) { return `${label}: nothing recorded yet (${path})`; }
+    const size: number = fs.statSync(path).size;
+    const limit: number = 64 * 1024;
+    const offset: number = size > limit ? size - limit : 0;
+    return fs.readTextSync(path, { offset: offset, length: size - offset });
+  } catch (error) {
+    return `${label}: cannot read ${path}: ${describe(error as BusinessError)}`;
+  }
+}
+
+export function readEngineLog(): string {
+  return readTail(engineLogFile, 'engine log');
+}
+
+export function readCrashLog(): string {
+  return readTail(crashLogFile, 'crash log');
+}
+
+// True when the last editor process died from a fatal signal. The editor clears
+// the file when it starts, so this describes the most recent start only.
+export function hasCrashLog(): boolean {
+  try {
+    return crashLogFile.length > 0 && fs.accessSync(crashLogFile) && fs.statSync(crashLogFile).size > 0;
+  } catch (ignored) {
+    return false;
+  }
+}
+
+export function clearCrashLog(): void {
+  try {
+    if (crashLogFile.length > 0 && fs.accessSync(crashLogFile)) { fs.unlinkSync(crashLogFile); }
+  } catch (ignored) {
+    // Best effort: a stale crash log only adds a hint to the launcher.
+  }
+}
+
+// Everything the application can observe about the last engine start, including
+// the engine's own output and the native backtrace of a crashed engine process.
+export function readFullDiagnostics(): string {
+  return `${readDiagnostics()}\n\n===== engine log (${engineLogFile}) =====\n${readEngineLog()}\n\n` +
+    `===== crash log (${crashLogFile}) =====\n${readCrashLog()}`;
 }
 
 // A permission can be listed in the signing profile's ACL and still be denied at
