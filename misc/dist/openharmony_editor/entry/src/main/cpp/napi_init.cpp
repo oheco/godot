@@ -25,7 +25,7 @@ OHNativeWindow *window = nullptr;
 int32_t window_id = -1;
 int32_t width = 0, height = 0;
 bool configured = false, requested = false, started = false;
-std::string sdk_executable, sdk_report, bundled_root, cache_directory, missing_dotnet;
+std::string sdk_executable, sdk_report, bundled_root, cache_directory, files_directory, missing_dotnet;
 std::vector<std::string> arguments;
 struct SpawnRequest {
 	uint32_t id;
@@ -245,6 +245,7 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	configured = true;
 	bundled_root = dotnet;
 	cache_directory = cache;
+	files_directory = files;
 	sdk_executable = dotnet.empty() ? std::string() : dotnet + "/dotnet";
 	sdk_report = cache + "/godot-dotnet-startup-" + std::to_string(getpid()) + ".log";
 	maybe_start(env);
@@ -501,7 +502,7 @@ napi_value sandbox_probe(napi_env env, napi_callback_info info) {
 		napi_throw_error(env, nullptr, "Configure the runtime before probing the sandbox");
 		return nullptr;
 	}
-	const std::string report = probe_sandbox(bundled_root, cache_directory);
+	const std::string report = probe_sandbox(bundled_root, files_directory, cache_directory);
 	napi_value result;
 	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
 	return result;

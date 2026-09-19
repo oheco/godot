@@ -17,6 +17,7 @@
 #include <cstring>
 #include <fstream>
 #include <thread>
+#include <vector>
 
 extern char **environ;
 
@@ -195,7 +196,61 @@ std::string resolve_dotnet_root() {
 	return best;
 }
 
-std::string probe_sandbox(const std::string &dotnet_root, const std::string &cache_dir) {
+namespace {
+// Copies a file and confirms the copy actually has content, so a failed copy can
+// never be mistaken for a policy denial.
+bool copy_file(const std::string &source, const std::string &destination) {
+	std::ifstream input(source, std::ios::binary);
+	if (!input) {
+		return false;
+	}
+	std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+	if (!output) {
+		return false;
+	}
+	output << input.rdbuf();
+	output.close();
+	struct stat info {};
+	return stat(destination.c_str(), &info) == 0 && info.st_size > 0;
+}
+
+// Runs a child and reports the outcome. The errno from posix_spawn is the
+// interesting part: that is where the platform refuses the exec.
+std::string try_exec(const char *label, const std::string &path, const std::vector<std::string> &arguments) {
+	std::vector<char *> argv;
+	argv.push_back(const_cast<char *>(path.c_str()));
+	for (const std::string &argument : arguments) {
+		argv.push_back(const_cast<char *>(argument.c_str()));
+	}
+	argv.push_back(nullptr);
+	pid_t child = -1;
+	const int error = posix_spawn(&child, path.c_str(), nullptr, nullptr, argv.data(), environ);
+	if (error != 0) {
+		return std::string(label) + "=posix_spawn failed: " + strerror(error) + " (" + std::to_string(error) + ")\n";
+	}
+	int status = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	for (;;) {
+		const pid_t result = waitpid(child, &status, WNOHANG);
+		if (result == child) {
+			break;
+		}
+		if (result < 0 && errno != EINTR) {
+			return std::string(label) + "=wait failed: " + strerror(errno) + "\n";
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			kill(child, SIGKILL);
+			while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+			}
+			return std::string(label) + "=timeout\n";
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+	return std::string(label) + "=ok exit=" + std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1) + "\n";
+}
+} // namespace
+
+std::string probe_sandbox(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir) {
 	std::string report;
 	std::ifstream attributes("/proc/self/attr/current");
 	std::string domain;
@@ -239,34 +294,34 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &cac
 		}
 	}
 
-	// Control: can this security domain exec anything at all?
-	{
-		pid_t child = -1;
-		char option[] = "-c";
-		char command[] = "exit 0";
-		char *args[] = { const_cast<char *>("/system/bin/sh"), option, command, nullptr };
-		const int error = posix_spawn(&child, "/system/bin/sh", nullptr, nullptr, args, environ);
-		if (error != 0) {
-			report += std::string("exec(/system/bin/sh)=failed: ") + strerror(error) + "\n";
-		} else {
-			int status = 0;
-			waitpid(child, &status, 0);
-			report += "exec(/system/bin/sh)=ok exit=" + std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1) + "\n";
+	// Executing a binary is a separate capability from loading a library, and the
+	// location selects the policy, so probe each combination.
+	report += try_exec("exec(system sh)", "/system/bin/sh", { "-c", "exit 0" });
+	if (!dotnet_root.empty()) {
+		const std::string muxer = dotnet_root + "/dotnet";
+		report += try_exec("exec(user-dir dotnet)", muxer, { "--version" });
+		report += try_exec("exec(sh -> user-dir dotnet)", "/system/bin/sh", { "-c", muxer + " --version" });
+		if (!files_dir.empty()) {
+			const std::string muxer_copy = files_dir + "/dotnet-probe";
+			if (copy_file(muxer, muxer_copy)) {
+				chmod(muxer_copy.c_str(), 0755);
+				report += try_exec("exec(app-data dotnet copy)", muxer_copy, { "--version" });
+			} else {
+				report += "exec(app-data dotnet copy)=copy failed\n";
+			}
 		}
 	}
 
-	// Control: the same library copied into the application's own sandbox, which
+	// The same library copied into the application's own data directory, which
 	// separates a location policy from a per-file policy.
-	if (!cache_dir.empty() && !hostfxr.empty()) {
-		const std::string copy = cache_dir + "/libhostfxr-probe.so";
-		std::ifstream source(hostfxr, std::ios::binary);
-		std::ofstream destination(copy, std::ios::binary | std::ios::trunc);
-		destination << source.rdbuf();
-		destination.close();
-		const bool copied = source.good() || source.eof();
-		void *handle = copied ? dlopen(copy.c_str(), RTLD_LAZY | RTLD_LOCAL) : nullptr;
-		report += std::string("dlopen(app-cache copy)=") +
-				(handle != nullptr ? "ok" : (copied ? dlerror() : "copy failed")) + "\n";
+	if (!files_dir.empty() && !hostfxr.empty()) {
+		const std::string copy = files_dir + "/libhostfxr-probe.so";
+		if (copy_file(hostfxr, copy)) {
+			void *handle = dlopen(copy.c_str(), RTLD_LAZY | RTLD_LOCAL);
+			report += std::string("dlopen(app-data copy)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
+		} else {
+			report += "dlopen(app-data copy)=copy failed\n";
+		}
 	}
 
 	void *child = dlopen("libchild_process.so", RTLD_LAZY | RTLD_LOCAL);
