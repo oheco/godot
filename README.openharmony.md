@@ -144,8 +144,9 @@ archives in the `projects` field of their version descriptor, which `oo export`
 downloads, verifies and extracts.
 
 Open the project root in DevEco, select the SDK, configure automatic signing with
-your own account, and build the `entry` module. The current shell targets
-**2-in-1 devices**, API 22 or newer, and Vulkan only.
+your own account, and build the `entry` module. The shell targets **2-in-1
+devices** with the HarmonyOS SDK **6.1.0(23)** and Vulkan only. The engine itself
+is still compiled against the OpenHarmony native SDK, which is a separate input.
 
 ## Design and verification scope
 

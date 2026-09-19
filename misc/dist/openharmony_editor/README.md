@@ -1,7 +1,7 @@
 # Godot Editor .NET — DevEco project
 
-Open this directory in DevEco Studio with OpenHarmony SDK API 26. Select an ARM64
-2-in-1 device (API 22+), configure automatic signing using your own developer
+Open this directory in DevEco Studio with the HarmonyOS SDK **6.1.0(23)**. Select an
+ARM64 2-in-1 device, configure automatic signing using your own developer
 account, and build/run the `entry` module. No signing credentials are included.
 
 The prepared project contains `entry/libs/arm64-v8a/libgodot.so`, the N-API bridge
