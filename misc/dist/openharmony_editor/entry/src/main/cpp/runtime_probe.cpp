@@ -1,6 +1,8 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #include "runtime_probe.h"
 
+#include <dirent.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -88,4 +90,89 @@ std::string check_dotnet_sdk(const std::string &executable, const std::string &r
 		return ".NET SDK failed; see its diagnostic report";
 	}
 	return {};
+}
+
+namespace {
+// Returns the single versioned child of dir joined with suffix, or empty.
+std::string versioned_entry(const std::string &dir, const std::string &suffix) {
+	DIR *handle = opendir(dir.c_str());
+	if (handle == nullptr) {
+		return {};
+	}
+	std::string found;
+	while (dirent *entry = readdir(handle)) {
+		if (entry->d_name[0] == '.') {
+			continue;
+		}
+		found = dir + "/" + entry->d_name + suffix;
+	}
+	closedir(handle);
+	return found;
+}
+
+std::string newest_report(const std::string &cache_dir) {
+	DIR *handle = opendir(cache_dir.c_str());
+	if (handle == nullptr) {
+		return {};
+	}
+	std::string newest;
+	while (dirent *entry = readdir(handle)) {
+		const std::string name = entry->d_name;
+		if (name.rfind("godot-dotnet-startup-", 0) == 0 && name.size() > newest.size()) {
+			newest = name;
+		}
+	}
+	closedir(handle);
+	if (newest.empty()) {
+		return {};
+	}
+	std::ifstream input(cache_dir + "/" + newest);
+	std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+	return "report " + newest + ":\n" + text;
+}
+} // namespace
+
+std::string probe_sandbox(const std::string &dotnet_root, const std::string &cache_dir) {
+	std::string report;
+	std::ifstream attributes("/proc/self/attr/current");
+	std::string domain;
+	std::getline(attributes, domain);
+	report += "security_domain=" + domain + "\n";
+
+	const std::string hostfxr = versioned_entry(dotnet_root + "/host/fxr", "/libhostfxr.so");
+	report += "hostfxr=" + (hostfxr.empty() ? std::string("<missing>") : hostfxr) + "\n";
+	if (!hostfxr.empty()) {
+		void *handle = dlopen(hostfxr.c_str(), RTLD_LAZY | RTLD_LOCAL);
+		report += std::string("dlopen(hostfxr)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
+		if (handle != nullptr) {
+			void *symbol = dlsym(handle, "hostfxr_main_startupinfo");
+			report += std::string("dlsym(hostfxr_main_startupinfo)=") + (symbol != nullptr ? "ok" : dlerror()) + "\n";
+		}
+	}
+
+	const std::string coreclr = versioned_entry(dotnet_root + "/shared/Microsoft.NETCore.App", "/libcoreclr.so");
+	report += "coreclr=" + (coreclr.empty() ? std::string("<missing>") : coreclr) + "\n";
+	if (!coreclr.empty()) {
+		void *handle = dlopen(coreclr.c_str(), RTLD_LAZY | RTLD_LOCAL);
+		report += std::string("dlopen(coreclr)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
+	}
+
+	void *child = dlopen("libchild_process.so", RTLD_LAZY | RTLD_LOCAL);
+	report += std::string("dlopen(libchild_process.so)=") + (child != nullptr ? "ok" : dlerror()) + "\n";
+	if (child != nullptr) {
+		auto supported = reinterpret_cast<bool (*)()>(dlsym(child, "OH_Ability_IsNativeChildProcessSupported"));
+		auto start = dlsym(child, "OH_Ability_StartNativeChildProcess");
+		report += std::string("dlsym(OH_Ability_IsNativeChildProcessSupported)=") +
+				(supported != nullptr ? "ok" : "missing") + "\n";
+		report += std::string("dlsym(OH_Ability_StartNativeChildProcess)=") + (start != nullptr ? "ok" : "missing") + "\n";
+		if (supported != nullptr) {
+			report += std::string("native_child_process_supported=") + (supported() ? "true" : "false") + "\n";
+		}
+	}
+
+	const std::string previous = newest_report(cache_dir);
+	if (!previous.empty()) {
+		report += previous + "\n";
+	}
+	return report;
 }

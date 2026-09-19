@@ -25,7 +25,7 @@ OHNativeWindow *window = nullptr;
 int32_t window_id = -1;
 int32_t width = 0, height = 0;
 bool configured = false, requested = false, started = false;
-std::string sdk_executable, sdk_report;
+std::string sdk_executable, sdk_report, bundled_root, cache_directory;
 std::vector<std::string> arguments;
 struct SpawnRequest {
 	uint32_t id;
@@ -244,6 +244,8 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	set("NuGetAudit", "false");
 	set("PATH", dotnet + ":" + (getenv("PATH") ? getenv("PATH") : "/system/bin"));
 	configured = true;
+	bundled_root = dotnet;
+	cache_directory = cache;
 	sdk_executable = dotnet + "/dotnet";
 	sdk_report = cache + "/godot-dotnet-startup-" + std::to_string(getpid()) + ".log";
 	maybe_start(env);
@@ -490,12 +492,23 @@ napi_value process_id(napi_env env, napi_callback_info info) {
 	napi_create_int32(env, getpid(), &result);
 	return result;
 }
+napi_value sandbox_probe(napi_env env, napi_callback_info info) {
+	if (!configured) {
+		napi_throw_error(env, nullptr, "Configure the runtime before probing the sandbox");
+		return nullptr;
+	}
+	const std::string report = probe_sandbox(bundled_root, cache_directory);
+	napi_value result;
+	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
+	return result;
+}
 napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
 		METHOD("setLauncher", set_launcher),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
+		METHOD("probeSandbox", sandbox_probe),
 		METHOD("configure", configure),
 		METHOD("checkRuntime", check_runtime),
 		METHOD("setResourceManager", set_resources),

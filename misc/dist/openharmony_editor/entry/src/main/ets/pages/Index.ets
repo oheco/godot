@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime } from '../runtime/Runtime';
-import { fail, initDiagnostics, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { describe, fail, initDiagnostics, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -46,9 +46,21 @@ struct Index {
       record(`runtime directory: ${runtime}`);
       setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
+      record('--- sandbox probe ---');
+      const probeLines: string[] = plugin.probeSandbox().split('\n');
+      for (const line of probeLines) {
+        if (line.length > 0) { record(line); }
+      }
       setStep('editor:check-dotnet');
       this.message = '正在检查 .NET SDK…';
-      await plugin.checkRuntime();
+      // Running the bundled CLI from application data is denied on this platform,
+      // so record the failure and continue: the editor itself must still start.
+      try {
+        await plugin.checkRuntime();
+        record('dotnet --version check passed');
+      } catch (error) {
+        record(`dotnet --version check failed, continuing: ${describe(error as BusinessError)}`);
+      }
       setStep('editor:start-engine');
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);

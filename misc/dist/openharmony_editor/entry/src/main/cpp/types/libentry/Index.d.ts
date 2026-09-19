@@ -26,3 +26,4 @@ export const inputMouse: (event: SimplifiedMouseEvent) => void;
 export const setLauncher: (callback: (requestId: number, args: string[]) => void) => void;
 export const spawnResult: (requestId: number, pid: number) => void;
 export const processId: () => number;
+export const probeSandbox: () => string;
