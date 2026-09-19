@@ -183,7 +183,9 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	for (const auto &directory : { files + "/Projects", files + "/config", files + "/nuget", files + "/dotnet-cli", cache + "/tmp" }) {
 		std::filesystem::create_directories(directory, error);
 		if (error) {
-			napi_throw_error(env, nullptr, error.message().c_str());
+			// Name the path: a bare "File exists" does not say which entry blocked it.
+			const std::string message = "Cannot prepare " + directory + ": " + error.message();
+			napi_throw_error(env, nullptr, message.c_str());
 			return nullptr;
 		}
 	}

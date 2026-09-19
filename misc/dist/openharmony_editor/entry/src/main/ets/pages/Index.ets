@@ -1,9 +1,11 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 import plugin, { SimplifiedTouchEvent, SimplifiedMouseEvent, SimplifiedKeyEvent } from 'libentry.so';
 import { common } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime } from '../runtime/Runtime';
+import { fail, initDiagnostics, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -18,6 +20,8 @@ class GodotSurface extends XComponentController {
 struct Index {
   @State ready: boolean = false;
   @State message: string = '正在准备 Godot Editor…';
+  @State showLog: boolean = false;
+  @State logText: string = '';
   private controller: GodotSurface = new GodotSurface();
   private timer: number = -1;
   private mouseMask: number = 0;
@@ -34,23 +38,36 @@ struct Index {
     plugin.destroySurface();
   }
   private async prepare(): Promise<void> {
+    const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     try {
-      const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
+      initDiagnostics(context);
+      setStep('editor:extract-runtime');
       const runtime = await prepareRuntime(context);
+      record(`runtime directory: ${runtime}`);
+      setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
+      setStep('editor:check-dotnet');
       this.message = '正在检查 .NET SDK…';
       await plugin.checkRuntime();
+      setStep('editor:start-engine');
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       const args = AppStorage.get<string[]>('godotArguments') ?? ['--project-manager'];
+      record(`godot arguments: ${args.join(' ')}`);
       plugin.setup(['--single-window', '--rendering-driver', 'vulkan', ...args]);
+      record('engine thread started');
       this.ready = true;
       this.timer = setInterval(() => {
         const state: number = plugin.state();
-        if (state < 0) { this.message = `Godot 启动失败（${state}），请查看应用日志。`; this.ready = false; }
+        if (state < 0) { this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`; this.ready = false; }
         if (state === 3) { context.terminateSelf(); }
       }, 250);
-    } catch (error) { this.message = `无法启动 Godot：${error.message}`; }
+    } catch (error) {
+      const cause = error as BusinessError;
+      fail(cause);
+      probeEnvironment(context);
+      this.message = `无法启动 Godot（点“显示日志”查看详情）：${cause.message}`;
+    }
   }
   private button(button: MouseButton): number {
     switch (button) {
@@ -144,7 +161,19 @@ struct Index {
           .onBlur(() => { this.pressedKeys.clear(); this.metaPressed = false; this.mouseMask = 0; plugin.sendWindowEvent(3); })
           .onFocus(() => plugin.sendWindowEvent(2))
       } else {
-        Text(this.message).fontColor('#eeeeee').padding(24)
+        Column({ space: 16 }) {
+          Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
+          Button('显示日志').onClick(() => {
+            this.logText = readDiagnostics();
+            this.showLog = !this.showLog;
+          })
+          if (this.showLog) {
+            Scroll() {
+              Text(this.logText).fontSize(12).fontColor('#cccccc').textAlign(TextAlign.Start)
+                .copyOption(CopyOptions.LocalDevice).width('100%')
+            }.layoutWeight(1).width('100%').padding(12).backgroundColor('#111111')
+          }
+        }.width('100%').height('100%').padding(12)
       }
     }.width('100%').height('100%').backgroundColor('#242424')
   }

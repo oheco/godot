@@ -3,6 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
+import { record, setStep } from './Diagnostics';
 
 interface RuntimeManifest { version: string; sha256: string; size: number; }
 
@@ -12,16 +13,20 @@ export async function prepareRuntime(context: common.UIAbilityContext): Promise<
   if (!/^[a-f0-9]{64}$/.test(manifest.sha256) || manifest.size <= 0) {
     throw new Error('Invalid runtime manifest');
   }
+  record(`runtime manifest: version=${manifest.version} size=${manifest.size} sha256=${manifest.sha256}`);
   const parent = `${context.filesDir}/runtimes`;
   fs.mkdirSync(parent, true);
   // The content digest is also the directory identity, so upgrades never reuse stale files.
   const destination = `${parent}/${manifest.sha256}`;
   if (fs.accessSync(`${destination}/.ready`)) {
+    record(`runtime already extracted: ${destination}`);
     return destination;
   }
+  setStep('runtime:prepare-staging');
   const staging = `${destination}.extracting`;
   if (fs.accessSync(staging)) { fs.rmdirSync(staging); }
   fs.mkdirSync(staging, true);
+  setStep('runtime:write-archive');
   const archive = `${context.cacheDir}/godot-runtime.zip`;
   // Read a bounded buffer; the complete SDK archive can be hundreds of MB.
   const raw = await context.resourceManager.getRawFd('runtime.zip');
@@ -48,10 +53,15 @@ export async function prepareRuntime(context: common.UIAbilityContext): Promise<
   if ((await hash.hash(archive, 'sha256')).toLowerCase() !== manifest.sha256) {
     throw new Error('Runtime archive checksum mismatch');
   }
+  record(`runtime archive copied and verified: ${archive}`);
+  setStep('runtime:decompress');
   await zlib.decompressFile(archive, staging);
+  setStep('runtime:publish');
+  record(`decompressed into ${staging}`);
   fs.renameSync(staging, destination);
   const marker = fs.openSync(`${destination}/.ready`, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
   fs.closeSync(marker);
   fs.unlinkSync(archive);
+  record(`runtime published: ${destination}`);
   return destination;
 }
