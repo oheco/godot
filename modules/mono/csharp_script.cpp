@@ -1071,6 +1071,14 @@ bool CSharpLanguage::debug_break(const String &p_error, bool p_allow_continue) {
 
 #ifdef TOOLS_ENABLED
 void CSharpLanguage::_editor_init_callback() {
+	// The runtime is skipped when no usable .NET SDK exists (for example an
+	// OpenHarmony application the platform refuses to load one for). There are no
+	// managed callbacks then, so leaving C# out is the only safe option and the
+	// editor continues without it.
+	if (!GDMono::get_singleton()->is_runtime_initialized()) {
+		return;
+	}
+
 	// Load GodotTools and initialize GodotSharpEditor
 
 	int32_t interop_funcs_size = 0;

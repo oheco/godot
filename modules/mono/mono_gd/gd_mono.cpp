@@ -622,6 +622,25 @@ godot_plugins_initialize_fn initialize_coreclr_and_godot_plugins(bool &r_runtime
 
 bool GDMono::should_initialize() {
 #ifdef TOOLS_ENABLED
+#ifdef OPENHARMONY_ENABLED
+	// The .NET SDK is not shipped with the application: the shell resolves the
+	// oo-installed one and points DOTNET_ROOT at it. The platform can still deny
+	// loading it from outside the HAP bundle, so probe the runtime here and
+	// disable C# cleanly instead of alerting after the editor has started.
+	{
+		String root, fxr;
+		if (!godotsharp::hostfxr_resolver::try_get_path(root, fxr)) {
+			print_line(".NET: no runtime found; C# support is disabled.");
+			return false;
+		}
+		void *handle = nullptr;
+		if (OS::get_singleton()->open_dynamic_library(fxr, handle) != OK || handle == nullptr) {
+			print_line(".NET: the platform refuses to load " + fxr + "; C# support is disabled.");
+			return false;
+		}
+		OS::get_singleton()->close_dynamic_library(handle);
+	}
+#endif
 	// The editor always needs to initialize the .NET module for now.
 	return true;
 #else
