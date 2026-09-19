@@ -36,6 +36,7 @@
 
 #include "core/input/input.h"
 #include "core/input/input_event.h"
+#include "servers/display/native_menu.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/rendering_device.h"
 
@@ -76,6 +77,11 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 
 	rendering_context = nullptr;
 	rendering_device = nullptr;
+
+	// The editor calls NativeMenu::get_singleton() without checking it, so a menu
+	// object must always exist; the plain implementation reports that this platform
+	// supports no global menu features.
+	native_menu = memnew(NativeMenu);
 
 	if (rendering_driver != "vulkan") {
 		ERR_PRINT(vformat("Failed to create %s context.", rendering_driver));
@@ -140,6 +146,10 @@ DisplayServerOpenHarmony::~DisplayServerOpenHarmony() {
 	}
 	if (rendering_context) {
 		memdelete(rendering_context);
+	}
+	if (native_menu) {
+		memdelete(native_menu);
+		native_menu = nullptr;
 	}
 }
 

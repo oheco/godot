@@ -36,6 +36,7 @@
 
 class RenderingContextDriver;
 class RenderingDevice;
+class NativeMenu;
 
 class InputEvent;
 
@@ -44,6 +45,10 @@ class DisplayServerOpenHarmony : public DisplayServer {
 	String rendering_driver;
 	RenderingContextDriver *rendering_context = nullptr;
 	RenderingDevice *rendering_device = nullptr;
+	// OpenHarmony has no global menu support, but the editor dereferences
+	// NativeMenu::get_singleton() unconditionally, so a plain NativeMenu (whose
+	// defaults report no features) has to exist, exactly as on the headless driver.
+	NativeMenu *native_menu = nullptr;
 	ObjectID window_attached_instance_id;
 
 	bool ime_active = false;
