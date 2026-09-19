@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "org.godotengine.editor.oheco",
+    "bundleName": "org.oheco.godoteditor",
     "vendor": "oheco",
     "versionCode": 4070202,
     "versionName": "4.7.2-ohos.2",
