@@ -36,7 +36,11 @@
 
 #ifdef TOOLS_ENABLED
 static bool _create_project_solution_if_needed() {
-	CRASH_COND(CSharpLanguage::get_singleton()->get_godotsharp_editor() == nullptr);
+	// No runtime means no GodotSharp editor plugin to ask. Saving a new C# script
+	// must not take the editor down, so report the failure instead of crashing.
+	if (CSharpLanguage::get_singleton()->get_godotsharp_editor() == nullptr) {
+		return false;
+	}
 	return CSharpLanguage::get_singleton()->get_godotsharp_editor()->call("CreateProjectSolutionIfNeeded");
 }
 #endif
