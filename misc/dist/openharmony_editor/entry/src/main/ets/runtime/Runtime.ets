@@ -4,6 +4,7 @@ import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { zlib } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import { record, setStep } from './Diagnostics';
+import { ensureDirectory, exists, removeTree } from './FileSystem';
 
 interface RuntimeManifest { version: string; sha256: string; size: number; }
 
@@ -15,17 +16,17 @@ export async function prepareRuntime(context: common.UIAbilityContext): Promise<
   }
   record(`runtime manifest: version=${manifest.version} size=${manifest.size} sha256=${manifest.sha256}`);
   const parent = `${context.filesDir}/runtimes`;
-  fs.mkdirSync(parent, true);
+  ensureDirectory(parent);
   // The content digest is also the directory identity, so upgrades never reuse stale files.
   const destination = `${parent}/${manifest.sha256}`;
-  if (fs.accessSync(`${destination}/.ready`)) {
+  if (exists(`${destination}/.ready`)) {
     record(`runtime already extracted: ${destination}`);
     return destination;
   }
   setStep('runtime:prepare-staging');
   const staging = `${destination}.extracting`;
-  if (fs.accessSync(staging)) { fs.rmdirSync(staging); }
-  fs.mkdirSync(staging, true);
+  removeTree(staging);
+  ensureDirectory(staging);
   setStep('runtime:write-archive');
   const archive = `${context.cacheDir}/godot-runtime.zip`;
   // Read a bounded buffer; the complete SDK archive can be hundreds of MB.
@@ -58,9 +59,13 @@ export async function prepareRuntime(context: common.UIAbilityContext): Promise<
   await zlib.decompressFile(archive, staging);
   setStep('runtime:publish');
   record(`decompressed into ${staging}`);
-  fs.renameSync(staging, destination);
-  const marker = fs.openSync(`${destination}/.ready`, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
+  // Mark the tree complete before publishing it, so a destination that exists is
+  // always a usable one and the rename is the only visible transition.
+  const marker = fs.openSync(`${staging}/.ready`, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY);
   fs.closeSync(marker);
+  // An earlier attempt may have been interrupted before the rename completed.
+  removeTree(destination);
+  fs.renameSync(staging, destination);
   fs.unlinkSync(archive);
   record(`runtime published: ${destination}`);
   return destination;
