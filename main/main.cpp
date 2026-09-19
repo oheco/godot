@@ -2375,7 +2375,13 @@ Error Main::setup(const char *execpath, int argc, char *argv[], bool p_second_ph
 		CoreGlobals::print_line_enabled = false;
 	}
 
+#ifdef OPENHARMONY_ENABLED
+	// The editor application reads this log after a crash, and a fatal signal
+	// never flushes the C library buffers, so flush every line here.
+	Logger::set_flush_stdout_on_print(true);
+#else
 	Logger::set_flush_stdout_on_print(GLOBAL_GET("application/run/flush_stdout_on_print"));
+#endif
 
 	// Rendering drivers configuration.
 
