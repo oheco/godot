@@ -11,11 +11,12 @@ let step: string = 'startup';
 
 export function describe(error: BusinessError): string {
   const parts: string[] = [];
-  if (error.name !== undefined) { parts.push(`name=${error.name}`); }
-  if (error.code !== undefined) { parts.push(`code=${error.code}`); }
-  if (error.message !== undefined) { parts.push(`message=${error.message}`); }
+  parts.push(`name=${error.name}`);
+  parts.push(`code=${error.code}`);
+  parts.push(`message=${error.message}`);
+  // Only stack is optional; the comparisons above would always be true.
   if (error.stack !== undefined) { parts.push(`stack=${error.stack}`); }
-  return parts.length > 0 ? parts.join(' | ') : 'unrecognised error object';
+  return parts.join(' | ');
 }
 
 function append(line: string): void {

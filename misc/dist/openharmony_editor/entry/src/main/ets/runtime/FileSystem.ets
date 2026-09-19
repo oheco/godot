@@ -5,7 +5,7 @@
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 
-const EEXIST = 13900015;
+const EEXIST: number = 13900015;
 
 export function exists(path: string): boolean {
   try {
@@ -27,8 +27,9 @@ export function ensureDirectory(path: string): void {
     fs.mkdirSync(path, true);
   } catch (error) {
     // Losing a race with another creator is harmless; anything else is not.
+    // ArkTS only allows throwing Error values, hence the cast.
     if ((error as BusinessError).code !== EEXIST) {
-      throw error;
+      throw error as Error;
     }
   }
 }
