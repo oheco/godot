@@ -11,6 +11,10 @@
     {
       "name": "EntryAbility_label",
       "value": "Godot Editor .NET"
+    },
+    {
+      "name": "reason_user_file",
+      "value": "Read the .NET SDK that the oo package manager installed in the user directory, so the editor can run and build C# projects."
     }
   ]
 }

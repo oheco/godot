@@ -4,7 +4,7 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
-import { prepareRuntime } from '../runtime/Runtime';
+import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { describe, fail, initDiagnostics, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
@@ -44,6 +44,8 @@ struct Index {
       setStep('editor:extract-runtime');
       const runtime = await prepareRuntime(context);
       record(`runtime directory: ${runtime}`);
+      setStep('editor:request-permission');
+      await requestDotnetAccess(context);
       setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
       record('--- sandbox probe ---');

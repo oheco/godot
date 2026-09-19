@@ -1,12 +1,27 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
-import { common } from '@kit.AbilityKit';
+import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
 import { fileIo as fs, hash } from '@kit.CoreFileKit';
-import { zlib } from '@kit.BasicServicesKit';
+import { BusinessError, zlib } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
-import { record, setStep } from './Diagnostics';
+import { describe, record, setStep } from './Diagnostics';
 import { ensureDirectory, exists, removeTree } from './FileSystem';
 
 interface RuntimeManifest { version: string; sha256: string; size: number; }
+
+// The .NET SDK lives in the user directory because the oo package manager owns
+// it. READ_WRITE_USER_FILE is a user_grant restricted permission, so the
+// platform shows a dialog and the directory stays unreadable until it is
+// granted. ALLOW_EXTERNAL_NATIVE_CODE is system_grant and the profile carries it.
+export async function requestDotnetAccess(context: common.UIAbilityContext): Promise<void> {
+  const permissions: Permissions[] = ['ohos.permission.READ_WRITE_USER_FILE'];
+  try {
+    const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(context, permissions);
+    const results: number[] = result.authResults;
+    record(`READ_WRITE_USER_FILE authResults=[${results.join(',')}] (0 means granted)`);
+  } catch (error) {
+    record(`READ_WRITE_USER_FILE request failed: ${describe(error as BusinessError)}`);
+  }
+}
 
 export async function prepareRuntime(context: common.UIAbilityContext): Promise<string> {
   const data = await context.resourceManager.getRawFileContent('runtime-manifest.json');

@@ -10,11 +10,14 @@ the engine stays decoupled from the SDK version. Install it on the device with
 `entry/src/main/resources/rawfile/runtime-manifest.json` identifies the runtime
 archive. The project contains no account credentials or application signature.
 
-The application requests `ohos.permission.READ_WRITE_USER_FILE` and
-`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. Both are restricted permissions
-available to 2-in-1 device applications and must be present in the signing
-profile's ACL list; without them the platform refuses to read or run anything
-under the user directory.
+The application needs `ohos.permission.READ_WRITE_USER_FILE` (user-grant) and
+`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` (system-grant) to read and execute
+the SDK outside its sandbox. Both are `system_basic` restricted permissions
+available to 2-in-1 device applications, and the signing profile must carry them
+in its ACL list. Declaring them before that ACL exists fails the installation
+with `grant request permissions failed` (9568289); in the debug phase DevEco's
+automatic signing submits the ACL application to AGC and a temporary profile
+covers the wait. The user-grant permission is also requested at runtime.
 
 ## Passed on the OpenHarmony development host
 

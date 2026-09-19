@@ -35,12 +35,15 @@ editor. The earlier ArkTS compiler fixture is not an installable Godot editor.
   `OHECO_ROOT`, with `GODOT_OHOS_DOTNET_ROOT` as a test override). The project
   therefore carries no .NET SDK and stays decoupled from its version; upgrading
   it is `oo install dotnet-sdk` on the device.
-- Because the SDK lives outside the application sandbox, the application needs
-  the restricted permissions `ohos.permission.READ_WRITE_USER_FILE` and
-  `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`, which only 2-in-1 device
-  applications may request. They must also be present in the signing profile's
-  ACL list. Without them the platform refuses to read or execute anything under
-  the user directory.
+- Reaching the SDK requires the restricted permissions
+  `ohos.permission.READ_WRITE_USER_FILE` (user-grant) and
+  `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` (system-grant). Both are
+  `system_basic`, available to 2-in-1 device applications only, and the signing
+  profile's ACL must carry them. Declaring a restricted permission without that
+  ACL makes the **installation** fail with `grant request permissions failed`
+  (9568289), so the ACL has to be applied for before the first install. In the
+  debug phase DevEco's automatic signing submits that application to AGC for you
+  and a short-lived temporary profile covers the wait.
 - The managed build uses the pinned NuGet archives listed in
   [`platform/openharmony/dotnet/nuget-inputs.json`](platform/openharmony/dotnet/nuget-inputs.json).
   Every entry records its source, version, size, digest and license metadata.
@@ -159,11 +162,15 @@ your own account, and build the `entry` module. The shell targets **2-in-1
 devices** with the HarmonyOS SDK **6.1.0(23)** and Vulkan only. The engine itself
 is still compiled against the OpenHarmony native SDK, which is a separate input.
 
-The module requests `ohos.permission.READ_WRITE_USER_FILE` and
-`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. Both are restricted permissions, so
-the signing profile has to carry them in its ACL list; automatic signing alone
-does not grant them. They are what allow the application to read and run the
-`oo`-installed .NET SDK outside its sandbox.
+The application needs `ohos.permission.READ_WRITE_USER_FILE` and
+`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` to read and run the `oo`-installed
+.NET SDK outside its sandbox. Both are in the platform's restricted-permission
+list with exactly this scenario — an IDE or developer tool running on PC/2-in-1 —
+and both are `system_basic`, so the signing profile needs an AGC-approved ACL
+before the first install succeeds. In the debug phase, signing automatically from
+DevEco submits the application for you; a temporary profile is issued while it is
+pending (around three working days). `READ_WRITE_USER_FILE` is user-grant, so the
+application also requests it at runtime.
 
 ## Design and verification scope
 

@@ -16,8 +16,21 @@
       {
         "name": "ohos.permission.LOCK_WINDOW_CURSOR"
       },
+      // The .NET SDK lives outside the application sandbox, so reaching it needs
+      // these two restricted permissions (2-in-1 applications only). The signing
+      // profile must list both in its ACL, otherwise the installation fails with
+      // "grant request permissions failed". READ_WRITE_USER_FILE is user_grant,
+      // so it also needs a reason and is requested again at runtime.
       {
-        "name": "ohos.permission.READ_WRITE_USER_FILE"
+        "name": "ohos.permission.READ_WRITE_USER_FILE",
+        "reason": "$string:reason_user_file",
+        "usedScene": {
+          "abilities": [
+            "EntryAbility",
+            "EditorAbility"
+          ],
+          "when": "inuse"
+        }
       },
       {
         "name": "ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE"

@@ -25,7 +25,7 @@ OHNativeWindow *window = nullptr;
 int32_t window_id = -1;
 int32_t width = 0, height = 0;
 bool configured = false, requested = false, started = false;
-std::string sdk_executable, sdk_report, bundled_root, cache_directory;
+std::string sdk_executable, sdk_report, bundled_root, cache_directory, missing_dotnet;
 std::vector<std::string> arguments;
 struct SpawnRequest {
 	uint32_t id;
@@ -176,12 +176,16 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	}
 	// The .NET SDK is not shipped with the application: it is resolved from the
 	// oheco package installation so the engine stays decoupled from its version.
+	// A missing SDK is not fatal here: the editor still starts and Godot itself
+	// reports the missing runtime. Reaching the SDK at all requires the two
+	// restricted permissions declared in module.json5.
 	const std::string dotnet = resolve_dotnet_root();
 	if (dotnet.empty()) {
-		const std::string message = "No usable .NET SDK found. Install one with 'oo install dotnet-sdk'; "
-				"the oheco package root is searched by default and GODOT_OHOS_DOTNET_ROOT overrides it.";
-		napi_throw_error(env, nullptr, message.c_str());
-		return nullptr;
+		missing_dotnet = "No usable .NET SDK found under the oheco package root "
+				"(install it with 'oo install dotnet-sdk', and grant "
+				"ohos.permission.READ_WRITE_USER_FILE and "
+				"ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE); "
+				"GODOT_OHOS_DOTNET_ROOT overrides the location.";
 	}
 	if (access((runtime + "/GodotSharp/Api/Debug/GodotSharp.dll").c_str(), F_OK) != 0) {
 		napi_throw_error(env, nullptr, "The packaged GodotSharp assemblies are missing");
@@ -221,8 +225,11 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	set("GODOT_OHOS_DATA_DIR", files);
 	set("GODOT_OHOS_CACHE_DIR", cache);
 	set("GODOT_SHARP_ROOT", runtime + "/GodotSharp");
-	set("DOTNET_ROOT", dotnet);
-	set("DOTNET_ROOT_ARM64", dotnet);
+	if (!dotnet.empty()) {
+		set("DOTNET_ROOT", dotnet);
+		set("DOTNET_ROOT_ARM64", dotnet);
+		set("PATH", dotnet + ":" + (getenv("PATH") ? getenv("PATH") : "/system/bin"));
+	}
 	set("DOTNET_CLI_HOME", files + "/dotnet-cli");
 	set("NUGET_PACKAGES", files + "/nuget");
 	set("GODOT_NUGET_SOURCE", runtime + "/nuget");
@@ -235,11 +242,10 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	set("MSBUILDDISABLENODEREUSE", "1");
 	set("UseSharedCompilation", "false");
 	set("NuGetAudit", "false");
-	set("PATH", dotnet + ":" + (getenv("PATH") ? getenv("PATH") : "/system/bin"));
 	configured = true;
 	bundled_root = dotnet;
 	cache_directory = cache;
-	sdk_executable = dotnet + "/dotnet";
+	sdk_executable = dotnet.empty() ? std::string() : dotnet + "/dotnet";
 	sdk_report = cache + "/godot-dotnet-startup-" + std::to_string(getpid()) + ".log";
 	maybe_start(env);
 	return undefined(env);
@@ -253,6 +259,11 @@ struct RuntimeCheck {
 napi_value check_runtime(napi_env env, napi_callback_info info) {
 	if (!configured || started) {
 		napi_throw_error(env, nullptr, "Configure the runtime before checking the SDK");
+		return nullptr;
+	}
+	if (sdk_executable.empty()) {
+		const std::string message = missing_dotnet.empty() ? "No .NET SDK is available" : missing_dotnet;
+		napi_throw_error(env, nullptr, message.c_str());
 		return nullptr;
 	}
 	auto check = std::make_unique<RuntimeCheck>();

@@ -15,10 +15,16 @@ The .NET SDK is **not** bundled. Install it on the device with
 `godot-diagnostics.log`. Upgrading .NET is therefore an `oo install` away and
 needs no new Godot build.
 
-This requires the restricted permissions `ohos.permission.READ_WRITE_USER_FILE`
-and `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`, which the module requests and
-the signing profile must grant in its ACL list. Without them the platform refuses
-to read or execute anything under the user directory.
+Reaching that directory requires the restricted permissions
+`ohos.permission.READ_WRITE_USER_FILE` (user-grant) and
+`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` (system-grant), which the module
+declares and which are available to 2-in-1 device applications only. Both are
+`system_basic`, so the signing profile needs an AGC-approved ACL before the first
+install succeeds; installing while the ACL is still pending is rejected with
+`grant request permissions failed` (9568289). In the debug phase, signing
+automatically from DevEco submits the application to AGC for you and a
+short-lived temporary profile covers the wait. The editor asks for the user-grant
+permission at startup.
 
 If these generated files are absent, this is the source template. Run
 `platform/openharmony/export-editor-project.py` in the Godot source repository
