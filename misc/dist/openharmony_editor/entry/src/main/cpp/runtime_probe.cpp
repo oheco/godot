@@ -223,6 +223,52 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &cac
 		report += std::string("dlopen(coreclr)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
 	}
 
+	// Reading the runtime and mapping it are separate capabilities: report both,
+	// because a read denial and an execute/mmap denial need different fixes.
+	if (!hostfxr.empty()) {
+		const int runtime_fd = open(hostfxr.c_str(), O_RDONLY | O_CLOEXEC);
+		if (runtime_fd < 0) {
+			report += std::string("read(hostfxr)=failed: ") + strerror(errno) + "\n";
+		} else {
+			unsigned char magic[4] = {};
+			const ssize_t got = read(runtime_fd, magic, sizeof(magic));
+			close(runtime_fd);
+			char text[16] = {};
+			snprintf(text, sizeof(text), "%02x%02x%02x%02x", magic[0], magic[1], magic[2], magic[3]);
+			report += "read(hostfxr)=" + std::to_string(got) + " bytes, magic=" + text + "\n";
+		}
+	}
+
+	// Control: can this security domain exec anything at all?
+	{
+		pid_t child = -1;
+		char option[] = "-c";
+		char command[] = "exit 0";
+		char *args[] = { const_cast<char *>("/system/bin/sh"), option, command, nullptr };
+		const int error = posix_spawn(&child, "/system/bin/sh", nullptr, nullptr, args, environ);
+		if (error != 0) {
+			report += std::string("exec(/system/bin/sh)=failed: ") + strerror(error) + "\n";
+		} else {
+			int status = 0;
+			waitpid(child, &status, 0);
+			report += "exec(/system/bin/sh)=ok exit=" + std::to_string(WIFEXITED(status) ? WEXITSTATUS(status) : -1) + "\n";
+		}
+	}
+
+	// Control: the same library copied into the application's own sandbox, which
+	// separates a location policy from a per-file policy.
+	if (!cache_dir.empty() && !hostfxr.empty()) {
+		const std::string copy = cache_dir + "/libhostfxr-probe.so";
+		std::ifstream source(hostfxr, std::ios::binary);
+		std::ofstream destination(copy, std::ios::binary | std::ios::trunc);
+		destination << source.rdbuf();
+		destination.close();
+		const bool copied = source.good() || source.eof();
+		void *handle = copied ? dlopen(copy.c_str(), RTLD_LAZY | RTLD_LOCAL) : nullptr;
+		report += std::string("dlopen(app-cache copy)=") +
+				(handle != nullptr ? "ok" : (copied ? dlerror() : "copy failed")) + "\n";
+	}
+
 	void *child = dlopen("libchild_process.so", RTLD_LAZY | RTLD_LOCAL);
 	report += std::string("dlopen(libchild_process.so)=") + (child != nullptr ? "ok" : dlerror()) + "\n";
 	if (child != nullptr) {

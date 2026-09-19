@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
-import { describe, fail, initDiagnostics, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { describe, fail, initDiagnostics, logPermissionState, probeEnvironment, readDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -46,6 +46,7 @@ struct Index {
       record(`runtime directory: ${runtime}`);
       setStep('editor:request-permission');
       await requestDotnetAccess(context);
+      logPermissionState();
       setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
       record('--- sandbox probe ---');

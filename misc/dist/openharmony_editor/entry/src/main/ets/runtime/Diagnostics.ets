@@ -2,7 +2,7 @@
 // Records a diagnostic trace the user can read and copy out of the running
 // application. Nothing in this file may throw: failing to record a diagnostic
 // must never replace the original error.
-import { common } from '@kit.AbilityKit';
+import { abilityAccessCtrl, bundleManager, common, Permissions } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 
@@ -103,4 +103,21 @@ export function readDiagnostics(): string {
 
 export function diagnosticsPath(): string {
   return logFile;
+}
+
+// A permission can be listed in the signing profile's ACL and still be denied at
+// runtime, so report what the system actually granted to this application.
+export function logPermissionState(): void {
+  try {
+    const manager = abilityAccessCtrl.createAtManager();
+    const info = bundleManager.getBundleInfoForSelfSync(bundleManager.BundleFlag.GET_BUNDLE_INFO_WITH_APPLICATION);
+    const token: number = info.appInfo.accessTokenId;
+    const names: Permissions[] = ['ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'];
+    for (const name of names) {
+      record(`granted ${name} = ${manager.checkAccessTokenSync(token, name)} (0 means granted)`);
+    }
+    record(`application token=${token} debug=${info.appInfo.debug}`);
+  } catch (error) {
+    record(`permission state check failed: ${describe(error as BusinessError)}`);
+  }
 }
