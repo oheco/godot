@@ -131,23 +131,31 @@ export function readEngineLog(): string {
   return readTail(engineLogFile, 'engine log');
 }
 
-export function readCrashLog(): string {
-  return readTail(crashLogFile, 'crash log');
-}
-
-// True when the last editor process died from a fatal signal. The editor clears
-// the file when it starts, so this describes the most recent start only.
-export function hasCrashLog(): boolean {
+function logHasContent(path: string): boolean {
   try {
-    return crashLogFile.length > 0 && fs.accessSync(crashLogFile) && fs.statSync(crashLogFile).size > 0;
+    return path.length > 0 && fs.accessSync(path) && fs.statSync(path).size > 0;
   } catch (ignored) {
     return false;
   }
 }
 
+// The crash log of the run before the current one is kept beside it, so clicking
+// "打开项目管理器" again after a crash does not destroy the evidence.
+export function readCrashLog(): string {
+  if (crashLogFile.length === 0) { return 'crash log: not initialised yet'; }
+  return `${readTail(`${crashLogFile}.previous`, 'previous run')}\n${readTail(crashLogFile, 'last run')}`;
+}
+
+export function hasCrashLog(): boolean {
+  return logHasContent(crashLogFile) || logHasContent(`${crashLogFile}.previous`);
+}
+
 export function clearCrashLog(): void {
+  if (crashLogFile.length === 0) { return; }
+  const previous = `${crashLogFile}.previous`;
   try {
-    if (crashLogFile.length > 0 && fs.accessSync(crashLogFile)) { fs.unlinkSync(crashLogFile); }
+    if (fs.accessSync(previous)) { fs.unlinkSync(previous); }
+    if (fs.accessSync(crashLogFile)) { fs.renameSync(crashLogFile, previous); }
   } catch (ignored) {
     // Best effort: a stale crash log only adds a hint to the launcher.
   }
