@@ -137,6 +137,19 @@ def main():
             continue
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
+    # The ArkTS tree belongs entirely to the template: drop files the template no
+    # longer has, otherwise a renamed or removed page stays behind in the project
+    # DevEco compiles.
+    arkts = 'entry/src/main/ets'
+    expected = {p.relative_to(template / arkts).as_posix()
+                for p in (template / arkts).rglob('*') if p.is_file()}
+    exported_arkts = args.output / arkts
+    if exported_arkts.is_dir():
+        for path in sorted(exported_arkts.rglob('*'), reverse=True):
+            if path.is_file() and path.relative_to(exported_arkts).as_posix() not in expected:
+                path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
     native = args.output / 'entry/libs/arm64-v8a'
     native.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.library, native / 'libgodot.so')

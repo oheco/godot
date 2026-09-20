@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
-import { clearCrashLog, describe, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { clearCrashLog, describe, fail, hasCrashLog, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -22,6 +22,7 @@ struct Index {
   @State message: string = '正在准备 Godot Editor…';
   @State showLog: boolean = false;
   @State logText: string = '';
+  @State crashed: boolean = false;
   private controller: GodotSurface = new GodotSurface();
   private timer: number = -1;
   private mouseMask: number = 0;
@@ -32,7 +33,11 @@ struct Index {
   private lastClickX: number = 0;
   private lastClickY: number = 0;
 
-  aboutToAppear(): void { this.prepare(); }
+  aboutToAppear(): void {
+    // Read before the engine starts, because starting it rotates the crash log.
+    this.crashed = hasCrashLog();
+    this.prepare();
+  }
   aboutToDisappear(): void {
     if (this.timer !== -1) { clearInterval(this.timer); }
     plugin.destroySurface();
@@ -185,6 +190,10 @@ struct Index {
       } else {
         Column({ space: 16 }) {
           Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
+          if (this.crashed) {
+            Text('上次引擎启动崩溃了，点“显示日志”查看回溯。').fontSize(14).fontColor('#ffb366')
+              .padding({ left: 24, right: 24 }).copyOption(CopyOptions.LocalDevice)
+          }
           Button('显示日志').onClick(() => {
             this.logText = readFullDiagnostics();
             this.showLog = !this.showLog;

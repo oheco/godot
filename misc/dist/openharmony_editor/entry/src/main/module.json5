@@ -2,7 +2,7 @@
   "module": {
     "name": "entry",
     "type": "entry",
-    "mainElement": "EntryAbility",
+    "mainElement": "EditorAbility",
     "deviceTypes": [
       "2in1"
     ],
@@ -26,7 +26,6 @@
         "reason": "$string:reason_user_file",
         "usedScene": {
           "abilities": [
-            "EntryAbility",
             "EditorAbility"
           ],
           "when": "inuse"
@@ -36,17 +35,22 @@
         "name": "ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE"
       }
     ],
+    // EditorAbility is both the application entry and the engine host. A plain
+    // launch (the application icon) opens the project manager; a want that
+    // carries "godotArguments" or a "godotProject" directory opens that project
+    // instead, and every project opened from the project manager runs in its own
+    // process because the ability is multiton.
     "abilities": [
       {
-        "name": "EntryAbility",
-        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "name": "EditorAbility",
+        "srcEntry": "./ets/editorability/EditorAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
         "startWindowIcon": "$media:foreground",
         "startWindowBackground": "$color:start_window_background",
         "exported": true,
-        "launchType": "singleton",
+        "launchType": "multiton",
         "skills": [
           {
             "entities": [
@@ -57,17 +61,6 @@
             ]
           }
         ]
-      },
-      {
-        "name": "EditorAbility",
-        "srcEntry": "./ets/editorability/EditorAbility.ets",
-        "description": "$string:EntryAbility_desc",
-        "icon": "$media:layered_image",
-        "label": "$string:EntryAbility_label",
-        "startWindowIcon": "$media:foreground",
-        "startWindowBackground": "$color:start_window_background",
-        "exported": false,
-        "launchType": "multiton"
       }
     ]
   }

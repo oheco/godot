@@ -1,5 +1,5 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
-import { common } from '@kit.AbilityKit';
+import { common, contextConstant } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import plugin from 'libentry.so';
 import { ensureDirectory, exists } from './FileSystem';
@@ -20,9 +20,16 @@ export async function launchInstance(context: common.UIAbilityContext, request: 
   const key = `${plugin.processId()}-${request}`;
   const response = `${context.cacheDir}/godot-launch/${key}`;
   try {
+    // The engine asked for another Godot instance (opening a project from the
+    // project manager, or restarting itself). EditorAbility is multiton, so this
+    // starts a new ability instance in its own process; the child reports its pid
+    // through the cache directory and the engine waits for it.
     await context.startAbility({
-      bundleName: context.abilityInfo.bundleName, abilityName: 'EntryAbility',
+      bundleName: context.abilityInfo.bundleName, abilityName: 'EditorAbility',
       parameters: { godotArguments: args, godotLaunchKey: key }
+    }, {
+      processMode: contextConstant.ProcessMode.NEW_PROCESS_ATTACH_TO_PARENT,
+      startupVisibility: contextConstant.StartupVisibility.STARTUP_SHOW
     });
     const deadline = Date.now() + 20000;
     while (Date.now() < deadline) {
