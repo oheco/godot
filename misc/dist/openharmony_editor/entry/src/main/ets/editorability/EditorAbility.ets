@@ -7,7 +7,6 @@ import window from '@ohos.window';
 import plugin from 'libentry.so';
 import { initDiagnostics, record } from '../runtime/Diagnostics';
 import { launchInstance, reportStarted } from '../runtime/Launch';
-import { rememberWindowStage } from '../runtime/Window';
 
 export default class EditorAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -33,7 +32,6 @@ export default class EditorAbility extends UIAbility {
   }
   onWindowStageCreate(stage: window.WindowStage): void {
     record('ability onWindowStageCreate');
-    rememberWindowStage(stage);
     AppStorage.setOrCreate('godotWindowId', stage.getMainWindowSync().getWindowProperties().id);
     stage.on('windowStageEvent', (event: window.WindowStageEventType) => plugin.sendWindowEvent(event));
     stage.loadContent('pages/Index');

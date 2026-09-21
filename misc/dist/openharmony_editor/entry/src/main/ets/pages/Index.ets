@@ -7,7 +7,6 @@ import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 import { childHasExited, reportExit, spawnedChildPid } from '../runtime/Launch';
-import { hideWindow, showWindow } from '../runtime/Window';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -29,7 +28,7 @@ struct Index {
   private timer: number = -1;
   private crashTime: number = 0;
   private spawnedPid: number = 0;
-  private hidden: boolean = false;
+  private childRunning: boolean = false;
   private mouseMask: number = 0;
   private metaPressed: boolean = false;
   private pressedKeys: Set<number> = new Set<number>();
@@ -100,19 +99,20 @@ struct Index {
           this.message = '编辑器进程崩溃了';
           this.logText = readFullDiagnostics();
           this.showLog = true;
-          showWindow();
         }
         if (state === 3) {
           // The engine is gone. A process started with
-          // NEW_PROCESS_ATTACH_TO_PARENT is cleaned up together with this
-          // process, so while such a child runs, keep this one alive without a
-          // window instead of terminating the ability.
+          // NEW_PROCESS_ATTACH_TO_PARENT exits together with the process that
+          // started it, so while such a child runs this window has to stay open -
+          // the window is what keeps the ability, and therefore the process,
+          // alive. EditorAbility cannot hide it: Window.hide() is a system API.
           this.spawnedPid = spawnedChildPid();
-          if (this.spawnedPid > 0 && !this.hidden && !childHasExited(context, this.spawnedPid)) {
-            this.hidden = true;
-            record(`engine exited; staying alive as the parent of pid ${this.spawnedPid}`);
-            hideWindow();
-          } else if (this.hidden) {
+          if (this.spawnedPid > 0 && !this.childRunning && !childHasExited(context, this.spawnedPid)) {
+            this.childRunning = true;
+            this.ready = false;
+            this.message = '编辑器已在新窗口打开；本窗口保持打开以维持它的进程。';
+            record(`engine exited; holding the process for pid ${this.spawnedPid}`);
+          } else if (this.childRunning) {
             if (childHasExited(context, this.spawnedPid)) { context.terminateSelf(); }
           } else {
             reportExit(context);
