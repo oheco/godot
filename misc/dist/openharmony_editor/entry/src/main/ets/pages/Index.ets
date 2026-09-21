@@ -5,7 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
-import { clearCrashLog, describe, fail, hasCrashLog, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -25,6 +25,7 @@ struct Index {
   @State crashed: boolean = false;
   private controller: GodotSurface = new GodotSurface();
   private timer: number = -1;
+  private crashTime: number = 0;
   private mouseMask: number = 0;
   private metaPressed: boolean = false;
   private pressedKeys: Set<number> = new Set<number>();
@@ -34,8 +35,8 @@ struct Index {
   private lastClickY: number = 0;
 
   aboutToAppear(): void {
-    // Read before the engine starts, because starting it rotates the crash log.
-    this.crashed = hasCrashLog();
+    // Remembered so a crash log written later by another process is noticed.
+    this.crashTime = crashLogTime();
     this.prepare();
   }
   aboutToDisappear(): void {
@@ -70,16 +71,13 @@ struct Index {
         record(`dotnet --version check failed, continuing: ${describe(error as BusinessError)}`);
       }
       setStep('editor:start-engine');
-      // A crash log from an earlier start must not hide a clean one.
-      clearCrashLog();
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       const args = AppStorage.get<string[]>('godotArguments') ?? ['--project-manager'];
-      // The engine writes its own output into application storage and --verbose
-      // records how far startup reached. Both are temporary while engine startup
-      // is still being stabilised on OpenHarmony.
+      // Every process logs to its own file, so a crashed editor keeps its own
+      // trace and does not overwrite the log of the process that started it.
       const engineArgs = ['--single-window', '--rendering-driver', 'vulkan', '--verbose',
-        '--log-file', `${context.filesDir}/godot-engine.log`, ...args];
+        '--log-file', engineLogPath(plugin.processId()), ...args];
       record(`godot command line: ${engineArgs.join(' ')}`);
       plugin.setup(engineArgs);
       record('engine thread started');
@@ -87,6 +85,9 @@ struct Index {
       this.timer = setInterval(() => {
         const state: number = plugin.state();
         if (state < 0) { this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`; this.ready = false; }
+        // A sibling process (the editor opened from this project manager) writes
+        // its own crash log; this process stays alive and reports it.
+        if (!this.crashed && crashLogTime() > this.crashTime) { this.crashed = true; }
         if (state === 3) { context.terminateSelf(); }
       }, 250);
     } catch (error) {
@@ -166,7 +167,7 @@ struct Index {
     plugin.inputKey(input); return true;
   }
   build() {
-    Stack() {
+    Stack({ alignContent: Alignment.TopStart }) {
       if (this.ready) {
         XComponent({ id: 'godot', type: XComponentType.SURFACE, controller: this.controller })
           .width('100%').height('100%')
@@ -206,6 +207,33 @@ struct Index {
           }
         }.width('100%').height('100%').padding(12)
       }
+      // Kept over the engine surface as well: the project manager stays alive
+      // while the editor it started runs, so this is the only place that can
+      // still show the editor's log after the editor process died.
+      Column() {
+        Row({ space: 8 }) {
+          Button(this.showLog ? '关闭日志' : '日志').fontSize(12).height(30)
+            .backgroundColor('#99000000').fontColor('#dddddd')
+            .onClick(() => {
+              this.logText = readFullDiagnostics();
+              this.showLog = !this.showLog;
+            })
+          if (this.crashed) {
+            Text('另一个 Godot 进程崩溃了，日志里有回溯').fontSize(12).fontColor('#ffb366')
+              .copyOption(CopyOptions.LocalDevice)
+          }
+        }
+        if (this.showLog) {
+          Scroll() {
+            Text(this.logText).fontSize(11).fontColor('#cccccc').textAlign(TextAlign.Start)
+              .copyOption(CopyOptions.LocalDevice).width('100%')
+          }.layoutWeight(1).width('100%').padding(8).backgroundColor('#ee111111')
+        }
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width(this.showLog ? '100%' : 'auto')
+      .height(this.showLog ? '100%' : 'auto')
+      .padding(6)
     }.width('100%').height('100%').backgroundColor('#242424')
   }
 }

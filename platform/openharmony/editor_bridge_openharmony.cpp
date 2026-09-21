@@ -18,6 +18,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -61,9 +62,24 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 	// happen on this single thread; VSync callbacks only wake it.
 	OS_OpenHarmony os;
 	OS_OpenHarmony::EXEC_PATH = "godot-editor";
-	// A crash here kills the whole editor process, and the launcher that started
-	// it stays alive: leave the backtrace where the application can read it.
-	ohos_crash_handler_install((os.get_data_path() + "/godot-crash.log").utf8().get_data());
+	// A crash in this process kills the whole editor, and the process that
+	// started it stays alive: leave the backtrace where the application can read
+	// it, next to the engine log and named after this process.
+	std::string crash_log;
+	for (size_t i = 0; i + 1 < arguments.size(); i++) {
+		if (arguments[i] == "--log-file") {
+			const std::string &engine_log = arguments[i + 1];
+			const size_t slash = engine_log.find_last_of('/');
+			if (slash != std::string::npos) {
+				crash_log = engine_log.substr(0, slash + 1) + "godot-" + std::to_string(getpid()) + "-crash.log";
+			}
+			break;
+		}
+	}
+	if (crash_log.empty()) {
+		crash_log = (os.get_data_path() + "/godot-crash.log").utf8().get_data();
+	}
+	ohos_crash_handler_install(crash_log.c_str());
 	FileAccessOpenHarmony::setup(resources);
 	DirAccessOpenHarmony::setup(resources);
 	os.set_native_window(static_cast<OHNativeWindow *>(window));
