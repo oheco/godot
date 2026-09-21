@@ -6,6 +6,8 @@ import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
+import { childHasExited, reportExit, spawnedChildPid } from '../runtime/Launch';
+import { hideWindow, showWindow } from '../runtime/Window';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -26,6 +28,8 @@ struct Index {
   private controller: GodotSurface = new GodotSurface();
   private timer: number = -1;
   private crashTime: number = 0;
+  private spawnedPid: number = 0;
+  private hidden: boolean = false;
   private mouseMask: number = 0;
   private metaPressed: boolean = false;
   private pressedKeys: Set<number> = new Set<number>();
@@ -74,9 +78,12 @@ struct Index {
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       const args = AppStorage.get<string[]>('godotArguments') ?? ['--project-manager'];
-      // Every process logs to its own file, so a crashed editor keeps its own
-      // trace and does not overwrite the log of the process that started it.
-      const engineArgs = ['--single-window', '--rendering-driver', 'vulkan', '--verbose',
+      // The engine forwards its own copies of these flags when it asks for a new
+      // instance, so only add the ones it did not provide. Every process logs to
+      // its own file, so a crashed editor keeps its own trace and does not
+      // overwrite the log of the process that started it.
+      const defaults = ['--single-window', '--rendering-driver', 'vulkan', '--verbose'];
+      const engineArgs = [...defaults.filter((flag: string) => !args.includes(flag)),
         '--log-file', engineLogPath(plugin.processId()), ...args];
       record(`godot command line: ${engineArgs.join(' ')}`);
       plugin.setup(engineArgs);
@@ -85,10 +92,33 @@ struct Index {
       this.timer = setInterval(() => {
         const state: number = plugin.state();
         if (state < 0) { this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`; this.ready = false; }
-        // A sibling process (the editor opened from this project manager) writes
-        // its own crash log; this process stays alive and reports it.
-        if (!this.crashed && crashLogTime() > this.crashTime) { this.crashed = true; }
-        if (state === 3) { context.terminateSelf(); }
+        // A process this one started died from a fatal signal: come back with its
+        // log, which is the only place that records why it died.
+        if (!this.crashed && crashLogTime() > this.crashTime) {
+          this.crashed = true;
+          this.ready = false;
+          this.message = '编辑器进程崩溃了';
+          this.logText = readFullDiagnostics();
+          this.showLog = true;
+          showWindow();
+        }
+        if (state === 3) {
+          // The engine is gone. A process started with
+          // NEW_PROCESS_ATTACH_TO_PARENT is cleaned up together with this
+          // process, so while such a child runs, keep this one alive without a
+          // window instead of terminating the ability.
+          this.spawnedPid = spawnedChildPid();
+          if (this.spawnedPid > 0 && !this.hidden && !childHasExited(context, this.spawnedPid)) {
+            this.hidden = true;
+            record(`engine exited; staying alive as the parent of pid ${this.spawnedPid}`);
+            hideWindow();
+          } else if (this.hidden) {
+            if (childHasExited(context, this.spawnedPid)) { context.terminateSelf(); }
+          } else {
+            reportExit(context);
+            context.terminateSelf();
+          }
+        }
       }, 250);
     } catch (error) {
       const cause = error as BusinessError;

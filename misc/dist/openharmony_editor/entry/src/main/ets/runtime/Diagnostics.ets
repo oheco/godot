@@ -159,7 +159,9 @@ function readTail(path: string, label: string): string {
   }
 }
 
-function newestLog(kind: string): string {
+// Every engine process creates its crash file when it starts, so only a file
+// with content means that a process actually died from a fatal signal.
+function newestLog(kind: string, contentOnly: boolean = false): string {
   try {
     if (directory.length === 0) { return ''; }
     const suffix = `-${kind}.log`;
@@ -168,8 +170,9 @@ function newestLog(kind: string): string {
     for (const name of fs.listFileSync(directory)) {
       if (!name.startsWith('godot-') || !name.endsWith(suffix)) { continue; }
       const path = `${directory}/${name}`;
-      const time: number = fs.statSync(path).mtime;
-      if (time > newestTime) { newestTime = time; newest = path; }
+      const info = fs.statSync(path);
+      if (contentOnly && info.size === 0) { continue; }
+      if (info.mtime > newestTime) { newestTime = info.mtime; newest = path; }
     }
     return newest;
   } catch (ignored) {
@@ -184,7 +187,7 @@ export function readEngineLog(): string {
 }
 
 export function readCrashLog(): string {
-  const newest = newestLog('crash');
+  const newest = newestLog('crash', true);
   if (newest.length === 0) { return 'crash log: nothing recorded yet'; }
   return `--- ${newest} ---\n${readTail(newest, 'crash log')}`;
 }
@@ -193,7 +196,7 @@ export function readCrashLog(): string {
 // compare it with a value taken earlier to notice a crash that happened after
 // they started, which is how a still running process reports a dead one.
 export function crashLogTime(): number {
-  const newest = newestLog('crash');
+  const newest = newestLog('crash', true);
   if (newest.length === 0) { return 0; }
   try {
     return fs.statSync(newest).mtime;
