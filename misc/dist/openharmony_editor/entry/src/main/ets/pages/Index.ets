@@ -81,7 +81,7 @@ struct Index {
       // instance, so only add the ones it did not provide. Every process logs to
       // its own file, so a crashed editor keeps its own trace and does not
       // overwrite the log of the process that started it.
-      const defaults = ['--single-window', '--rendering-driver', 'vulkan', '--verbose'];
+      const defaults = ['--single-window', '--rendering-driver', 'vulkan'];
       const engineArgs = [...defaults.filter((flag: string) => !args.includes(flag)),
         '--log-file', engineLogPath(plugin.processId()), ...args];
       record(`godot command line: ${engineArgs.join(' ')}`);

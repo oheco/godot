@@ -210,13 +210,12 @@ napi_value configure(napi_env env, napi_callback_info info) {
 			closedir(entries);
 			add_independent_library_directory(directory);
 		}
-		// Write-xor-execute maps every executable page twice (a writable view and
-		// an executable view of the same pages) through a shared memory object.
-		// Inside this sandbox the second view does not come out mapped, and the
-		// runtime faults while copying the GC write barrier into it, so run with
-		// plain readable/writable/executable pages like the runtime did before
-		// .NET 7.
-		setenv("DOTNET_EnableWriteXorExecute", "0", 1);
+		// The runtime keeps its default write-xor-execute mode: it maps a shared
+		// memory object once for execution and once for writing, and
+		// ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY is what allows the
+		// executable mapping. If that mapping is ever refused again, setting
+		// DOTNET_EnableWriteXorExecute=0 makes the runtime commit plain
+		// read/write/execute pages instead.
 	}
 	if (access((runtime + "/GodotSharp/Api/Debug/GodotSharp.dll").c_str(), F_OK) != 0) {
 		napi_throw_error(env, nullptr, "The packaged GodotSharp assemblies are missing");
