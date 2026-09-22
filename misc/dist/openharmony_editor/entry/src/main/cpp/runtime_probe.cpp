@@ -352,6 +352,25 @@ static std::string probe_executable_memory() {
 	if (shared_rw != MAP_FAILED) {
 		munmap(shared_rw, page);
 	}
+
+	// What the runtime actually does: reserve the shared object as PROT_NONE and
+	// make it executable with mprotect. That mprotect is the step the writable
+	// code memory permission gates, so it can succeed where a direct executable
+	// mapping of the same object is refused.
+	errno = 0;
+	void *shared_none = mmap(nullptr, page, PROT_NONE, MAP_SHARED, fd, 0);
+	report += outcome("mmap(shared none)", shared_none);
+	if (shared_none != MAP_FAILED) {
+		errno = 0;
+		const int writable = mprotect(shared_none, page, PROT_READ | PROT_WRITE);
+		report += writable == 0 ? std::string("mprotect(shared rw)=ok\n")
+								: std::string("mprotect(shared rw)=failed: ") + strerror(errno) + " (" + std::to_string(errno) + ")\n";
+		errno = 0;
+		const int executable = mprotect(shared_none, page, PROT_READ | PROT_EXEC);
+		report += executable == 0 ? std::string("mprotect(shared rx)=ok\n")
+								  : std::string("mprotect(shared rx)=failed: ") + strerror(errno) + " (" + std::to_string(errno) + ")\n";
+		munmap(shared_none, page);
+	}
 	close(fd);
 	return report;
 }

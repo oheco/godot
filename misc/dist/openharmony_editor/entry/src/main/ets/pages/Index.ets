@@ -197,7 +197,7 @@ struct Index {
     plugin.inputKey(input); return true;
   }
   build() {
-    Stack({ alignContent: Alignment.TopStart }) {
+    Stack() {
       if (this.ready) {
         XComponent({ id: 'godot', type: XComponentType.SURFACE, controller: this.controller })
           .width('100%').height('100%')
@@ -237,33 +237,6 @@ struct Index {
           }
         }.width('100%').height('100%').padding(12)
       }
-      // Kept over the engine surface as well: the project manager stays alive
-      // while the editor it started runs, so this is the only place that can
-      // still show the editor's log after the editor process died.
-      Column() {
-        Row({ space: 8 }) {
-          Button(this.showLog ? '关闭日志' : '日志').fontSize(12).height(30)
-            .backgroundColor('#99000000').fontColor('#dddddd')
-            .onClick(() => {
-              this.logText = readFullDiagnostics();
-              this.showLog = !this.showLog;
-            })
-          if (this.crashed) {
-            Text('另一个 Godot 进程崩溃了，日志里有回溯').fontSize(12).fontColor('#ffb366')
-              .copyOption(CopyOptions.LocalDevice)
-          }
-        }
-        if (this.showLog) {
-          Scroll() {
-            Text(this.logText).fontSize(11).fontColor('#cccccc').textAlign(TextAlign.Start)
-              .copyOption(CopyOptions.LocalDevice).width('100%')
-          }.layoutWeight(1).width('100%').padding(8).backgroundColor('#ee111111')
-        }
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width(this.showLog ? '100%' : 'auto')
-      .height(this.showLog ? '100%' : 'auto')
-      .padding(6)
     }.width('100%').height('100%').backgroundColor('#242424')
   }
 }

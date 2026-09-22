@@ -205,7 +205,10 @@ napi_value configure(napi_env env, napi_callback_info info) {
 					continue;
 				}
 				const std::string versioned = directory + "/" + entry->d_name;
-				add_independent_library_directory(versioned);
+				struct stat info {};
+				if (stat(versioned.c_str(), &info) == 0 && S_ISDIR(info.st_mode)) {
+					add_independent_library_directory(versioned);
+				}
 			}
 			closedir(entries);
 			add_independent_library_directory(directory);
