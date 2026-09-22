@@ -63,6 +63,14 @@ struct Index {
       for (const line of probeLines) {
         if (line.length > 0) { record(line); }
       }
+      // The engine loads the .NET runtime from the package directory, but starting
+      // a process there is a separate kernel decision: this is where the answer is
+      // recorded, together with the errno the platform returned.
+      record('--- dotnet exec test ---');
+      const execLines: string[] = plugin.probeDotnetExec().split('\n');
+      for (const line of execLines) {
+        if (line.length > 0) { record(line); }
+      }
       setStep('editor:check-dotnet');
       this.message = '正在检查 .NET SDK…';
       // Running the bundled CLI from application data is denied on this platform,

@@ -178,7 +178,9 @@ def main():
         for name, comment in restricted:
             if name in text:
                 continue
-            text = text.replace(anchor, f'\n      // Restricted (ACL): {comment}\n      {{ "name": "{name}" }},' + anchor, 1)
+            # The entries belong inside the array, and the anchor is the line that
+            # opens it, so the replacement keeps the anchor first.
+            text = text.replace(anchor, anchor + f'\n      // Restricted (ACL): {comment}\n      {{ "name": "{name}" }},', 1)
             declared.append(name)
         if declared:
             module.write_text(text)

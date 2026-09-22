@@ -540,6 +540,16 @@ napi_value sandbox_probe(napi_env env, napi_callback_info info) {
 	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
 	return result;
 }
+napi_value dotnet_exec_probe(napi_env env, napi_callback_info info) {
+	if (!configured) {
+		napi_throw_error(env, nullptr, "Configure the runtime before testing dotnet");
+		return nullptr;
+	}
+	const std::string report = probe_dotnet_exec(bundled_root, files_directory, cache_directory);
+	napi_value result;
+	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
+	return result;
+}
 napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
@@ -547,6 +557,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
 		METHOD("probeSandbox", sandbox_probe),
+		METHOD("probeDotnetExec", dotnet_exec_probe),
 		METHOD("configure", configure),
 		METHOD("checkRuntime", check_runtime),
 		METHOD("setResourceManager", set_resources),

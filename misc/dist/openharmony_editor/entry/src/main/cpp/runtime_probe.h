@@ -13,6 +13,12 @@ std::string check_dotnet_sdk(const std::string &executable, const std::string &r
 // diagnostic for the exec restriction on application data files.
 std::string probe_sandbox(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir);
 
+// Runs the "dotnet" command line every way the sandbox could plausibly allow
+// and reports which one, if any, actually starts. Loading the runtime library
+// and starting a process are different kernel decisions, so this is the test
+// that answers whether the editor can run the .NET CLI at all.
+std::string probe_dotnet_exec(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir);
+
 // Resolves the .NET SDK to run: by default the one installed by the oheco
 // package manager, so the engine does not ship a copy and stays decoupled from
 // its version. GODOT_OHOS_DOTNET_ROOT overrides it for testing. Returns an empty

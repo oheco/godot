@@ -27,3 +27,6 @@ export const setLauncher: (callback: (requestId: number, args: string[]) => void
 export const spawnResult: (requestId: number, pid: number) => void;
 export const processId: () => number;
 export const probeSandbox: () => string;
+// Runs the dotnet command line every way the sandbox could allow and
+// returns which one, if any, started, with the errno of the refusal.
+export const probeDotnetExec: () => string;

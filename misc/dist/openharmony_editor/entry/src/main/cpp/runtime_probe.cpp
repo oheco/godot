@@ -375,6 +375,237 @@ static std::string probe_executable_memory() {
 	return report;
 }
 
+namespace {
+struct ExecOutcome {
+	bool spawned = false;
+	int status = -1;
+	int error = 0;
+	std::string output;
+};
+
+std::string read_output(const std::string &path) {
+	std::ifstream captured(path);
+	std::string text((std::istreambuf_iterator<char>(captured)), std::istreambuf_iterator<char>());
+	const size_t limit = 1024;
+	if (text.size() > limit) {
+		text = text.substr(0, limit) + "... (truncated)\n";
+	}
+	return text;
+}
+
+// posix_spawn is what the engine and the .NET tooling use. When it refuses, the
+// errno it returns is the platform's answer, so keep it.
+ExecOutcome spawn_attempt(const std::string &program, bool search_path, const std::vector<std::string> &arguments,
+		const std::string &output_path, int timeout_seconds) {
+	ExecOutcome outcome;
+	const int output = open(output_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (output < 0) {
+		outcome.output = std::string("cannot create the output file: ") + strerror(errno);
+		return outcome;
+	}
+	posix_spawn_file_actions_t actions;
+	posix_spawn_file_actions_init(&actions);
+	posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+	posix_spawn_file_actions_adddup2(&actions, output, STDOUT_FILENO);
+	posix_spawn_file_actions_adddup2(&actions, output, STDERR_FILENO);
+	std::vector<char *> argv;
+	argv.push_back(const_cast<char *>(program.c_str()));
+	for (const std::string &argument : arguments) {
+		argv.push_back(const_cast<char *>(argument.c_str()));
+	}
+	argv.push_back(nullptr);
+	pid_t child = -1;
+	const int error = search_path ? posix_spawnp(&child, program.c_str(), &actions, nullptr, argv.data(), environ)
+								  : posix_spawn(&child, program.c_str(), &actions, nullptr, argv.data(), environ);
+	posix_spawn_file_actions_destroy(&actions);
+	outcome.error = error;
+	if (error != 0) {
+		dprintf(output, "spawn_errno=%d (%s)\n", error, strerror(error));
+	} else {
+		outcome.spawned = true;
+		int status = 0;
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+		for (;;) {
+			const pid_t result = waitpid(child, &status, WNOHANG);
+			if (result == child) {
+				outcome.status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+				break;
+			}
+			if (result < 0 && errno != EINTR) {
+				break;
+			}
+			if (std::chrono::steady_clock::now() >= deadline) {
+				kill(child, SIGKILL);
+				while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+				}
+				outcome.status = -2;
+				break;
+			}
+			std::this_thread::sleep_for(std::chrono::milliseconds(50));
+		}
+	}
+	close(output);
+	outcome.output = read_output(output_path);
+	return outcome;
+}
+
+// fork plus execv is the other way to start a process, and the one the native
+// package documentation uses, so the report separates "this API is refused" from
+// "the policy refuses this file". The child reports its own errno, which the
+// parent cannot see through the exit status.
+ExecOutcome forked_attempt(const std::string &program, const std::vector<std::string> &arguments,
+		const std::string &output_path, int timeout_seconds) {
+	ExecOutcome outcome;
+	const int output = open(output_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+	if (output < 0) {
+		outcome.output = std::string("cannot create the output file: ") + strerror(errno);
+		return outcome;
+	}
+	const pid_t child = fork();
+	if (child < 0) {
+		outcome.error = errno;
+		close(output);
+		return outcome;
+	}
+	if (child == 0) {
+		dup2(output, STDOUT_FILENO);
+		dup2(output, STDERR_FILENO);
+		std::vector<char *> argv;
+		argv.push_back(const_cast<char *>(program.c_str()));
+		for (const std::string &argument : arguments) {
+			argv.push_back(const_cast<char *>(argument.c_str()));
+		}
+		argv.push_back(nullptr);
+		execv(program.c_str(), argv.data());
+		dprintf(STDERR_FILENO, "execv_errno=%d (%s)\n", errno, strerror(errno));
+		_exit(127);
+	}
+	outcome.spawned = true;
+	int status = 0;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
+	for (;;) {
+		const pid_t result = waitpid(child, &status, WNOHANG);
+		if (result == child) {
+			outcome.status = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+			break;
+		}
+		if (result < 0 && errno != EINTR) {
+			break;
+		}
+		if (std::chrono::steady_clock::now() >= deadline) {
+			kill(child, SIGKILL);
+			while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+			}
+			outcome.status = -2;
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	}
+	close(output);
+	outcome.output = read_output(output_path);
+	return outcome;
+}
+
+std::string report_attempt(const std::string &label, const ExecOutcome &outcome) {
+	std::string line = "dotnet_exec(" + label + ")=";
+	if (outcome.spawned) {
+		line += "started exit=" + std::to_string(outcome.status);
+	} else {
+		line += "refused errno=" + std::to_string(outcome.error) + " (" + strerror(outcome.error) + ")";
+	}
+	return line + "\n" + outcome.output;
+}
+
+std::string stat_line(const std::string &path) {
+	struct stat info {};
+	if (stat(path.c_str(), &info) != 0) {
+		return path + " -> stat failed: " + strerror(errno) + "\n";
+	}
+	return path + " -> mode=" + std::to_string(info.st_mode & 07777) + " uid=" + std::to_string(info.st_uid) +
+			" size=" + std::to_string(info.st_size) + "\n";
+}
+} // namespace
+
+// The test the editor needs: can this application start the "dotnet" command at
+// all? Every path is tried, and the answer is written next to the other
+// diagnostics so the result survives the process.
+std::string probe_dotnet_exec(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir) {
+	std::string report;
+	std::ifstream attributes("/proc/self/attr/current");
+	std::string domain;
+	std::getline(attributes, domain);
+	report += "security_domain=" + domain + "\n";
+	report += "uid=" + std::to_string(getuid()) + "\n";
+	report += std::string("PATH=") + (getenv("PATH") != nullptr ? getenv("PATH") : "<unset>") + "\n";
+	report += std::string("DOTNET_ROOT=") + (getenv("DOTNET_ROOT") != nullptr ? getenv("DOTNET_ROOT") : "<unset>") + "\n";
+	const std::string muxer = dotnet_root + "/dotnet";
+	report += stat_line(muxer);
+	report += std::string("access(") + muxer + ", X_OK)=" +
+			(access(muxer.c_str(), X_OK) == 0 ? "ok" : strerror(errno)) + "\n";
+
+	const std::string output_path = cache_dir + "/godot-dotnet-exec-" + std::to_string(getpid()) + ".log";
+	bool passed = false;
+	std::string winner;
+	int refusal = 0;
+
+	// The exact call the C# tooling makes: the command from PATH, which is how
+	// MSBuildLocator looks for an SDK. A failure here is what the editor reports
+	// as ".NET Sdk not found".
+	const ExecOutcome by_name = spawn_attempt("dotnet", true, { "--list-sdks" }, output_path, 20);
+	report += report_attempt("PATH dotnet --list-sdks", by_name);
+	refusal = by_name.error;
+	passed = by_name.spawned && by_name.status == 0;
+	if (passed) {
+		winner = "PATH dotnet --list-sdks";
+	}
+
+	if (!passed) {
+		const ExecOutcome absolute = spawn_attempt(muxer, false, { "--version" }, output_path, 20);
+		report += report_attempt(muxer + " --version", absolute);
+		if (absolute.error != 0) {
+			refusal = absolute.error;
+		}
+		passed = absolute.spawned && absolute.status == 0;
+		if (passed) {
+			winner = muxer + " --version";
+		}
+	}
+	if (!passed) {
+		const ExecOutcome forked = forked_attempt(muxer, { "--version" }, output_path, 20);
+		report += report_attempt("fork+execv " + muxer + " --version", forked);
+		passed = forked.spawned && forked.status == 0;
+		if (passed) {
+			winner = "fork+execv " + muxer;
+		}
+	}
+	// A copy signed with a debug certificate, placed next to the SDK host, is the
+	// one variable this test needs to tell a signature refusal from a location
+	// refusal: the same command started the same way, only the signature differs.
+	const std::string debug_copy = dotnet_root + "/dotnet.debug";
+	if (!passed && access(debug_copy.c_str(), F_OK) == 0) {
+		report += stat_line(debug_copy);
+		const ExecOutcome signed_copy = spawn_attempt(debug_copy, false, { "--version" }, output_path, 20);
+		report += report_attempt(debug_copy + " --version", signed_copy);
+		passed = signed_copy.spawned && signed_copy.status == 0;
+		if (passed) {
+			winner = debug_copy;
+		}
+	}
+	// The shell itself starts, so an exit status here says whether the shell could
+	// start dotnet: 126 is the shell reporting that it could not.
+	const ExecOutcome through_shell = spawn_attempt("/system/bin/sh", false, { "-c", muxer + " --version" }, output_path, 20);
+	report += report_attempt("/system/bin/sh -c 'dotnet --version'", through_shell);
+
+	(void)files_dir;
+	if (passed) {
+		report += "dotnet_exec=PASS via " + winner + "\n";
+	} else {
+		report += "dotnet_exec=FAIL: the sandbox refuses to start " + muxer + " (errno " +
+				std::to_string(refusal) + " " + strerror(refusal) + ")\n";
+	}
+	return report;
+}
+
 std::string probe_sandbox(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir) {
 	std::string report;
 	std::ifstream attributes("/proc/self/attr/current");
