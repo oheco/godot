@@ -18,3 +18,12 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &fil
 // its version. GODOT_OHOS_DOTNET_ROOT overrides it for testing. Returns an empty
 // string when no usable installation is present.
 std::string resolve_dotnet_root();
+
+// HarmonyOS loads a plugin only from a directory that the process registered with
+// the linker, and the registration only takes effect once the restricted
+// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission is granted. Returns a
+// one line report of what the linker answered, for the diagnostic trace.
+std::string add_independent_library_directory(const std::string &directory);
+
+// Every directory registered so far, one line each, in registration order.
+std::string plugin_directory_report();

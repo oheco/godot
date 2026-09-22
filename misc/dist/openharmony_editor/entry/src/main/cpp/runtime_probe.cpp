@@ -250,6 +250,40 @@ std::string try_exec(const char *label, const std::string &path, const std::vect
 }
 } // namespace
 
+// Directories registered with the linker, so the diagnostic trace shows whether
+// the registration happened before the runtime is loaded.
+static std::string g_plugin_directory_report;
+
+std::string add_independent_library_directory(const std::string &directory) {
+	if (directory.empty()) {
+		return "plugin_path=<none>\n";
+	}
+	void *libc = dlopen("libc.so", RTLD_LAZY);
+	if (libc == nullptr) {
+		g_plugin_directory_report += std::string("plugin_path(") + directory + ")=libc.so open failed\n";
+		return std::string("plugin_path(") + directory + ")=libc.so open failed: " + dlerror() + "\n";
+	}
+	std::string report;
+	typedef int (*AddPluginPathFunc)(char *);
+	AddPluginPathFunc add_path =
+			reinterpret_cast<AddPluginPathFunc>(dlsym(libc, "dlns_add_plugin_default_ld_dictionary"));
+	if (add_path == nullptr) {
+		report = std::string("plugin_path(") + directory + ")=symbol not found\n";
+	} else {
+		// The linker stores the pointer, so the buffer has to stay writable.
+		std::string mutable_directory = directory;
+		const int result = add_path(mutable_directory.data());
+		report = std::string("plugin_path(") + directory + ")=result " + std::to_string(result) + "\n";
+	}
+	g_plugin_directory_report += report;
+	dlclose(libc);
+	return report;
+}
+
+std::string plugin_directory_report() {
+	return g_plugin_directory_report;
+}
+
 std::string probe_sandbox(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir) {
 	std::string report;
 	std::ifstream attributes("/proc/self/attr/current");
@@ -257,12 +291,17 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &fil
 	std::getline(attributes, domain);
 	report += "security_domain=" + domain + "\n";
 	report += "dotnet_root=" + (dotnet_root.empty() ? std::string("<none>") : dotnet_root) + "\n";
+	report += plugin_directory_report();
 	report += std::string("dotnet_executable=") +
 			(access((dotnet_root + "/dotnet").c_str(), F_OK) == 0 ? "present" : "missing") + "\n";
 
 	const std::string hostfxr = versioned_entry(dotnet_root + "/host/fxr", "/libhostfxr.so");
 	report += "hostfxr=" + (hostfxr.empty() ? std::string("<missing>") : hostfxr) + "\n";
 	if (!hostfxr.empty()) {
+		// A library outside the bundle can only be loaded after its directory has
+		// been registered with the linker, and the registration needs the
+		// restricted ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission.
+		report += add_independent_library_directory(hostfxr.substr(0, hostfxr.find_last_of('/')));
 		void *handle = dlopen(hostfxr.c_str(), RTLD_LAZY | RTLD_LOCAL);
 		report += std::string("dlopen(hostfxr)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
 		if (handle != nullptr) {
@@ -274,6 +313,9 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &fil
 	const std::string coreclr = versioned_entry(dotnet_root + "/shared/Microsoft.NETCore.App", "/libcoreclr.so");
 	report += "coreclr=" + (coreclr.empty() ? std::string("<missing>") : coreclr) + "\n";
 	if (!coreclr.empty()) {
+		// The .NET host loads the rest of the runtime itself, so the directory has
+		// to be registered even though this process never opens it by name.
+		report += add_independent_library_directory(coreclr.substr(0, coreclr.find_last_of('/')));
 		void *handle = dlopen(coreclr.c_str(), RTLD_LAZY | RTLD_LOCAL);
 		report += std::string("dlopen(coreclr)=") + (handle != nullptr ? "ok" : dlerror()) + "\n";
 	}

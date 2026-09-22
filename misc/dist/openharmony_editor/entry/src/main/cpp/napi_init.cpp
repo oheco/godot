@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <dirent.h>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -186,6 +187,29 @@ napi_value configure(napi_env env, napi_callback_info info) {
 				"ohos.permission.READ_WRITE_USER_FILE and "
 				"ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE); "
 				"GODOT_OHOS_DOTNET_ROOT overrides the location.";
+	} else {
+		// HarmonyOS loads a library outside the application bundle only from a
+		// directory registered with the linker, and the restricted
+		// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission is what makes
+		// the registration effective. Register the runtime directories now: the
+		// .NET host loads the rest of the runtime itself, without going through
+		// the paths this application opens by name.
+		for (const auto &subdirectory : { "/host/fxr", "/shared/Microsoft.NETCore.App", "/shared/Microsoft.AspNetCore.App", "" }) {
+			const std::string directory = dotnet + subdirectory;
+			DIR *entries = opendir(directory.c_str());
+			if (entries == nullptr) {
+				continue;
+			}
+			while (dirent *entry = readdir(entries)) {
+				if (entry->d_name[0] == '.') {
+					continue;
+				}
+				const std::string versioned = directory + "/" + entry->d_name;
+				add_independent_library_directory(versioned);
+			}
+			closedir(entries);
+			add_independent_library_directory(directory);
+		}
 	}
 	if (access((runtime + "/GodotSharp/Api/Debug/GodotSharp.dll").c_str(), F_OK) != 0) {
 		napi_throw_error(env, nullptr, "The packaged GodotSharp assemblies are missing");

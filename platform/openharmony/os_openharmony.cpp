@@ -45,6 +45,7 @@
 #include <signal.h>
 
 #include <cerrno>
+#include <dlfcn.h>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -518,6 +519,37 @@ Error OS_OpenHarmony::create_process(const String &p_path, const List<String> &p
 		return create_instance(p_arguments, r_child_id);
 	}
 	return OS_Unix::create_process(p_path, p_arguments, r_child_id, p_open_console);
+}
+
+void OS_OpenHarmony::add_independent_library_path(const String &p_directory) {
+	if (p_directory.is_empty()) {
+		return;
+	}
+	// HarmonyOS only loads a plugin from a directory that the process registered
+	// with the linker, and the registration only takes effect when the restricted
+	// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission is granted.
+	void *libc = dlopen("libc.so", RTLD_LAZY);
+	if (libc == nullptr) {
+		ERR_PRINT(vformat("Cannot open libc.so to register '%s': %s", p_directory, dlerror()));
+		return;
+	}
+	typedef int (*AddPluginPathFunc)(char *);
+	AddPluginPathFunc add_path = (AddPluginPathFunc)dlsym(libc, "dlns_add_plugin_default_ld_dictionary");
+	if (add_path != nullptr) {
+		CharString directory = p_directory.utf8();
+		const int result = add_path(directory.ptrw());
+		print_verbose(vformat("OpenHarmony: registered plugin directory '%s' (result %d).", p_directory, result));
+	} else {
+		ERR_PRINT("dlns_add_plugin_default_ld_dictionary is missing from libc.so.");
+	}
+	dlclose(libc);
+}
+
+Error OS_OpenHarmony::open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data) {
+	// Anything the engine loads itself - the .NET runtime, GDExtension plugins -
+	// first needs the directory it lives in registered with the linker.
+	add_independent_library_path(p_path.get_base_dir());
+	return OS_Unix::open_dynamic_library(p_path, p_library_handle, p_data);
 }
 
 Error OS_OpenHarmony::kill(const ProcessID &p_pid) {

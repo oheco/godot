@@ -77,6 +77,9 @@ def main():
     parser.add_argument('--archive', type=Path, help='Optional project ZIP')
     parser.add_argument('--update', action='store_true',
                         help='Update an existing project directory in place, preserving DevEco-owned files')
+    parser.add_argument('--load-independent-library', action='store_true',
+                        help='Declare ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY (restricted, needs an ACL '
+                             'in the signing profile); only then can the application load the .NET runtime')
     args = parser.parse_args()
     if (args.output.exists() and not args.update) or (args.archive and args.archive.exists()):
         raise SystemExit('Refusing to overwrite an existing project or archive; pass --update to refresh a project in place')
@@ -150,6 +153,21 @@ def main():
                 path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
+    if args.load_independent_library:
+        # Loading the .NET runtime from the oheco installation needs this
+        # restricted permission; without an ACL entry for it in the signing
+        # profile the installation fails with "grant request permissions failed".
+        module = args.output / 'entry/src/main/module.json5'
+        text = module.read_text()
+        if 'ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY' not in text:
+            anchor = '"requestPermissions": ['
+            if anchor not in text:
+                raise SystemExit(f'Cannot find the permission list in {module}')
+            declaration = ('\n      // Restricted (ACL): HarmonyOS loads a library outside the application\n'
+                           '      // bundle only from a directory the process registered with the linker.\n'
+                           '      { "name": "ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY" },')
+            module.write_text(text.replace(anchor, anchor + declaration, 1))
+            print('Declared ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY')
     native = args.output / 'entry/libs/arm64-v8a'
     native.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.library, native / 'libgodot.so')

@@ -111,6 +111,14 @@ public:
 	virtual Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) override;
 	virtual Error kill(const ProcessID &p_pid) override;
 	virtual bool is_process_running(const ProcessID &p_pid) const override;
+
+	// HarmonyOS only lets an application load a library from directories that the
+	// process registered with the linker, and only with the restricted
+	// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission. Registering the
+	// directory of every library this process opens keeps the .NET runtime and
+	// GDExtension plugins loadable without special casing them.
+	static void add_independent_library_path(const String &p_directory);
+	virtual Error open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data = nullptr) override;
 	virtual int get_process_exit_code(const ProcessID &p_pid) const override;
 
 	virtual Vector<String> get_system_fonts() const override;
