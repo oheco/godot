@@ -6,15 +6,15 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-#include <cstdlib>
-#include <sys/stat.h>
 
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <thread>
 #include <vector>
@@ -284,6 +284,78 @@ std::string plugin_directory_report() {
 	return g_plugin_directory_report;
 }
 
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+
+// The .NET runtime needs executable memory: it makes a page executable and copies
+// the GC write barrier into it. A denied mprotect fails silently inside the
+// runtime (it checks the reservation, not the commit), and the caller then writes
+// to a page that never became accessible, so report which primitive the sandbox
+// actually allows.
+static std::string probe_executable_memory() {
+	std::string report;
+	const size_t page = 4096;
+	auto outcome = [](const char *label, void *address) {
+		return std::string(label) + "=" +
+				(address == MAP_FAILED ? std::string("failed: ") + strerror(errno) + " (" + std::to_string(errno) + ")" : "ok") + "\n";
+	};
+
+	errno = 0;
+	void *rwx = mmap(nullptr, page, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	report += outcome("mmap(rwx)", rwx);
+	if (rwx != MAP_FAILED) {
+		munmap(rwx, page);
+	}
+
+	errno = 0;
+	void *reserved = mmap(nullptr, page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	report += outcome("mmap(reserve)", reserved);
+	if (reserved != MAP_FAILED) {
+		errno = 0;
+		const int committed = mprotect(reserved, page, PROT_READ | PROT_WRITE | PROT_EXEC);
+		report += committed == 0 ? std::string("mprotect(rwx)=ok\n")
+								 : std::string("mprotect(rwx)=failed: ") + strerror(errno) + " (" + std::to_string(errno) + ")\n";
+		munmap(reserved, page);
+	}
+
+	errno = 0;
+	void *rx = mmap(nullptr, page, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	report += outcome("mmap(rx)", rx);
+	if (rx != MAP_FAILED) {
+		munmap(rx, page);
+	}
+
+	// The write-xor-execute double mapping: one shared memory object mapped once
+	// for execution and once for writing.
+	errno = 0;
+	int fd = memfd_create("godot-probe", MFD_CLOEXEC);
+	if (fd < 0) {
+		report += std::string("memfd_create=failed: ") + strerror(errno) + " (" + std::to_string(errno) + ")\n";
+		return report;
+	}
+	report += "memfd_create=ok\n";
+	if (ftruncate(fd, 1 << 20) != 0) {
+		report += std::string("ftruncate=failed: ") + strerror(errno) + "\n";
+		close(fd);
+		return report;
+	}
+	errno = 0;
+	void *shared_rx = mmap(nullptr, page, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+	report += outcome("mmap(shared rx)", shared_rx);
+	errno = 0;
+	void *shared_rw = mmap(nullptr, page, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	report += outcome("mmap(shared rw)", shared_rw);
+	if (shared_rx != MAP_FAILED) {
+		munmap(shared_rx, page);
+	}
+	if (shared_rw != MAP_FAILED) {
+		munmap(shared_rw, page);
+	}
+	close(fd);
+	return report;
+}
+
 std::string probe_sandbox(const std::string &dotnet_root, const std::string &files_dir, const std::string &cache_dir) {
 	std::string report;
 	std::ifstream attributes("/proc/self/attr/current");
@@ -293,6 +365,7 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &fil
 	report += "dotnet_root=" + (dotnet_root.empty() ? std::string("<none>") : dotnet_root) + "\n";
 	report += std::string("write_xor_execute=") +
 			(getenv("DOTNET_EnableWriteXorExecute") != nullptr ? getenv("DOTNET_EnableWriteXorExecute") : "<unset>") + "\n";
+	report += probe_executable_memory();
 	report += plugin_directory_report();
 	report += std::string("dotnet_executable=") +
 			(access((dotnet_root + "/dotnet").c_str(), F_OK) == 0 ? "present" : "missing") + "\n";
