@@ -291,6 +291,8 @@ std::string probe_sandbox(const std::string &dotnet_root, const std::string &fil
 	std::getline(attributes, domain);
 	report += "security_domain=" + domain + "\n";
 	report += "dotnet_root=" + (dotnet_root.empty() ? std::string("<none>") : dotnet_root) + "\n";
+	report += std::string("write_xor_execute=") +
+			(getenv("DOTNET_EnableWriteXorExecute") != nullptr ? getenv("DOTNET_EnableWriteXorExecute") : "<unset>") + "\n";
 	report += plugin_directory_report();
 	report += std::string("dotnet_executable=") +
 			(access((dotnet_root + "/dotnet").c_str(), F_OK) == 0 ? "present" : "missing") + "\n";
