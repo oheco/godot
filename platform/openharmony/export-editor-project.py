@@ -80,6 +80,9 @@ def main():
     parser.add_argument('--load-independent-library', action='store_true',
                         help='Declare ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY (restricted, needs an ACL '
                              'in the signing profile); only then can the application load the .NET runtime')
+    parser.add_argument('--writable-code-memory', action='store_true',
+                        help='Declare ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY (restricted, needs an ACL '
+                             'in the signing profile); only then can the .NET runtime create writable code memory')
     args = parser.parse_args()
     if (args.output.exists() and not args.update) or (args.archive and args.archive.exists()):
         raise SystemExit('Refusing to overwrite an existing project or archive; pass --update to refresh a project in place')
@@ -153,21 +156,33 @@ def main():
                 path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
+    restricted = []
     if args.load_independent_library:
-        # Loading the .NET runtime from the oheco installation needs this
-        # restricted permission; without an ACL entry for it in the signing
-        # profile the installation fails with "grant request permissions failed".
+        restricted.append(('ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY',
+                           'HarmonyOS loads a library outside the application\n'
+                           '      // bundle only from a directory the process registered with the linker.'))
+    if args.writable_code_memory:
+        restricted.append(('ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY',
+                           'The .NET runtime needs writable code\n'
+                           '      // memory: its JIT emits code and it patches the GC write barrier.'))
+    if restricted:
+        # Both are restricted permissions: without an ACL entry for them in the
+        # signing profile the installation fails with "grant request permissions
+        # failed", so only declare the ones that were actually granted.
         module = args.output / 'entry/src/main/module.json5'
         text = module.read_text()
-        if 'ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY' not in text:
-            anchor = '"requestPermissions": ['
-            if anchor not in text:
-                raise SystemExit(f'Cannot find the permission list in {module}')
-            declaration = ('\n      // Restricted (ACL): HarmonyOS loads a library outside the application\n'
-                           '      // bundle only from a directory the process registered with the linker.\n'
-                           '      { "name": "ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY" },')
-            module.write_text(text.replace(anchor, anchor + declaration, 1))
-            print('Declared ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY')
+        anchor = '"requestPermissions": ['
+        if anchor not in text:
+            raise SystemExit(f'Cannot find the permission list in {module}')
+        declared = []
+        for name, comment in restricted:
+            if name in text:
+                continue
+            text = text.replace(anchor, f'\n      // Restricted (ACL): {comment}\n      {{ "name": "{name}" }},' + anchor, 1)
+            declared.append(name)
+        if declared:
+            module.write_text(text)
+            print('Declared ' + ', '.join(declared))
     native = args.output / 'entry/libs/arm64-v8a'
     native.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(args.library, native / 'libgodot.so')
