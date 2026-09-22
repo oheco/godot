@@ -16,6 +16,7 @@
 #include <condition_variable>
 #include <deque>
 #include <mutex>
+#include <pthread.h>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -37,11 +38,16 @@ struct Event {
 std::mutex event_mutex;
 std::condition_variable frame_ready;
 std::deque<Event> events;
-std::thread engine_thread;
+// The engine thread is created explicitly instead of through std::thread: musl
+// gives a new thread about a megabyte of stack, and the .NET runtime needs more
+// than that while it starts (it overran the stack inside libcoreclr otherwise).
+pthread_t engine_thread = {};
+bool engine_thread_started = false;
 std::atomic<int> state{ 0 };
 GodotCreateInstanceCallback create_instance_callback = nullptr;
 bool stopping = false;
 bool frame = false;
+constexpr size_t ENGINE_THREAD_STACK_SIZE = 32 * 1024 * 1024;
 
 void enqueue(Event event) {
 	std::lock_guard<std::mutex> lock(event_mutex);
@@ -169,6 +175,23 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 	Main::cleanup();
 	state = 3;
 }
+
+struct EngineLaunch {
+	NativeResourceManager *resources;
+	void *window;
+	int32_t window_id;
+	int32_t width;
+	int32_t height;
+	std::vector<std::string> arguments;
+};
+
+void *engine_thread_entry(void *p_data) {
+	EngineLaunch *launch = static_cast<EngineLaunch *>(p_data);
+	run(launch->resources, launch->window, launch->window_id, launch->width, launch->height,
+			std::move(launch->arguments));
+	delete launch;
+	return nullptr;
+}
 } // namespace
 
 int godot_editor_start(NativeResourceManager *resources, void *window, int32_t window_id,
@@ -180,11 +203,21 @@ int godot_editor_start(NativeResourceManager *resources, void *window, int32_t w
 	if (!state.compare_exchange_strong(expected, 1)) {
 		return -int(ERR_ALREADY_IN_USE);
 	}
-	std::vector<std::string> arguments;
+	EngineLaunch *launch = new EngineLaunch{ resources, window, window_id, width, height, {} };
 	for (int i = 0; i < argc; ++i) {
-		arguments.emplace_back(argv[i]);
+		launch->arguments.emplace_back(argv[i]);
 	}
-	engine_thread = std::thread(run, resources, window, window_id, width, height, std::move(arguments));
+	pthread_attr_t attributes;
+	pthread_attr_init(&attributes);
+	pthread_attr_setstacksize(&attributes, ENGINE_THREAD_STACK_SIZE);
+	const int error = pthread_create(&engine_thread, &attributes, engine_thread_entry, launch);
+	pthread_attr_destroy(&attributes);
+	if (error != 0) {
+		delete launch;
+		state = 0;
+		return -error;
+	}
+	engine_thread_started = true;
 	return 0;
 }
 
@@ -194,8 +227,9 @@ void godot_editor_stop() {
 		stopping = true;
 		frame_ready.notify_one();
 	}
-	if (engine_thread.joinable()) {
-		engine_thread.join();
+	if (engine_thread_started) {
+		pthread_join(engine_thread, nullptr);
+		engine_thread_started = false;
 	}
 }
 int godot_editor_state() {
