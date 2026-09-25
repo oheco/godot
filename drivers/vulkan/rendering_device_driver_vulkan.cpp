@@ -4436,7 +4436,12 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 			// Capture AFTER decompression, SMOL-V decoding and any re-spirv pass.
 			// Compute pipeline creation uses this module unchanged and supplies
 			// specialization separately. Failed pipelines are the only disk dumps.
-			shader_info.diagnostic_compute_spirv = decoded_spirv;
+			// Deep-copy instead of sharing Vector's COW storage: diagnostics must
+			// not extend the lifetime of the actual pCode allocation and mask a
+			// driver that incorrectly keeps that pointer after module creation.
+			if (shader_info.diagnostic_compute_spirv.resize(decoded_spirv.size()) == OK && !decoded_spirv.is_empty()) {
+				memcpy(shader_info.diagnostic_compute_spirv.ptrw(), decoded_spirv.ptr(), decoded_spirv.size());
+			}
 			shader_info.diagnostic_reflection = shader_refl;
 			shader_info.diagnostic_respv_requested = use_respv;
 			shader_info.diagnostic_respv_deferred = store_respv;
