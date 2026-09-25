@@ -17,14 +17,14 @@ var _report: Dictionary = {}
 func _run() -> void:
 	var stamp := Time.get_datetime_string_from_system(true).replace(":", "-")
 	var run_id := "%s-pid%d-%d" % [stamp, OS.get_process_id(), Time.get_ticks_msec()]
-	_output_dir = ProjectSettings.globalize_path(OUTPUT_BASE.path_join(run_id))
+	_output_dir = ProjectSettings.globalize_path(_output_base().path_join(run_id))
 	var directory_error := DirAccess.make_dir_recursive_absolute(_output_dir)
 	if directory_error != OK:
-		push_error("%s Cannot create output directory: %s (error %d)" % [PREFIX, _output_dir, directory_error])
+		push_error("%s Cannot create output directory: %s (error %d)" % [_log_prefix(), _output_dir, directory_error])
 		return
 	_text_log = FileAccess.open(_output_dir.path_join("probe.log"), FileAccess.WRITE)
 	if _text_log == null:
-		push_error("%s Cannot open probe.log (error %d)" % [PREFIX, FileAccess.get_open_error()])
+		push_error("%s Cannot open probe.log (error %d)" % [_log_prefix(), FileAccess.get_open_error()])
 		return
 	_report = {
 		"probe_version": 1,
@@ -71,6 +71,14 @@ func _run() -> void:
 	_report["active_case"] = {}
 	_note("SUMMARY %s" % JSON.stringify(counts))
 	_finish("COMPLETE")
+
+
+func _output_base() -> String:
+	return OUTPUT_BASE
+
+
+func _log_prefix() -> String:
+	return PREFIX
 
 
 func _make_cases() -> Array[Dictionary]:
@@ -177,7 +185,7 @@ func _case_done(result: Dictionary, status: String) -> Dictionary:
 func _write_bytes(relative_path: String, bytes: PackedByteArray) -> bool:
 	var file := FileAccess.open(_output_dir.path_join(relative_path), FileAccess.WRITE)
 	if file == null:
-		push_error("%s Cannot write %s (error %d)" % [PREFIX, relative_path, FileAccess.get_open_error()])
+		push_error("%s Cannot write %s (error %d)" % [_log_prefix(), relative_path, FileAccess.get_open_error()])
 		return false
 	file.store_buffer(bytes)
 	file.flush()
@@ -194,7 +202,7 @@ func _checkpoint(stage: String) -> void:
 
 
 func _note(message: String) -> void:
-	var line := "%s %s %s" % [Time.get_datetime_string_from_system(true), PREFIX, message]
+	var line := "%s %s %s" % [Time.get_datetime_string_from_system(true), _log_prefix(), message]
 	print(line)
 	if _text_log != null:
 		_text_log.store_line(line)
