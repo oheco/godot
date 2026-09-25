@@ -4,10 +4,9 @@
 #endif
 #include "runtime_probe.h"
 
+#include <netinet/in.h>
 #include <poll.h>
-#include <stddef.h>
 #include <sys/socket.h>
-#include <sys/un.h>
 #include <unistd.h>
 
 #include <cerrno>
@@ -16,9 +15,8 @@
 #include <fstream>
 
 namespace {
-constexpr char SOCKET_NAME[] = "oheco.broker.v1";
-constexpr char REQUEST[] = "OHECO_BROKER_PROBE_V1\n";
-constexpr char RESPONSE[] = "OHECO_BROKER_PROBE_OK_V1\n";
+constexpr char REQUEST_PREFIX[] = "OHECO_BROKER_TCP_PROBE_V1 ";
+constexpr char RESPONSE_PREFIX[] = "OHECO_BROKER_TCP_PROBE_OK_V1 ";
 using Clock = std::chrono::steady_clock;
 
 struct SocketOwner {
@@ -62,8 +60,17 @@ int wait_ready(int fd, short events, Clock::time_point deadline) {
 }
 } // namespace
 
-std::string probe_broker_socket() {
-	std::string report = "broker_probe_version=1\nbroker_address=@oheco.broker.v1\n";
+std::string probe_broker_tcp(uint16_t port, const std::string &instance_id) {
+	std::string report = "broker_probe_version=2\nbroker_transport=tcp\n";
+	if (port == 0 || instance_id.size() != 32 || instance_id.find_first_not_of("0123456789abcdef") != std::string::npos) {
+		return report + "broker_probe=FAIL step=arguments reason=invalid_endpoint\n";
+	}
+	report += "broker_address=127.0.0.1:" + std::to_string(port) + "\nbroker_instance_id=" + instance_id + "\n";
+	// This nonce only correlates the request and response; it is NOT authentication.
+	const std::string nonce = std::to_string(getpid()) + "-" + std::to_string(Clock::now().time_since_epoch().count());
+	const std::string request = std::string(REQUEST_PREFIX) + instance_id + " " + nonce + "\n";
+	const std::string expected = std::string(RESPONSE_PREFIX) + instance_id + " " + nonce + "\n";
+	report += "broker_probe_nonce=" + nonce + "\n";
 	report += "broker_client_pid=" + std::to_string(getpid()) + " uid=" + std::to_string(getuid()) + " gid=" + std::to_string(getgid()) + "\n";
 	std::ifstream attributes("/proc/self/attr/current");
 	std::string domain;
@@ -79,20 +86,19 @@ std::string probe_broker_socket() {
 		return report + "broker_probe=FAIL step=" + step + " errno=" + std::to_string(error) + " (" + strerror(error) + ")\n";
 	};
 
-	SocketOwner socket_owner { socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0) };
+	SocketOwner socket_owner { socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0) };
 	const int fd = socket_owner.fd;
 	if (fd < 0) {
 		return failed("socket", errno);
 	}
 	const auto deadline = Clock::now() + std::chrono::seconds(3);
-	sockaddr_un address {};
-	address.sun_family = AF_UNIX;
-	static_assert(sizeof(SOCKET_NAME) <= sizeof(address.sun_path));
-	// Leading NUL selects the abstract namespace. Do not include a trailing NUL
-	// or sizeof(sockaddr_un): those bytes would name a different abstract socket.
-	memcpy(address.sun_path + 1, SOCKET_NAME, sizeof(SOCKET_NAME) - 1);
-	const socklen_t address_length = offsetof(sockaddr_un, sun_path) + sizeof(SOCKET_NAME);
-	if (connect(fd, reinterpret_cast<sockaddr *>(&address), address_length) < 0) {
+	sockaddr_in address {};
+	address.sin_family = AF_INET;
+	address.sin_port = htons(port);
+	// Never trust a shared discovery file to choose an external host. This native
+	// API only takes a port, and always connects directly to IPv4 loopback.
+	address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)) < 0) {
 		const int error = errno;
 		if (error != EINPROGRESS) {
 			return failed("connect", error);
@@ -110,22 +116,15 @@ std::string probe_broker_socket() {
 			return failed("connect", socket_error);
 		}
 	}
-	report += "broker_connect=PASS\n";
-	ucred peer {};
-	socklen_t peer_length = sizeof(peer);
-	if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &peer_length) == 0 && peer_length == sizeof(peer)) {
-		report += "broker_server_pid=" + std::to_string(peer.pid) + " uid=" + std::to_string(peer.uid) + " gid=" + std::to_string(peer.gid) + "\n";
-	} else {
-		report += "broker_server_credentials=<unavailable>\n";
-	}
+	report += "broker_connect=PASS\nbroker_peer_credentials=unavailable_over_tcp\n";
 
 	size_t sent = 0;
-	while (sent < sizeof(REQUEST) - 1) {
+	while (sent < request.size()) {
 		const int error = wait_ready(fd, POLLOUT, deadline);
 		if (error != 0) {
 			return failed("send_wait", error);
 		}
-		const ssize_t count = send(fd, REQUEST + sent, sizeof(REQUEST) - 1 - sent, MSG_NOSIGNAL);
+		const ssize_t count = send(fd, request.data() + sent, request.size() - sent, MSG_NOSIGNAL);
 		if (count < 0) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
 				continue;
@@ -139,12 +138,12 @@ std::string probe_broker_socket() {
 	}
 
 	std::string received;
-	while (received.size() < 128 && received.find('\n') == std::string::npos) {
+	while (received.size() < 256 && received.find('\n') == std::string::npos) {
 		const int error = wait_ready(fd, POLLIN, deadline);
 		if (error != 0) {
 			return failed("receive_wait", error);
 		}
-		char buffer[128];
+		char buffer[256];
 		const ssize_t count = recv(fd, buffer, sizeof(buffer) - received.size(), 0);
 		if (count < 0) {
 			if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -157,8 +156,11 @@ std::string probe_broker_socket() {
 		}
 		received.append(buffer, count);
 	}
-	if (received != RESPONSE) {
+	if (received == "ERROR stale_instance\n") {
+		return report + "broker_probe=FAIL step=protocol reason=stale_instance\n";
+	}
+	if (received != expected) {
 		return report + "broker_probe=FAIL step=protocol reason=unexpected_response bytes=" + std::to_string(received.size()) + "\n";
 	}
-	return report + "broker_response=OHECO_BROKER_PROBE_OK_V1\nbroker_probe=PASS\n";
+	return report + "broker_response=OHECO_BROKER_TCP_PROBE_OK_V1\nbroker_instance_match=PASS\nbroker_nonce_match=PASS\nbroker_probe=PASS\n";
 }

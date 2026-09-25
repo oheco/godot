@@ -30,5 +30,6 @@ export const probeSandbox: () => string;
 // Runs the dotnet command line every way the sandbox could allow and
 // returns which one, if any, started, with the errno of the refusal.
 export const probeDotnetExec: () => string;
-// Ping @oheco.broker.v1 asynchronously; return a diagnostic report, not a process.
-export const probeBrokerSocket: () => Promise<string>;
+// Ping 127.0.0.1 at the discovered port; instanceId only detects stale descriptors.
+// This connectivity test has no authentication or command execution capability.
+export const probeBrokerTcp: (port: number, instanceId: string) => Promise<string>;

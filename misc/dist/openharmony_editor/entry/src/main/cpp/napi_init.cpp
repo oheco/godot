@@ -553,20 +553,38 @@ napi_value dotnet_exec_probe(napi_env env, napi_callback_info info) {
 struct BrokerSocketCheck {
 	napi_async_work work = nullptr;
 	napi_deferred deferred = nullptr;
-	std::string report;
+	uint16_t port = 0;
+	std::string instance_id, report;
 };
-napi_value broker_socket_probe(napi_env env, napi_callback_info) {
+napi_value broker_tcp_probe(napi_env env, napi_callback_info info) {
+	napi_value args[2];
+	if (!values(env, info, 2, args)) {
+		return nullptr;
+	}
+	double port = 0;
+	if (napi_get_value_double(env, args[0], &port) != napi_ok ||
+			!(port >= 1 && port <= 65535) || port != static_cast<uint16_t>(port)) {
+		napi_throw_type_error(env, nullptr, "Expected an integer loopback port in 1..65535");
+		return nullptr;
+	}
+	const std::string instance_id = string_value(env, args[1]);
+	if (instance_id.size() != 32 || instance_id.find_first_not_of("0123456789abcdef") != std::string::npos) {
+		napi_throw_type_error(env, nullptr, "Expected a 32-character hexadecimal instance ID");
+		return nullptr;
+	}
 	auto check = std::make_unique<BrokerSocketCheck>();
+	check->port = static_cast<uint16_t>(port);
+	check->instance_id = instance_id;
 	napi_value promise, name;
 	if (napi_create_promise(env, &check->deferred, &promise) != napi_ok ||
-			napi_create_string_utf8(env, "GodotProbeBrokerSocket", NAPI_AUTO_LENGTH, &name) != napi_ok) {
+			napi_create_string_utf8(env, "GodotProbeBrokerTcp", NAPI_AUTO_LENGTH, &name) != napi_ok) {
 		napi_throw_error(env, nullptr, "Cannot prepare broker socket probe");
 		return nullptr;
 	}
 	auto execute = [](napi_env, void *data) {
 		auto *check = static_cast<BrokerSocketCheck *>(data);
 		try {
-			check->report = probe_broker_socket();
+			check->report = probe_broker_tcp(check->port, check->instance_id);
 		} catch (const std::exception &error) {
 			check->report = std::string("broker_probe=FAIL step=exception message=") + error.what() + "\n";
 		}
@@ -603,7 +621,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("processId", process_id),
 		METHOD("probeSandbox", sandbox_probe),
 		METHOD("probeDotnetExec", dotnet_exec_probe),
-		METHOD("probeBrokerSocket", broker_socket_probe),
+		METHOD("probeBrokerTcp", broker_tcp_probe),
 		METHOD("configure", configure),
 		METHOD("checkRuntime", check_runtime),
 		METHOD("setResourceManager", set_resources),

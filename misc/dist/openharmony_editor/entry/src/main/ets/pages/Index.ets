@@ -7,6 +7,7 @@ import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 import { childHasExited, reportExit, spawnedChildPid } from '../runtime/Launch';
+import { probeBrokerConnection } from '../runtime/BrokerProbe';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -58,20 +59,9 @@ struct Index {
       logPermissionState();
       setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
-      setStep('editor:broker-socket-test');
-      this.message = '正在测试命令服务连接…';
-      record('--- broker socket test ---');
-      // Ping only: no command execution. Native I/O runs on a worker with a
-      // three-second deadline. An absent or inaccessible service is not fatal.
-      try {
-        const brokerReport: string = await plugin.probeBrokerSocket();
-        const brokerLines: string[] = brokerReport.split('\n');
-        for (const line of brokerLines) {
-          if (line.length > 0) { record(line); }
-        }
-      } catch (error) {
-        record(`broker_probe=FAIL step=binding message=${describe(error as BusinessError)}`);
-      }
+      setStep('editor:broker-tcp-test');
+      this.message = '正在测试命令服务 TCP 连接…';
+      await probeBrokerConnection();
       record('--- sandbox probe ---');
       const probeLines: string[] = plugin.probeSandbox().split('\n');
       for (const line of probeLines) {
