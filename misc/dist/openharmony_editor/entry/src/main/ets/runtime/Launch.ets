@@ -90,13 +90,14 @@ function publishLaunchResponse(context: common.UIAbilityContext, key: string, ph
 }
 
 // Attached launches preserve their previous onCreate acknowledgement. Independent
-// editors acknowledge only when the native engine reaches its running state.
+// editors acknowledge as soon as their window content loads, without waiting for
+// Godot's native initialization or project loading.
 export function reportStarted(context: common.UIAbilityContext, key: string): void {
   publishLaunchResponse(context, key, 'ability-created', '');
 }
 
-export function reportEngineReady(context: common.UIAbilityContext, key: string): void {
-  publishLaunchResponse(context, key, 'engine-running', '');
+export function reportWindowReady(context: common.UIAbilityContext, key: string): void {
+  publishLaunchResponse(context, key, 'window-ready', '');
 }
 
 export function reportLaunchFailure(context: common.UIAbilityContext, key: string, error: string): void {
@@ -115,7 +116,7 @@ export async function launchInstance(context: common.UIAbilityContext, request: 
     const parentInstance: string = context.getApplicationContext().getCurrentInstanceKey();
     logInstanceState(context, `spawn-${request}-before`);
     // Must fit inside the native bridge's 30-second callback wait. This deadline
-    // includes startAbility and the engine-ready handshake, not just polling.
+    // includes startAbility and the window-ready handshake, not just polling.
     const deadline = Date.now() + 20000;
     if (independent) {
       // Fresh Want: CREATE_APP_INSTANCE_KEY and APP_INSTANCE_KEY are mutually
@@ -155,8 +156,8 @@ export async function launchInstance(context: common.UIAbilityContext, request: 
         if (result.phase === 'failed') {
           throw new Error(`Target startup failed: ${result.error}`);
         }
-        if (independent && (result.phase !== 'engine-running' || result.instanceKey.length === 0 || result.instanceKey === parentInstance)) {
-          throw new Error('Target did not confirm a running, independent application instance');
+        if (independent && (result.phase !== 'window-ready' || result.instanceKey.length === 0 || result.instanceKey === parentInstance)) {
+          throw new Error('Target did not confirm a ready window in an independent application instance');
         }
         if (!independent && result.phase !== 'ability-created') {
           throw new Error('Unexpected attached launch response');

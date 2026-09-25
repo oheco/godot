@@ -3,10 +3,11 @@
 // launch (the application icon) opens the project manager, and a want that names
 // a project opens that project in a new process.
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import window from '@ohos.window';
 import plugin from 'libentry.so';
-import { initDiagnostics, record } from '../runtime/Diagnostics';
-import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportStarted } from '../runtime/Launch';
+import { describe, initDiagnostics, record } from '../runtime/Diagnostics';
+import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportLaunchFailure, reportStarted, reportWindowReady } from '../runtime/Launch';
 
 export default class EditorAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -26,8 +27,8 @@ export default class EditorAbility extends UIAbility {
     plugin.setLauncher((request: number, launchArgs: string[]) => {
       launchInstance(this.context, request, launchArgs, projectManager);
     });
-    // onCreate is too early to let the project manager quit: an independent
-    // editor acknowledges from Index only after its native engine is running.
+    // An independent editor acknowledges from the window-content callback below.
+    // Do not wait for Index to initialize the runtime or load the project.
     if (!independent) { reportStarted(this.context, key); }
   }
   // Explicit engine arguments win; a project directory in the want opens that
@@ -43,7 +44,19 @@ export default class EditorAbility extends UIAbility {
     record('ability onWindowStageCreate');
     AppStorage.setOrCreate('godotWindowId', stage.getMainWindowSync().getWindowProperties().id);
     stage.on('windowStageEvent', (event: window.WindowStageEventType) => plugin.sendWindowEvent(event));
-    stage.loadContent('pages/Index');
+    stage.loadContent('pages/Index', (error: BusinessError) => {
+      const key: string = AppStorage.get<string>('godotLaunchKey') ?? '';
+      const independent: boolean = AppStorage.get<boolean>('godotIndependentInstance') ?? false;
+      if (error && error.code) {
+        const detail: string = describe(error);
+        record(`window content failed: ${detail}`);
+        if (independent) { reportLaunchFailure(this.context, key, detail); }
+        return;
+      }
+      record('window content ready');
+      if (independent) { reportWindowReady(this.context, key); }
+      logInstanceState(this.context, 'window-ready');
+    });
   }
   onForeground(): void { plugin.sendWindowEvent(5); }
   onBackground(): void { plugin.sendWindowEvent(6); }

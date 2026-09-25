@@ -6,7 +6,7 @@ import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
-import { childHasExited, logInstanceState, reportEngineReady, reportExit, reportLaunchFailure, spawnedChildPid } from '../runtime/Launch';
+import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 import { probeBrokerConnection } from '../runtime/BrokerProbe';
 
 class GodotSurface extends XComponentController {
@@ -32,7 +32,6 @@ struct Index {
   private childRunning: boolean = false;
   private terminating: boolean = false;
   private engineReadyReported: boolean = false;
-  private startupFailureReported: boolean = false;
   private instanceCheckAt: number = 0;
   private mouseMask: number = 0;
   private metaPressed: boolean = false;
@@ -50,13 +49,6 @@ struct Index {
   aboutToDisappear(): void {
     if (this.timer !== -1) { clearInterval(this.timer); }
     plugin.destroySurface();
-  }
-  private reportStartupFailure(context: common.UIAbilityContext, message: string): void {
-    if (this.engineReadyReported || this.startupFailureReported) { return; }
-    this.startupFailureReported = true;
-    if (AppStorage.get<boolean>('godotIndependentInstance') ?? false) {
-      reportLaunchFailure(context, AppStorage.get<string>('godotLaunchKey') ?? '', message);
-    }
   }
   private async terminateHost(context: common.UIAbilityContext): Promise<void> {
     if (this.terminating) { return; }
@@ -137,7 +129,8 @@ struct Index {
           this.engineReadyReported = true;
           logInstanceState(context, 'engine-running');
           if (AppStorage.get<boolean>('godotIndependentInstance') ?? false) {
-            reportEngineReady(context, AppStorage.get<string>('godotLaunchKey') ?? '');
+            // Diagnostic only. Handoff already happened when the page loaded;
+            // this timer never delays the project manager's exit.
             this.instanceCheckAt = Date.now() + 3000;
           }
         }
@@ -148,7 +141,6 @@ struct Index {
         if (state < 0) {
           this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`;
           this.ready = false;
-          this.reportStartupFailure(context, `Native engine startup failed: state=${state}`);
         }
         // Only watch an attached child. An unrelated independent editor crash
         // must not hide this instance's surface or stop its engine.
@@ -162,7 +154,6 @@ struct Index {
           this.showLog = true;
         }
         if (state === 3) {
-          this.reportStartupFailure(context, 'Native engine exited before reporting ready');
           // Independent editor instances never enter this hold path. Preserve it
           // only for launches that still use NEW_PROCESS_ATTACH_TO_PARENT.
           this.spawnedPid = spawnedChildPid();
@@ -181,7 +172,6 @@ struct Index {
     } catch (error) {
       const cause = error as BusinessError;
       fail(cause);
-      this.reportStartupFailure(context, describe(cause));
       probeEnvironment(context);
       this.message = `无法启动 Godot（点“显示日志”查看详情）：${cause.message}`;
     }
