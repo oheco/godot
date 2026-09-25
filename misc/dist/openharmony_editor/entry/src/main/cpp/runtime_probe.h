@@ -33,3 +33,7 @@ std::string add_independent_library_directory(const std::string &directory);
 
 // Every directory registered so far, one line each, in registration order.
 std::string plugin_directory_report();
+
+// Ping-only abstract Unix socket probe; a three-second total deadline bounds
+// network I/O. Run on a worker thread. No command execution or SDK integration.
+std::string probe_broker_socket();

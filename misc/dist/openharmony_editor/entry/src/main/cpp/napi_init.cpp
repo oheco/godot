@@ -550,6 +550,51 @@ napi_value dotnet_exec_probe(napi_env env, napi_callback_info info) {
 	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
 	return result;
 }
+struct BrokerSocketCheck {
+	napi_async_work work = nullptr;
+	napi_deferred deferred = nullptr;
+	std::string report;
+};
+napi_value broker_socket_probe(napi_env env, napi_callback_info) {
+	auto check = std::make_unique<BrokerSocketCheck>();
+	napi_value promise, name;
+	if (napi_create_promise(env, &check->deferred, &promise) != napi_ok ||
+			napi_create_string_utf8(env, "GodotProbeBrokerSocket", NAPI_AUTO_LENGTH, &name) != napi_ok) {
+		napi_throw_error(env, nullptr, "Cannot prepare broker socket probe");
+		return nullptr;
+	}
+	auto execute = [](napi_env, void *data) {
+		auto *check = static_cast<BrokerSocketCheck *>(data);
+		try {
+			check->report = probe_broker_socket();
+		} catch (const std::exception &error) {
+			check->report = std::string("broker_probe=FAIL step=exception message=") + error.what() + "\n";
+		}
+	};
+	auto complete = [](napi_env env, napi_status status, void *data) {
+		std::unique_ptr<BrokerSocketCheck> check(static_cast<BrokerSocketCheck *>(data));
+		if (status != napi_ok) {
+			check->report = "broker_probe=FAIL step=async_work reason=cancelled\n";
+		}
+		napi_value result;
+		if (napi_create_string_utf8(env, check->report.c_str(), check->report.size(), &result) == napi_ok) {
+			napi_resolve_deferred(env, check->deferred, result);
+		} else {
+			napi_reject_deferred(env, check->deferred, undefined(env));
+		}
+		napi_delete_async_work(env, check->work);
+	};
+	if (napi_create_async_work(env, nullptr, name, execute, complete, check.get(), &check->work) != napi_ok ||
+			napi_queue_async_work(env, check->work) != napi_ok) {
+		if (check->work) {
+			napi_delete_async_work(env, check->work);
+		}
+		napi_throw_error(env, nullptr, "Cannot schedule broker socket probe");
+		return nullptr;
+	}
+	check.release();
+	return promise;
+}
 napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
@@ -558,6 +603,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("processId", process_id),
 		METHOD("probeSandbox", sandbox_probe),
 		METHOD("probeDotnetExec", dotnet_exec_probe),
+		METHOD("probeBrokerSocket", broker_socket_probe),
 		METHOD("configure", configure),
 		METHOD("checkRuntime", check_runtime),
 		METHOD("setResourceManager", set_resources),
