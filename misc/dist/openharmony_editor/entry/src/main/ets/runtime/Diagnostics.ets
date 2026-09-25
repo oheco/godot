@@ -192,14 +192,15 @@ export function readCrashLog(): string {
   return `--- ${newest} ---\n${readTail(newest, 'crash log')}`;
 }
 
-// Modification time of the newest crash log, or 0 when there is none. Callers
-// compare it with a value taken earlier to notice a crash that happened after
-// they started, which is how a still running process reports a dead one.
-export function crashLogTime(): number {
-  const newest = newestLog('crash', true);
-  if (newest.length === 0) { return 0; }
+// With a PID, watch only that parent-attached child: independent application
+// instances must not react to each other's crashes. Without a PID, take the
+// initial timestamp baseline from the newest existing crash log.
+export function crashLogTime(pid: number = 0): number {
+  const path: string = pid > 0 ? crashLogPath(pid) : newestLog('crash', true);
+  if (path.length === 0) { return 0; }
   try {
-    return fs.statSync(newest).mtime;
+    const info = fs.statSync(path);
+    return info.size > 0 ? info.mtime : 0;
   } catch (ignored) {
     return 0;
   }

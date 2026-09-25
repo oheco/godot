@@ -6,7 +6,7 @@ import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
-import { childHasExited, reportExit, spawnedChildPid } from '../runtime/Launch';
+import { childHasExited, logInstanceState, reportEngineReady, reportExit, reportLaunchFailure, spawnedChildPid } from '../runtime/Launch';
 import { probeBrokerConnection } from '../runtime/BrokerProbe';
 
 class GodotSurface extends XComponentController {
@@ -30,6 +30,10 @@ struct Index {
   private crashTime: number = 0;
   private spawnedPid: number = 0;
   private childRunning: boolean = false;
+  private terminating: boolean = false;
+  private engineReadyReported: boolean = false;
+  private startupFailureReported: boolean = false;
+  private instanceCheckAt: number = 0;
   private mouseMask: number = 0;
   private metaPressed: boolean = false;
   private pressedKeys: Set<number> = new Set<number>();
@@ -39,13 +43,39 @@ struct Index {
   private lastClickY: number = 0;
 
   aboutToAppear(): void {
-    // Remembered so a crash log written later by another process is noticed.
+    // Baseline for detecting a later crash in a parent-attached child.
     this.crashTime = crashLogTime();
     this.prepare();
   }
   aboutToDisappear(): void {
     if (this.timer !== -1) { clearInterval(this.timer); }
     plugin.destroySurface();
+  }
+  private reportStartupFailure(context: common.UIAbilityContext, message: string): void {
+    if (this.engineReadyReported || this.startupFailureReported) { return; }
+    this.startupFailureReported = true;
+    if (AppStorage.get<boolean>('godotIndependentInstance') ?? false) {
+      reportLaunchFailure(context, AppStorage.get<string>('godotLaunchKey') ?? '', message);
+    }
+  }
+  private async terminateHost(context: common.UIAbilityContext): Promise<void> {
+    if (this.terminating) { return; }
+    this.terminating = true;
+    if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
+    record(`engine exited; terminateSelf current ability pid=${plugin.processId()}`);
+    logInstanceState(context, 'terminateSelf-request');
+    reportExit(context);
+    try {
+      // Only terminate this UIAbility. Never force-stop the application bundle.
+      await context.terminateSelf();
+      record('terminateSelf returned');
+    } catch (error) {
+      record(`terminateSelf failed: ${describe(error as BusinessError)}`);
+      this.ready = false;
+      this.message = '引擎已退出，但关闭当前窗口失败，请查看日志。';
+      this.logText = readFullDiagnostics();
+      this.showLog = true;
+    }
   }
   private async prepare(): Promise<void> {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
@@ -101,11 +131,30 @@ struct Index {
       record('engine thread started');
       this.ready = true;
       this.timer = setInterval(() => {
+        if (this.terminating) { return; }
         const state: number = plugin.state();
-        if (state < 0) { this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`; this.ready = false; }
-        // A process this one started died from a fatal signal: come back with its
-        // log, which is the only place that records why it died.
-        if (!this.crashed && crashLogTime() > this.crashTime) {
+        if (state === 2 && !this.engineReadyReported) {
+          this.engineReadyReported = true;
+          logInstanceState(context, 'engine-running');
+          if (AppStorage.get<boolean>('godotIndependentInstance') ?? false) {
+            reportEngineReady(context, AppStorage.get<string>('godotLaunchKey') ?? '');
+            this.instanceCheckAt = Date.now() + 3000;
+          }
+        }
+        if (this.instanceCheckAt > 0 && Date.now() >= this.instanceCheckAt) {
+          this.instanceCheckAt = 0;
+          logInstanceState(context, `after-handoff-engine-state-${state}`);
+        }
+        if (state < 0) {
+          this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`;
+          this.ready = false;
+          this.reportStartupFailure(context, `Native engine startup failed: state=${state}`);
+        }
+        // Only watch an attached child. An unrelated independent editor crash
+        // must not hide this instance's surface or stop its engine.
+        const attachedPid: number = spawnedChildPid();
+        if (attachedPid > 0 && !this.crashed && crashLogTime(attachedPid) > this.crashTime) {
+          record(`attached child crash detected pid=${attachedPid}`);
           this.crashed = true;
           this.ready = false;
           this.message = '编辑器进程崩溃了';
@@ -113,28 +162,26 @@ struct Index {
           this.showLog = true;
         }
         if (state === 3) {
-          // The engine is gone. A process started with
-          // NEW_PROCESS_ATTACH_TO_PARENT exits together with the process that
-          // started it, so while such a child runs this window has to stay open -
-          // the window is what keeps the ability, and therefore the process,
-          // alive. EditorAbility cannot hide it: Window.hide() is a system API.
+          this.reportStartupFailure(context, 'Native engine exited before reporting ready');
+          // Independent editor instances never enter this hold path. Preserve it
+          // only for launches that still use NEW_PROCESS_ATTACH_TO_PARENT.
           this.spawnedPid = spawnedChildPid();
           if (this.spawnedPid > 0 && !this.childRunning && !childHasExited(context, this.spawnedPid)) {
             this.childRunning = true;
             this.ready = false;
-            this.message = '编辑器已在新窗口打开；本窗口保持打开以维持它的进程。';
-            record(`engine exited; holding the process for pid ${this.spawnedPid}`);
+            this.message = '子进程仍在运行；本窗口保持打开以维持它的进程。';
+            record(`engine exited; holding for attached pid ${this.spawnedPid}`);
           } else if (this.childRunning) {
-            if (childHasExited(context, this.spawnedPid)) { context.terminateSelf(); }
+            if (childHasExited(context, this.spawnedPid)) { this.terminateHost(context); }
           } else {
-            reportExit(context);
-            context.terminateSelf();
+            this.terminateHost(context);
           }
         }
       }, 250);
     } catch (error) {
       const cause = error as BusinessError;
       fail(cause);
+      this.reportStartupFailure(context, describe(cause));
       probeEnvironment(context);
       this.message = `无法启动 Godot（点“显示日志”查看详情）：${cause.message}`;
     }

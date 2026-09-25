@@ -6,7 +6,7 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import window from '@ohos.window';
 import plugin from 'libentry.so';
 import { initDiagnostics, record } from '../runtime/Diagnostics';
-import { launchInstance, reportStarted } from '../runtime/Launch';
+import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportStarted } from '../runtime/Launch';
 
 export default class EditorAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -16,10 +16,19 @@ export default class EditorAbility extends UIAbility {
     initDiagnostics(this.context);
     const args = this.engineArguments(want);
     const key = (want.parameters?.godotLaunchKey as string | undefined) ?? '';
-    record(`ability onCreate pid=${plugin.processId()} args=[${args.join(' ')}] key='${key}'`);
+    const independent: boolean = want.parameters?.godotIndependentInstance === true;
+    const projectManager: boolean = hasEngineFlag(args, '--project-manager', '-p');
+    record(`ability onCreate pid=${plugin.processId()} args=[${args.join(' ')}] key='${key}' independent=${independent}`);
+    logInstanceState(this.context, 'ability-onCreate');
     AppStorage.setOrCreate('godotArguments', args);
-    plugin.setLauncher((request: number, launchArgs: string[]) => { launchInstance(this.context, request, launchArgs); });
-    reportStarted(this.context, key);
+    AppStorage.setOrCreate('godotLaunchKey', key);
+    AppStorage.setOrCreate('godotIndependentInstance', independent);
+    plugin.setLauncher((request: number, launchArgs: string[]) => {
+      launchInstance(this.context, request, launchArgs, projectManager);
+    });
+    // onCreate is too early to let the project manager quit: an independent
+    // editor acknowledges from Index only after its native engine is running.
+    if (!independent) { reportStarted(this.context, key); }
   }
   // Explicit engine arguments win; a project directory in the want opens that
   // project in the editor; anything else opens the project manager.
@@ -39,5 +48,10 @@ export default class EditorAbility extends UIAbility {
   onForeground(): void { plugin.sendWindowEvent(5); }
   onBackground(): void { plugin.sendWindowEvent(6); }
   onWindowStageDestroy(): void { record('ability onWindowStageDestroy'); plugin.destroySurface(); }
-  onDestroy(): void { record('ability onDestroy'); plugin.destroySurface(); }
+  onDestroy(): void {
+    record('ability onDestroy');
+    logInstanceState(this.context, 'ability-onDestroy');
+    reportExit(this.context);
+    plugin.destroySurface();
+  }
 }

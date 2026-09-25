@@ -2,6 +2,10 @@
   "app": {
     "bundleName": "org.oheco.godoteditor",
     "vendor": "oheco",
+    "multiAppMode": {
+      "multiAppModeType": "multiInstance",
+      "maxCount": 5
+    },
     "versionCode": 4070202,
     "versionName": "4.7.2-ohos.2",
     "icon": "$media:layered_image",
