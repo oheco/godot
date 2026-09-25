@@ -406,6 +406,29 @@ napi_value setup(napi_env env, napi_callback_info info) {
 		napi_get_element(env, args[0], i, &value);
 		arguments.push_back(string_value(env, value));
 	}
+	// Diagnostic build: retain final compute SPIR-V in the engine and dump only
+	// failures beside this process's engine log. A marker in that log directory
+	// disables capture on the next launch without rebuilding the HAP.
+	unsetenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR");
+	for (size_t i = 0; i + 1 < arguments.size(); i++) {
+		if (arguments[i] != "--log-file") {
+			continue;
+		}
+		const std::string &log_path = arguments[i + 1];
+		const size_t slash = log_path.find_last_of('/');
+		if (slash == std::string::npos || log_path.empty() || log_path[0] != '/') {
+			continue;
+		}
+		const std::string directory = log_path.substr(0, slash);
+		const std::string disabled = directory + "/vulkan-pipeline-diagnostics.disabled";
+		if (access(disabled.c_str(), F_OK) == 0) {
+			unsetenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR");
+			continue;
+		}
+		const std::string run = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+		const std::string diagnostics = directory + "/godot-" + std::to_string(getpid()) + "-vulkan-" + run;
+		setenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR", diagnostics.c_str(), 1);
+	}
 	requested = true;
 	maybe_start(env);
 	return undefined(env);
