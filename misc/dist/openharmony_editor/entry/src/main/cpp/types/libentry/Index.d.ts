@@ -11,7 +11,6 @@ export interface SimplifiedMouseEvent {
   doubleClick: boolean; factor: number; hasRelative: boolean; relativeX: number; relativeY: number;
 }
 export const configure: (filesDir: string, cacheDir: string, runtimeDir: string) => void;
-export const checkRuntime: () => Promise<void>;
 export const setResourceManager: (resources: resourceManager.ResourceManager) => void;
 export const setWindowId: (id: number) => void;
 export const setSurfaceId: (id: bigint) => void;
@@ -26,10 +25,3 @@ export const inputMouse: (event: SimplifiedMouseEvent) => void;
 export const setLauncher: (callback: (requestId: number, args: string[]) => void) => void;
 export const spawnResult: (requestId: number, pid: number) => void;
 export const processId: () => number;
-export const probeSandbox: () => string;
-// Runs the dotnet command line every way the sandbox could allow and
-// returns which one, if any, started, with the errno of the refusal.
-export const probeDotnetExec: () => string;
-// Ping 127.0.0.1 at the discovered port; instanceId only detects stale descriptors.
-// This connectivity test has no authentication or command execution capability.
-export const probeBrokerTcp: (port: number, instanceId: string) => Promise<string>;

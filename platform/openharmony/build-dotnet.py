@@ -26,7 +26,7 @@ for name in ('dotnet', 'sdk', 'host/fxr', 'shared/Microsoft.NETCore.App', 'packs
     if not (dotnet / name).exists():
         raise SystemExit(f'Not an adapted OpenHarmony .NET SDK (missing {name}): {dotnet}')
 subprocess.run([sys.executable, str(source / 'platform/openharmony/dotnet/prepare-feed.py'), str(feed)], check=True)
-with tempfile.TemporaryDirectory(prefix='godot-managed-build-', dir='/data/storage/el2/base/cache') as private:
+with tempfile.TemporaryDirectory(prefix='godot-managed-build-', dir=os.environ['TMPDIR']) as private:
     env = dict(os.environ)
     env.update(DOTNET_ROOT=str(dotnet), DOTNET_ROOT_ARM64=str(dotnet), DOTNET_CLI_HOME=private,
                TMPDIR=private, DOTNET_OHOS_TMPDIR=private, NUGET_PACKAGES=private + '/nuget',

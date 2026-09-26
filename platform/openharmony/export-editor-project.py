@@ -83,6 +83,10 @@ def main():
     parser.add_argument('--writable-code-memory', action='store_true',
                         help='Declare ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY (restricted, needs an ACL '
                              'in the signing profile); only then can the .NET runtime create writable code memory')
+    parser.add_argument('--custom-sandbox', action='store_true',
+                        help='Declare ohos.permission.CUSTOM_SANDBOX (restricted, needs an ACL in the signing '
+                             'profile). A weak sandbox is what lets the application start adhoc-signed executables '
+                             'from the user directory, such as the oo-installed .NET host')
     args = parser.parse_args()
     if (args.output.exists() and not args.update) or (args.archive and args.archive.exists()):
         raise SystemExit('Refusing to overwrite an existing project or archive; pass --update to refresh a project in place')
@@ -156,6 +160,21 @@ def main():
                 path.unlink()
             elif path.is_dir() and not any(path.iterdir()):
                 path.rmdir()
+    # The native tree is template-owned too, except for include/, which is
+    # generated below from the platform headers. Without this, a source the
+    # template no longer ships stays in the project and keeps confusing the build.
+    native = 'entry/src/main/cpp'
+    expected_native = {p.relative_to(template / native).as_posix()
+                       for p in (template / native).rglob('*') if p.is_file()}
+    exported_native = args.output / native
+    if exported_native.is_dir():
+        for path in sorted(exported_native.rglob('*'), reverse=True):
+            relative = path.relative_to(exported_native).as_posix()
+            if path.is_file():
+                if relative not in expected_native and not relative.startswith('include/'):
+                    path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
     restricted = []
     if args.load_independent_library:
         restricted.append(('ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY',
@@ -165,8 +184,13 @@ def main():
         restricted.append(('ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY',
                            'The .NET runtime needs writable code\n'
                            '      // memory: its JIT emits code and it patches the GC write barrier.'))
+    if args.custom_sandbox:
+        restricted.append(('ohos.permission.CUSTOM_SANDBOX',
+                           'A weak sandbox is what lets the application\n'
+                           '      // start adhoc-signed executables from the user directory, such as the\n'
+                           '      // oo-installed .NET host.'))
     if restricted:
-        # Both are restricted permissions: without an ACL entry for them in the
+        # These are restricted permissions: without an ACL entry for them in the
         # signing profile the installation fails with "grant request permissions
         # failed", so only declare the ones that were actually granted.
         module = args.output / 'entry/src/main/module.json5'
@@ -247,6 +271,10 @@ def main():
                   'dotnet_resolution': "resolved at runtime from the oheco package installation; not shipped"}
     provenance['dotnet_buildinfo'] = dotnet_buildinfo
     provenance['native_build'] = native_info
+    provenance['tool_execution'] = {
+        'scope': 'in-process and direct child processes of the editor',
+        'requires': 'ohos.permission.CUSTOM_SANDBOX (weak sandbox) to start the adhoc .NET host',
+    }
     (args.output / 'build-inputs.json').write_text(json.dumps(provenance, indent=2) + '\n')
     if args.archive:
         args.archive.parent.mkdir(parents=True, exist_ok=True)

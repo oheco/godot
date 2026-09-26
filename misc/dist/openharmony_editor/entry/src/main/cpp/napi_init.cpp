@@ -1,6 +1,6 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #include "editor_bridge_openharmony.h"
-#include "runtime_probe.h"
+#include "runtime_paths.h"
 
 #include <napi/native_api.h>
 #include <native_window/external_window.h>
@@ -26,7 +26,6 @@ OHNativeWindow *window = nullptr;
 int32_t window_id = -1;
 int32_t width = 0, height = 0;
 bool configured = false, requested = false, started = false;
-std::string sdk_executable, sdk_report, bundled_root, cache_directory, files_directory, missing_dotnet;
 std::vector<std::string> arguments;
 struct SpawnRequest {
 	uint32_t id;
@@ -181,13 +180,7 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	// reports the missing runtime. Reaching the SDK at all requires the two
 	// restricted permissions declared in module.json5.
 	const std::string dotnet = resolve_dotnet_root();
-	if (dotnet.empty()) {
-		missing_dotnet = "No usable .NET SDK found under the oheco package root "
-				"(install it with 'oo install dotnet-sdk', and grant "
-				"ohos.permission.READ_WRITE_USER_FILE and "
-				"ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE); "
-				"GODOT_OHOS_DOTNET_ROOT overrides the location.";
-	} else {
+	if (!dotnet.empty()) {
 		// HarmonyOS loads a library outside the application bundle only from a
 		// directory registered with the linker, and the restricted
 		// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission is what makes
@@ -276,66 +269,8 @@ napi_value configure(napi_env env, napi_callback_info info) {
 	set("UseSharedCompilation", "false");
 	set("NuGetAudit", "false");
 	configured = true;
-	bundled_root = dotnet;
-	cache_directory = cache;
-	files_directory = files;
-	sdk_executable = dotnet.empty() ? std::string() : dotnet + "/dotnet";
-	sdk_report = cache + "/godot-dotnet-startup-" + std::to_string(getpid()) + ".log";
 	maybe_start(env);
 	return undefined(env);
-}
-
-struct RuntimeCheck {
-	napi_async_work work = nullptr;
-	napi_deferred deferred = nullptr;
-	std::string executable, report, error;
-};
-napi_value check_runtime(napi_env env, napi_callback_info info) {
-	if (!configured || started) {
-		napi_throw_error(env, nullptr, "Configure the runtime before checking the SDK");
-		return nullptr;
-	}
-	if (sdk_executable.empty()) {
-		const std::string message = missing_dotnet.empty() ? "No .NET SDK is available" : missing_dotnet;
-		napi_throw_error(env, nullptr, message.c_str());
-		return nullptr;
-	}
-	auto check = std::make_unique<RuntimeCheck>();
-	check->executable = sdk_executable;
-	check->report = sdk_report;
-	napi_value promise, name;
-	napi_create_promise(env, &check->deferred, &promise);
-	napi_create_string_utf8(env, "GodotCheckDotnet", NAPI_AUTO_LENGTH, &name);
-	auto execute = [](napi_env, void *data) {
-		auto *check = static_cast<RuntimeCheck *>(data);
-		check->error = check_dotnet_sdk(check->executable, check->report);
-	};
-	auto complete = [](napi_env env, napi_status status, void *data) {
-		std::unique_ptr<RuntimeCheck> check(static_cast<RuntimeCheck *>(data));
-		if (status != napi_ok && check->error.empty()) {
-			check->error = ".NET SDK check was cancelled";
-		}
-		if (check->error.empty()) {
-			napi_resolve_deferred(env, check->deferred, undefined(env));
-		} else {
-			const std::string message = check->error + "\n" + check->report;
-			napi_value text, error;
-			napi_create_string_utf8(env, message.c_str(), message.size(), &text);
-			napi_create_error(env, nullptr, text, &error);
-			napi_reject_deferred(env, check->deferred, error);
-		}
-		napi_delete_async_work(env, check->work);
-	};
-	if (napi_create_async_work(env, nullptr, name, execute, complete, check.get(), &check->work) != napi_ok ||
-			napi_queue_async_work(env, check->work) != napi_ok) {
-		if (check->work) {
-			napi_delete_async_work(env, check->work);
-		}
-		napi_throw_error(env, nullptr, "Cannot schedule .NET SDK check");
-		return nullptr;
-	}
-	check.release();
-	return promise;
 }
 napi_value set_resources(napi_env env, napi_callback_info info) {
 	napi_value args[1];
@@ -405,29 +340,6 @@ napi_value setup(napi_env env, napi_callback_info info) {
 		napi_value value;
 		napi_get_element(env, args[0], i, &value);
 		arguments.push_back(string_value(env, value));
-	}
-	// Diagnostic build: retain final compute SPIR-V in the engine and dump only
-	// failures beside this process's engine log. A marker in that log directory
-	// disables capture on the next launch without rebuilding the HAP.
-	unsetenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR");
-	for (size_t i = 0; i + 1 < arguments.size(); i++) {
-		if (arguments[i] != "--log-file") {
-			continue;
-		}
-		const std::string &log_path = arguments[i + 1];
-		const size_t slash = log_path.find_last_of('/');
-		if (slash == std::string::npos || log_path.empty() || log_path[0] != '/') {
-			continue;
-		}
-		const std::string directory = log_path.substr(0, slash);
-		const std::string disabled = directory + "/vulkan-pipeline-diagnostics.disabled";
-		if (access(disabled.c_str(), F_OK) == 0) {
-			unsetenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR");
-			continue;
-		}
-		const std::string run = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
-		const std::string diagnostics = directory + "/godot-" + std::to_string(getpid()) + "-vulkan-" + run;
-		setenv("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR", diagnostics.c_str(), 1);
 	}
 	requested = true;
 	maybe_start(env);
@@ -553,100 +465,13 @@ napi_value process_id(napi_env env, napi_callback_info info) {
 	napi_create_int32(env, getpid(), &result);
 	return result;
 }
-napi_value sandbox_probe(napi_env env, napi_callback_info info) {
-	if (!configured) {
-		napi_throw_error(env, nullptr, "Configure the runtime before probing the sandbox");
-		return nullptr;
-	}
-	const std::string report = probe_sandbox(bundled_root, files_directory, cache_directory);
-	napi_value result;
-	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
-	return result;
-}
-napi_value dotnet_exec_probe(napi_env env, napi_callback_info info) {
-	if (!configured) {
-		napi_throw_error(env, nullptr, "Configure the runtime before testing dotnet");
-		return nullptr;
-	}
-	const std::string report = probe_dotnet_exec(bundled_root, files_directory, cache_directory);
-	napi_value result;
-	napi_create_string_utf8(env, report.c_str(), report.size(), &result);
-	return result;
-}
-struct BrokerSocketCheck {
-	napi_async_work work = nullptr;
-	napi_deferred deferred = nullptr;
-	uint16_t port = 0;
-	std::string instance_id, report;
-};
-napi_value broker_tcp_probe(napi_env env, napi_callback_info info) {
-	napi_value args[2];
-	if (!values(env, info, 2, args)) {
-		return nullptr;
-	}
-	double port = 0;
-	if (napi_get_value_double(env, args[0], &port) != napi_ok ||
-			!(port >= 1 && port <= 65535) || port != static_cast<uint16_t>(port)) {
-		napi_throw_type_error(env, nullptr, "Expected an integer loopback port in 1..65535");
-		return nullptr;
-	}
-	const std::string instance_id = string_value(env, args[1]);
-	if (instance_id.size() != 32 || instance_id.find_first_not_of("0123456789abcdef") != std::string::npos) {
-		napi_throw_type_error(env, nullptr, "Expected a 32-character hexadecimal instance ID");
-		return nullptr;
-	}
-	auto check = std::make_unique<BrokerSocketCheck>();
-	check->port = static_cast<uint16_t>(port);
-	check->instance_id = instance_id;
-	napi_value promise, name;
-	if (napi_create_promise(env, &check->deferred, &promise) != napi_ok ||
-			napi_create_string_utf8(env, "GodotProbeBrokerTcp", NAPI_AUTO_LENGTH, &name) != napi_ok) {
-		napi_throw_error(env, nullptr, "Cannot prepare broker socket probe");
-		return nullptr;
-	}
-	auto execute = [](napi_env, void *data) {
-		auto *check = static_cast<BrokerSocketCheck *>(data);
-		try {
-			check->report = probe_broker_tcp(check->port, check->instance_id);
-		} catch (const std::exception &error) {
-			check->report = std::string("broker_probe=FAIL step=exception message=") + error.what() + "\n";
-		}
-	};
-	auto complete = [](napi_env env, napi_status status, void *data) {
-		std::unique_ptr<BrokerSocketCheck> check(static_cast<BrokerSocketCheck *>(data));
-		if (status != napi_ok) {
-			check->report = "broker_probe=FAIL step=async_work reason=cancelled\n";
-		}
-		napi_value result;
-		if (napi_create_string_utf8(env, check->report.c_str(), check->report.size(), &result) == napi_ok) {
-			napi_resolve_deferred(env, check->deferred, result);
-		} else {
-			napi_reject_deferred(env, check->deferred, undefined(env));
-		}
-		napi_delete_async_work(env, check->work);
-	};
-	if (napi_create_async_work(env, nullptr, name, execute, complete, check.get(), &check->work) != napi_ok ||
-			napi_queue_async_work(env, check->work) != napi_ok) {
-		if (check->work) {
-			napi_delete_async_work(env, check->work);
-		}
-		napi_throw_error(env, nullptr, "Cannot schedule broker socket probe");
-		return nullptr;
-	}
-	check.release();
-	return promise;
-}
 napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
 		METHOD("setLauncher", set_launcher),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
-		METHOD("probeSandbox", sandbox_probe),
-		METHOD("probeDotnetExec", dotnet_exec_probe),
-		METHOD("probeBrokerTcp", broker_tcp_probe),
 		METHOD("configure", configure),
-		METHOD("checkRuntime", check_runtime),
 		METHOD("setResourceManager", set_resources),
 		METHOD("setWindowId", set_window),
 		METHOD("setSurfaceId", set_surface),

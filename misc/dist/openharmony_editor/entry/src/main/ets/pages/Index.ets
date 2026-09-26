@@ -7,7 +7,6 @@ import { mapKeyCode } from './KeyMap';
 import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
 import { crashLogTime, describe, engineLogPath, fail, initDiagnostics, logPermissionState, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
-import { probeBrokerConnection } from '../runtime/BrokerProbe';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -81,32 +80,6 @@ struct Index {
       logPermissionState();
       setStep('editor:configure');
       plugin.configure(context.filesDir, context.cacheDir, runtime);
-      setStep('editor:broker-tcp-test');
-      this.message = '正在测试命令服务 TCP 连接…';
-      await probeBrokerConnection();
-      record('--- sandbox probe ---');
-      const probeLines: string[] = plugin.probeSandbox().split('\n');
-      for (const line of probeLines) {
-        if (line.length > 0) { record(line); }
-      }
-      // The engine loads the .NET runtime from the package directory, but starting
-      // a process there is a separate kernel decision: this is where the answer is
-      // recorded, together with the errno the platform returned.
-      record('--- dotnet exec test ---');
-      const execLines: string[] = plugin.probeDotnetExec().split('\n');
-      for (const line of execLines) {
-        if (line.length > 0) { record(line); }
-      }
-      setStep('editor:check-dotnet');
-      this.message = '正在检查 .NET SDK…';
-      // Running the bundled CLI from application data is denied on this platform,
-      // so record the failure and continue: the editor itself must still start.
-      try {
-        await plugin.checkRuntime();
-        record('dotnet --version check passed');
-      } catch (error) {
-        record(`dotnet --version check failed, continuing: ${describe(error as BusinessError)}`);
-      }
       setStep('editor:start-engine');
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
