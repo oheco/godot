@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "Godot Editor with .NET for OpenHarmony"
+      "value": "Godot Editor for OpenHarmony"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "Godot Editor with .NET"
+      "value": "Godot Editor for OpenHarmony"
     },
     {
       "name": "EntryAbility_label",
-      "value": "Godot Editor .NET"
+      "value": "Godot Editor"
     },
     {
       "name": "reason_user_file",
