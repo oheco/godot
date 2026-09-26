@@ -697,6 +697,20 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 }
 
 void RenderingDeviceDriverVulkan::_check_driver_workarounds(const VkPhysicalDeviceProperties &p_device_properties, const VkPhysicalDeviceDriverPropertiesKHR *p_driver_properties) {
+#ifdef OPENHARMONY_ENABLED
+	// Maleoon 935 rejects compute sampling through opaque function parameters.
+	// Keep this compatibility transform limited to the device/driver tested with
+	// the original and inlined SPIR-V; do not assume future drivers need it.
+	maleoon_compute_function_inlining_workaround =
+			p_device_properties.vendorID == 0x19e5 &&
+			p_device_properties.deviceID == 0x20021000 &&
+			p_device_properties.driverVersion == 1337773855 &&
+			OS::get_singleton()->get_environment("GODOT_VULKAN_DISABLE_MALEOON_COMPUTE_INLINE") != "1";
+	if (maleoon_compute_function_inlining_workaround) {
+		print_line("Vulkan: enabled Maleoon compute function inlining workaround (v1).");
+	}
+#endif
+
 	// Workaround a driver bug on Adreno 5XX GPUs that causes a crash when
 	// there are empty descriptor set layouts placed between non-empty ones.
 	adreno_5xx_empty_descriptor_set_layout_workaround =
@@ -1591,6 +1605,11 @@ Error RenderingDeviceDriverVulkan::_initialize_pipeline_cache() {
 
 	pipeline_cache_id = String::hex_encode_buffer(physical_device_properties.pipelineCacheUUID, VK_UUID_SIZE);
 	pipeline_cache_id += "-driver-" + itos(physical_device_properties.driverVersion);
+#ifdef OPENHARMONY_ENABLED
+	if (maleoon_compute_function_inlining_workaround) {
+		pipeline_cache_id += "-maleoon-compute-inline-v1";
+	}
+#endif
 
 	return OK;
 }
@@ -4387,9 +4406,6 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 		}
 
 		shader_info.original_stage_size.push_back(decoded_spirv.size());
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-		bool diagnostic_respv_optimized = false;
-#endif
 
 		if (use_respv) {
 			const bool inline_data = store_respv || (RESPV_ONLY_INLINE_SHADERS_WITH_SPEC_CONSTANTS == 0);
@@ -4411,9 +4427,6 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 #endif
 					decoded_spirv.resize(respv_optimized_data.size());
 					memcpy(decoded_spirv.ptrw(), respv_optimized_data.data(), respv_optimized_data.size());
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-					diagnostic_respv_optimized = true;
-#endif
 				} else {
 #if RESPV_VERBOSE
 					print_line("re-spirv failed to optimize the shader.");
@@ -4421,6 +4434,35 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 				}
 			}
 		}
+
+#ifdef OPENHARMONY_ENABLED
+		if (maleoon_compute_function_inlining_workaround && shader_refl.stages_vector[i] == SHADER_STAGE_COMPUTE) {
+			if (use_respv) {
+				// Apply to the actual module, including compute shaders whose normal
+				// re-spirv optimization was deferred for specialization constants.
+				// Export ONLY inlining: no additional optimizer pass or specialization
+				// substitution. Keep the existing reflection and VkSpecializationInfo.
+				// use_respv excludes debug-info containers: SMOL-V has stripped names
+				// that re-spirv's inliner could otherwise leave pointing at removed IDs.
+				respv::Shader inlined_shader;
+				if (inlined_shader.parse(decoded_spirv.ptr(), decoded_spirv.size(), true) && !inlined_shader.inlinedSpirvWords.empty()) {
+					const size_t inlined_size = inlined_shader.inlinedSpirvWords.size() * sizeof(uint32_t);
+					if (inlined_size != size_t(decoded_spirv.size()) || memcmp(decoded_spirv.ptr(), inlined_shader.inlinedSpirvWords.data(), inlined_size) != 0) {
+						if (decoded_spirv.resize(inlined_size) != OK) {
+							error_text = "Couldn't allocate inlined Maleoon compute shader bytecode.";
+							break;
+						}
+						memcpy(decoded_spirv.ptrw(), inlined_shader.inlinedSpirvWords.data(), inlined_size);
+					}
+				} else {
+					// Unsupported input must retain its original module, not partial data.
+					WARN_PRINT_ONCE("Maleoon compute inlining could not process a shader; preserving the original SPIR-V.");
+				}
+			} else {
+				WARN_PRINT_ONCE("Maleoon compute inlining is unavailable with shader debug information or re-spirv disabled.");
+			}
+		}
+#endif
 
 #if RECORD_PIPELINE_STATISTICS
 		shader_info.spirv_stage_bytes.push_back(decoded_spirv);
@@ -4431,23 +4473,6 @@ RDD::ShaderID RenderingDeviceDriverVulkan::shader_create_from_container(const Re
 		shader_module_create_info.codeSize = decoded_spirv.size();
 		shader_module_create_info.pCode = (const uint32_t *)(decoded_spirv.ptr());
 
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-		if (!compute_pipeline_diagnostics_dir.is_empty() && shader_refl.stages_vector[i] == SHADER_STAGE_COMPUTE) {
-			// Capture AFTER decompression, SMOL-V decoding and any re-spirv pass.
-			// Compute pipeline creation uses this module unchanged and supplies
-			// specialization separately. Failed pipelines are the only disk dumps.
-			// Deep-copy instead of sharing Vector's COW storage: diagnostics must
-			// not extend the lifetime of the actual pCode allocation and mask a
-			// driver that incorrectly keeps that pointer after module creation.
-			if (shader_info.diagnostic_compute_spirv.resize(decoded_spirv.size()) == OK && !decoded_spirv.is_empty()) {
-				memcpy(shader_info.diagnostic_compute_spirv.ptrw(), decoded_spirv.ptr(), decoded_spirv.size());
-			}
-			shader_info.diagnostic_reflection = shader_refl;
-			shader_info.diagnostic_respv_requested = use_respv;
-			shader_info.diagnostic_respv_deferred = store_respv;
-			shader_info.diagnostic_respv_optimized = diagnostic_respv_optimized;
-		}
-#endif
 		res = vkCreateShaderModule(vk_device, &shader_module_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SHADER_MODULE), &vk_module);
 		if (res != VK_SUCCESS) {
 			error_text = vformat("Error (%d) creating module for shader stage %s.", res, String(SHADER_STAGE_NAMES[shader_refl.stages_vector[i]]));
@@ -6743,160 +6768,6 @@ void RenderingDeviceDriverVulkan::command_compute_dispatch_indirect(CommandBuffe
 
 // ----- PIPELINE -----
 
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-namespace {
-Dictionary _vk_diagnostic_constant(const RDD::PipelineSpecializationConstant &p_constant) {
-	uint32_t bits = 0;
-	memcpy(&bits, &p_constant.int_value, sizeof(bits));
-	Dictionary constant;
-	constant["constant_id"] = p_constant.constant_id;
-	constant["type"] = int(p_constant.type);
-	constant["raw_u32_hex"] = "0x" + String::num_uint64(bits, 16);
-	return constant;
-}
-
-bool _vk_diagnostic_write(const String &p_path, const uint8_t *p_data, uint64_t p_size) {
-	Error error = OK;
-	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE, &error);
-	if (file.is_null()) {
-		WARN_PRINT(vformat("Vulkan diagnostic could not open '%s' (error %d).", p_path, error));
-		return false;
-	}
-	const bool stored = file->store_buffer(p_data, p_size);
-	file->flush();
-	const bool ok = stored && file->get_error() == OK;
-	file->close();
-	if (!ok) {
-		WARN_PRINT(vformat("Vulkan diagnostic write failed: %s", p_path));
-	}
-	return ok;
-}
-} // namespace
-
-void RenderingDeviceDriverVulkan::_dump_compute_pipeline_failure(const ShaderInfo *p_shader, VectorView<PipelineSpecializationConstant> p_constants,
-		const VkComputePipelineCreateInfo &p_create_info, VkResult p_result, uint64_t p_driver_time_usec) {
-	// One file pair per failure, unique across devices and worker threads in this
-	// process. Never serialize vkCreateComputePipelines or mutate its inputs.
-	static SafeNumeric<uint64_t> failure_counter;
-	const uint64_t failure_id = failure_counter.increment();
-	if (failure_id > 256) {
-		if (failure_id == 257) {
-			WARN_PRINT("Vulkan diagnostic dump limit reached (256 failures in this process). Original errors are still reported.");
-		}
-		return;
-	}
-	const String base = compute_pipeline_diagnostics_dir.path_join(vformat("compute-failure-%04d", failure_id));
-	const String spirv_path = base + ".spv";
-	const String json_path = base + ".json";
-	String result_name = "UNRECOGNIZED_VK_RESULT";
-	switch (p_result) {
-		case VK_ERROR_OUT_OF_HOST_MEMORY: result_name = "VK_ERROR_OUT_OF_HOST_MEMORY"; break;
-		case VK_ERROR_OUT_OF_DEVICE_MEMORY: result_name = "VK_ERROR_OUT_OF_DEVICE_MEMORY"; break;
-		case VK_ERROR_INITIALIZATION_FAILED: result_name = "VK_ERROR_INITIALIZATION_FAILED"; break;
-		case VK_ERROR_DEVICE_LOST: result_name = "VK_ERROR_DEVICE_LOST"; break;
-		case VK_ERROR_UNKNOWN: result_name = "VK_ERROR_UNKNOWN"; break;
-		default: break;
-	}
-	print_line(vformat("[VK_PIPELINE_DIAGNOSTICS] failure=%d pid=%d tid=%d shader='%s' result=%s(%d) cache=%s spec_count=%d file=%s",
-			failure_id, OS::get_singleton()->get_process_id(), gettid(), p_shader->name,
-			result_name, int(p_result), pipelines_cache.vk_cache != VK_NULL_HANDLE, p_constants.size(), json_path));
-
-	Dictionary report;
-	report["schema_version"] = 1;
-	report["failure_id"] = int64_t(failure_id);
-	report["pid"] = OS::get_singleton()->get_process_id();
-	report["tid"] = int64_t(gettid());
-	report["godot_thread_id"] = String::num_uint64(Thread::get_caller_id());
-	report["ticks_usec"] = int64_t(OS::get_singleton()->get_ticks_usec());
-	report["driver_call_usec"] = int64_t(p_driver_time_usec);
-	report["shader_name"] = p_shader->name;
-	report["vk_result"] = int(p_result);
-	report["vk_result_name"] = result_name;
-	report["rendering_method"] = OS::get_singleton()->get_current_rendering_method();
-	report["device_name"] = String::utf8(physical_device_properties.deviceName);
-	report["vendor_id"] = physical_device_properties.vendorID;
-	report["device_id"] = physical_device_properties.deviceID;
-	report["api_version"] = physical_device_properties.apiVersion;
-	report["driver_version"] = physical_device_properties.driverVersion;
-	report["pipeline_cache_used"] = pipelines_cache.vk_cache != VK_NULL_HANDLE;
-	report["pipeline_cache_id"] = pipeline_cache_id;
-	report["device_handle"] = "0x" + String::num_uint64(uint64_t(vk_device), 16);
-	report["shader_module_handle"] = "0x" + String::num_uint64(uint64_t(p_create_info.stage.module), 16);
-	report["pipeline_layout_handle"] = "0x" + String::num_uint64(uint64_t(p_create_info.layout), 16);
-	report["stage"] = int64_t(p_create_info.stage.stage);
-	report["stage_flags"] = int64_t(p_create_info.stage.flags);
-	report["pipeline_flags"] = int64_t(p_create_info.flags);
-	report["entry_point"] = String::utf8(p_create_info.stage.pName);
-	report["extra_gpu_memory_tracking"] = Engine::get_singleton()->is_extra_gpu_memory_tracking_enabled();
-	report["respv_requested"] = p_shader->diagnostic_respv_requested;
-	report["respv_deferred_for_specialization"] = p_shader->diagnostic_respv_deferred;
-	report["respv_optimized_before_module"] = p_shader->diagnostic_respv_optimized;
-	report["capture_point"] = "Final compute pCode/codeSize passed to vkCreateShaderModule; specialization is recorded separately.";
-	report["spirv_bytes"] = p_shader->diagnostic_compute_spirv.size();
-	report["spirv_file"] = spirv_path.get_file();
-	const bool spv_written = !p_shader->diagnostic_compute_spirv.is_empty() &&
-			_vk_diagnostic_write(spirv_path, p_shader->diagnostic_compute_spirv.ptr(), p_shader->diagnostic_compute_spirv.size());
-	report["spirv_write_ok"] = spv_written;
-	if (spv_written) {
-		report["spirv_sha256"] = FileAccess::get_sha256(spirv_path);
-	}
-
-	Dictionary features;
-#define VK_DIAGNOSTIC_FEATURE(feature) \
-	features[#feature "_available"] = physical_device_features.feature == VK_TRUE; \
-	features[#feature "_enabled"] = requested_device_features.feature == VK_TRUE;
-	VK_DIAGNOSTIC_FEATURE(shaderStorageImageExtendedFormats)
-	VK_DIAGNOSTIC_FEATURE(shaderStorageImageReadWithoutFormat)
-	VK_DIAGNOSTIC_FEATURE(shaderStorageImageWriteWithoutFormat)
-	VK_DIAGNOSTIC_FEATURE(fragmentStoresAndAtomics)
-	VK_DIAGNOSTIC_FEATURE(shaderInt16)
-	VK_DIAGNOSTIC_FEATURE(shaderInt64)
-	VK_DIAGNOSTIC_FEATURE(shaderFloat64)
-#undef VK_DIAGNOSTIC_FEATURE
-	features["shader_float16_supported"] = shader_capabilities.shader_float16_is_supported;
-	features["subgroup_supported_stages"] = int64_t(subgroup_capabilities.supported_stages);
-	features["subgroup_supported_operations"] = int64_t(subgroup_capabilities.supported_operations);
-	report["device_features"] = features;
-
-	Array constants;
-	for (uint32_t i = 0; i < p_constants.size(); i++) {
-		Dictionary constant = _vk_diagnostic_constant(p_constants[i]);
-		constant["offset"] = int64_t(reinterpret_cast<const uint8_t *>(&p_constants[i].int_value) - reinterpret_cast<const uint8_t *>(p_constants.ptr()));
-		constant["size"] = int64_t(sizeof(uint32_t));
-		constants.push_back(constant);
-	}
-	report["specialization_constants"] = constants;
-	report["specialization_data_size"] = int64_t(p_constants.size() * sizeof(PipelineSpecializationConstant));
-	Array defaults;
-	for (const ShaderSpecializationConstant &constant : p_shader->diagnostic_reflection.specialization_constants) {
-		defaults.push_back(_vk_diagnostic_constant(constant));
-	}
-	report["reflected_specialization_defaults"] = defaults;
-	Array local_size;
-	for (int i = 0; i < 3; i++) {
-		local_size.push_back(p_shader->diagnostic_reflection.compute_local_size[i]);
-	}
-	report["reflected_compute_local_size"] = local_size;
-	report["push_constant_size"] = p_shader->diagnostic_reflection.push_constant_size;
-	Array bindings;
-	for (int set = 0; set < p_shader->diagnostic_reflection.uniform_sets.size(); set++) {
-		for (const ShaderUniform &uniform : p_shader->diagnostic_reflection.uniform_sets[set]) {
-			Dictionary binding;
-			binding["set"] = set;
-			binding["binding"] = uniform.binding;
-			binding["rd_uniform_type"] = int(uniform.type);
-			binding["declared_length"] = uniform.length;
-			binding["writable"] = uniform.writable;
-			bindings.push_back(binding);
-		}
-	}
-	report["reflected_bindings"] = bindings;
-
-	const CharString json = JSON::stringify(report, "\t", true, true).utf8();
-	_vk_diagnostic_write(json_path, reinterpret_cast<const uint8_t *>(json.get_data()), json.length());
-}
-#endif
-
 RDD::PipelineID RenderingDeviceDriverVulkan::compute_pipeline_create(ShaderID p_shader, VectorView<PipelineSpecializationConstant> p_specialization_constants) {
 	const ShaderInfo *shader_info = (const ShaderInfo *)p_shader.id;
 
@@ -6925,16 +6796,7 @@ RDD::PipelineID RenderingDeviceDriverVulkan::compute_pipeline_create(ShaderID p_
 	}
 
 	VkPipeline vk_pipeline = VK_NULL_HANDLE;
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-	const uint64_t diagnostic_started = compute_pipeline_diagnostics_dir.is_empty() ? 0 : OS::get_singleton()->get_ticks_usec();
-#endif
 	VkResult err = vkCreateComputePipelines(vk_device, pipelines_cache.vk_cache, 1, &pipeline_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_PIPELINE), &vk_pipeline);
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-	if (err != VK_SUCCESS && !compute_pipeline_diagnostics_dir.is_empty()) {
-		_dump_compute_pipeline_failure(shader_info, p_specialization_constants, pipeline_create_info, err,
-				OS::get_singleton()->get_ticks_usec() - diagnostic_started);
-	}
-#endif
 	ERR_FAIL_COND_V_MSG(err, PipelineID(), vformat("Couldn't create Vulkan compute pipelines (VkResult error %d). Shader: '%s'.", err, shader_info->name));
 
 	return PipelineID(vk_pipeline);
@@ -7673,24 +7535,6 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 
 	context_driver = p_context_driver;
 	max_descriptor_sets_per_pool = GLOBAL_GET("rendering/rendering_device/vulkan/max_descriptors_per_pool");
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-	// Read once, before any shader creation, so retention and dumping cannot
-	// disagree if the environment changes later. Empty/unwritable means disabled.
-	const String diagnostic_dir = OS::get_singleton()->get_environment("GODOT_VULKAN_PIPELINE_DIAGNOSTICS_DIR");
-	if (!diagnostic_dir.is_empty()) {
-		if (!diagnostic_dir.is_absolute_path()) {
-			WARN_PRINT("Vulkan pipeline diagnostics require an absolute output directory.");
-		} else {
-			const Error error = DirAccess::make_dir_recursive_absolute(diagnostic_dir);
-			if (error == OK) {
-				compute_pipeline_diagnostics_dir = diagnostic_dir;
-				print_line(vformat("[VK_PIPELINE_DIAGNOSTICS] enabled path=%s; only failed compute pipelines are dumped.", diagnostic_dir));
-			} else {
-				WARN_PRINT(vformat("Vulkan pipeline diagnostics disabled: cannot create '%s' (error %d).", diagnostic_dir, error));
-			}
-		}
-	}
-#endif
 }
 
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {

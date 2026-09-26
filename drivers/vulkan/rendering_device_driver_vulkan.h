@@ -491,22 +491,7 @@ private:
 		TightLocalVector<Vector<uint8_t>> spirv_stage_bytes;
 		TightLocalVector<uint64_t> original_stage_size;
 		VkPipelineLayout vk_pipeline_layout = VK_NULL_HANDLE;
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-		// Enabled only by an explicit diagnostics directory. Own the exact bytes
-		// passed to vkCreateShaderModule; never retain a temporary pCode pointer.
-		Vector<uint8_t> diagnostic_compute_spirv;
-		ShaderReflection diagnostic_reflection;
-		bool diagnostic_respv_requested = false;
-		bool diagnostic_respv_deferred = false;
-		bool diagnostic_respv_optimized = false;
-#endif
 	};
-
-#if defined(TOOLS_ENABLED) && defined(OPENHARMONY_ENABLED)
-	String compute_pipeline_diagnostics_dir;
-	void _dump_compute_pipeline_failure(const ShaderInfo *p_shader, VectorView<PipelineSpecializationConstant> p_constants,
-			const VkComputePipelineCreateInfo &p_create_info, VkResult p_result, uint64_t p_driver_time_usec);
-#endif
 
 public:
 	virtual ShaderID shader_create_from_container(const Ref<RenderingShaderContainer> &p_shader_container, const Vector<ImmutableSampler> &p_immutable_samplers) override final;
@@ -565,6 +550,9 @@ private:
 	};
 
 	bool adreno_5xx_empty_descriptor_set_layout_workaround = false;
+#ifdef OPENHARMONY_ENABLED
+	bool maleoon_compute_function_inlining_workaround = false;
+#endif
 
 public:
 	virtual UniformSetID uniform_set_create(VectorView<BoundUniform> p_uniforms, ShaderID p_shader, uint32_t p_set_index, int p_linear_pool_index) override final;
