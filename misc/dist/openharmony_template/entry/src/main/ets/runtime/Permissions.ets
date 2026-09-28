@@ -3,7 +3,10 @@ import { abilityAccessCtrl, bundleManager, common, Permissions } from '@kit.Abil
 import { BusinessError } from '@kit.BasicServicesKit';
 import { describe, record } from './Diagnostics';
 
-export async function requestGamePermissions(context: common.UIAbilityContext): Promise<void> {
+// The generated resource is the single request source for both host roles.
+// SDK profiles include their file-access permission here; the runtime extractor
+// must not issue a second dialog, and non-SDK hosts add no SDK permissions.
+export async function requestUserPermissions(context: common.UIAbilityContext): Promise<void> {
   let resource: string;
   try {
     resource = context.resourceManager.getStringByNameSync('user_permissions');
@@ -21,7 +24,7 @@ export async function requestGamePermissions(context: common.UIAbilityContext): 
     const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(context, permissions);
     record(`user_permissions authResults=[${result.authResults.join(',')}] (0 means granted)`);
   } catch (error) {
-    // A denied/cancelled dialog must not prevent a game from starting. Query the
+    // A denied/cancelled dialog must not prevent the host from starting. Query the
     // actual token below, rather than treating a failed dialog as full denial.
     record(`user_permissions request failed: ${describe(error as BusinessError)}`);
   }

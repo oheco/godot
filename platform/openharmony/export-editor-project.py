@@ -8,7 +8,7 @@ import shutil
 import stat
 import zipfile
 
-from project_config import EXCLUDED, HEADERS, configuration, configure_project, read_document
+from project_config import EXCLUDED, HEADERS, HOST_ABI_VERSION, configuration, configure_project, read_document
 
 
 def sha256(path):
@@ -156,6 +156,8 @@ def main():
             raise SystemExit(f'Expected ELF64 AArch64: {path}')
     library_digest = sha256(args.library)
     native_info = read_document(args.library.parent / 'build-info.json')
+    if type(native_info.get('openharmony_host_abi')) is not int or native_info['openharmony_host_abi'] != HOST_ABI_VERSION:
+        raise SystemExit('Native library provenance predates the shared host ABI; rebuild the engine and rerun the current build-cli.py (do not reuse an old CLI cache)')
     if native_info['libgodot.so_sha256'] != library_digest:
         raise SystemExit('Native build provenance does not match the provided library')
     args.output.mkdir(parents=True, exist_ok=True)

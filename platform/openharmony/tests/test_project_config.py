@@ -126,6 +126,8 @@ class ProjectConfigurationTest(unittest.TestCase):
             {'build': {'sdkVersion': '5.1.0(18)'}}, {'build': {'sdkVersion': 'not-an-api'}},
             {'build': {'architectures': ['riscv64']}}, {'application': {'bundleId': 'not a bundle'}},
             {'permissions': ['ohos.permission.CAMERA']},
+            {'permissions': ['ohos.permission.READ_WRITE_USER_FILE']},
+            {'permissions': ['ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE']},
         ]
         for overrides in invalid:
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):

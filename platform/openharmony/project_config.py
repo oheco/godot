@@ -18,6 +18,7 @@ SOURCE = Path(__file__).resolve().parents[2]
 TEMPLATE = SOURCE / 'misc/dist/openharmony_template'
 HOST_PATH = 'entry/src/main/resources/rawfile/godot_host.json'
 SDK_VERSION = '6.1.0(23)'
+HOST_ABI_VERSION = 1
 HEADERS = ('bridge_openharmony.h', 'engine_host_openharmony.h')
 EXCLUDED = {'.hvigor', '.cxx', 'node_modules', 'oh_modules', 'build', '.git', '.idea', '.appanalyzer', '.bitfun', '.godot-config-history'}
 RESTRICTED = {
@@ -198,6 +199,8 @@ def validate_configuration(config):
                               'ohos.permission.LOCK_WINDOW_CURSOR', 'ohos.permission.READ_WRITE_USER_FILE',
                               'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'}:
             raise ValueError(f'Unsupported permission metadata: {permission}')
+        if permission in {'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'} and app['deviceTypes'] != ['2in1']:
+            raise ValueError(f'{permission} requires a 2in1-only application profile')
 
 
 def stage_template(destination):

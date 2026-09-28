@@ -125,6 +125,93 @@ function testConfig() {
   console.log(`PASS config: 3 valid / ${invalid.length} invalid profiles; Want/default flag-value merging and game isolation`);
 }
 
+const applicationPaths = { filesDir: '/private/application/files', cacheDir: '/private/application/cache', tempDir: '/private/application/temp' };
+const modulePaths = { filesDir: '/private/module/files', cacheDir: '/private/module/cache', tempDir: '/private/module/temp' };
+function hostContext() {
+  const application = { ...applicationPaths, setColorMode: () => {} };
+  return {
+    ...modulePaths, abilityInfo: { bundleName: 'org.oheco.fixture', moduleName: 'entry', name: 'EntryAbility' },
+    resourceManager: {}, getApplicationContext: () => application,
+  };
+}
+
+function diagnosticFixture(plugin, events = []) {
+  const logs = new Map();
+  const inspected = [];
+  const hostDiagnostics = load('runtime/Diagnostics.ets', {
+    './Config': config, 'libentry.so': { default: plugin },
+    '@kit.CoreFileKit': { fileIo: {
+      OpenMode: { CREATE: 1, WRITE_ONLY: 2, APPEND: 4 },
+      openSync: (file) => { events.push('log-open'); return { fd: file }; },
+      closeSync: () => {}, writeSync: (fd, text) => logs.set(fd, (logs.get(fd) || '') + text),
+      accessSync: (file) => { inspected.push(file); return logs.has(file); },
+      statSync: (file) => ({ size: Buffer.byteLength(logs.get(file) || '') }),
+      readTextSync: (file, options = {}) => {
+        const text = logs.get(file) || '';
+        return text.slice(options.offset || 0, options.length === undefined ? undefined : (options.offset || 0) + options.length);
+      },
+      listFileSync: (directory) => [...logs.keys()].filter((file) => file.startsWith(directory + '/')).map((file) => path.basename(file)),
+    } },
+  });
+  return { hostDiagnostics, logs, inspected };
+}
+
+function testStorageAndAbility() {
+  const context = hostContext();
+  assert.deepEqual(plain(config.hostStorage(context, gameProfile())), applicationPaths);
+  assert.deepEqual(plain(config.hostStorage(context, editorProfile())), modulePaths);
+  assert.deepEqual(plain(config.hostStorage(context, editorProfile('sdk'))), modulePaths);
+  assert.deepEqual(plain(config.hostStorage(context)), modulePaths);
+  for (const scenario of ['game', 'editor-none', 'editor-sdk', 'invalid-config', 'missing-config']) {
+    const profile = scenario === 'game' ? gameProfile() : editorProfile(scenario === 'editor-sdk' ? 'sdk' : 'none');
+    const events = [];
+    const plugin = { processId: () => 11, setLauncher: () => events.push('launcher') };
+    const { hostDiagnostics, inspected } = diagnosticFixture(plugin, events);
+    const storage = {};
+    const context = hostContext();
+    context.resourceManager.getRawFileContentSync = (name) => {
+      assert.equal(name, 'godot_host.json');
+      events.push('config-read');
+      if (scenario === 'missing-config') { throw new Error('missing config'); }
+      return Buffer.from(scenario === 'invalid-config' ? '{' : JSON.stringify(profile));
+    };
+    const { default: EntryAbility } = load('entryability/EntryAbility.ets', {
+      '@kit.AbilityKit': { UIAbility: class {}, ConfigurationConstant: { ColorMode: { COLOR_MODE_NOT_SET: 0 } } },
+      '@ohos.window': {}, 'libentry.so': { default: plugin }, '../runtime/Config': config,
+      '../runtime/Diagnostics': hostDiagnostics,
+      '../runtime/Launch': {
+        hasEngineFlag: (args, flag, short) => args.includes(flag) || args.includes(short),
+        logInstanceState: () => {}, reportStarted: () => {},
+      },
+    }, { AppStorage: { setOrCreate: (key, value) => { storage[key] = value; } } });
+    const ability = new EntryAbility();
+    ability.context = context;
+    ability.onCreate({}, {});
+    const paths = scenario === 'game' ? applicationPaths : modulePaths;
+    assert.equal(events[0], 'config-read', 'Config must be loaded before the log scope is selected');
+    assert.equal(hostDiagnostics.diagnosticsPath(), `${paths.filesDir}/godot-11-diagnostics.log`, scenario);
+    assert.equal(hostDiagnostics.engineLogPath(11), `${paths.filesDir}/godot-11-engine.log`, scenario);
+    const error = scenario.endsWith('-config');
+    assert.equal(!!storage.godotConfigError, error, scenario);
+    assert.equal(events.includes('launcher'), !error && scenario !== 'game', scenario);
+    const log = hostDiagnostics.readDiagnostics();
+    assert.ok(log.includes(`filesDir=${paths.filesDir}`), scenario);
+    assert.ok(log.includes(`cacheDir=${paths.cacheDir}`), scenario);
+    assert.ok(log.includes(`tempDir=${paths.tempDir}`), scenario);
+    assert.ok(log.includes(`crash log=${paths.filesDir}/godot-11-crash.log`), scenario);
+    if (error) { assert.ok(log.includes('host configuration failed'), scenario); }
+    // Repeated fallback initialization must not move an already selected game log.
+    hostDiagnostics.initDiagnostics(context);
+    assert.equal(hostDiagnostics.diagnosticsPath(), `${paths.filesDir}/godot-11-diagnostics.log`, scenario);
+    hostDiagnostics.setDiagnosticsLevel('verbose');
+    hostDiagnostics.probeEnvironment(context);
+    assert.ok(inspected.includes(`${paths.cacheDir}/tmp`), scenario);
+    assert.ok(inspected.includes(`${paths.filesDir}/Projects`), scenario);
+    if (scenario === 'game') { assert.ok(!inspected.some((file) => file.startsWith(modulePaths.filesDir))); }
+  }
+  console.log('PASS storage/EntryAbility/Diagnostics: game application scope; editor module scope; selected log/probe roots; invalid/missing config fallback');
+}
+
 function testDirectoryRace() {
   let directory = true;
   let code = 13900015;
@@ -173,13 +260,13 @@ async function testPermissions() {
   };
   const permissions = load('runtime/Permissions.ets', { '@kit.AbilityKit': ability, './Diagnostics': diagnostics });
   const context = (resource) => ({ resourceManager: { getStringByNameSync: () => resource } });
-  await permissions.requestGamePermissions(context(' ,ohos.permission.CAMERA,, ohos.permission.MICROPHONE, ohos.permission.CAMERA, '));
+  await permissions.requestUserPermissions(context(' ,ohos.permission.CAMERA,, ohos.permission.MICROPHONE, ohos.permission.CAMERA, '));
   assert.deepEqual(prompts, [['ohos.permission.CAMERA', 'ohos.permission.MICROPHONE']]);
   assert.deepEqual(plain(permissions.grantedPermissions()), ['ohos.permission.INTERNET', 'ohos.permission.CAMERA']);
-  await permissions.requestGamePermissions(context(' , , '));
+  await permissions.requestUserPermissions(context(' , , '));
   assert.equal(prompts.length, 1);
   manager.requestPermissionsFromUser = async () => { throw new Error('cancelled'); };
-  await permissions.requestGamePermissions(context('ohos.permission.CAMERA'));
+  await permissions.requestUserPermissions(context('ohos.permission.CAMERA'));
   assert.deepEqual(plain(permissions.grantedPermissions()), ['ohos.permission.INTERNET', 'ohos.permission.CAMERA']);
   introspectionFailed = true;
   assert.deepEqual(plain(permissions.grantedPermissions()), []);
@@ -196,25 +283,50 @@ async function testIndex() {
       setup: (...args) => calls.push(['setup', ...args]), state: () => currentState,
       processId: () => 11, destroySurface: () => {},
     };
+    const paths = mode === 'game' ? applicationPaths : modulePaths;
+    const userPermissions = ['ohos.permission.MICROPHONE'];
+    if (mode === 'editor-sdk') { userPermissions.push('ohos.permission.READ_WRITE_USER_FILE'); }
+    const granted = ['ohos.permission.INTERNET', ...userPermissions];
     const context = {
-      filesDir: '/private/files', cacheDir: '/private/cache', resourceManager: {},
+      ...hostContext(),
+      resourceManager: { getStringByNameSync: () => [...userPermissions, ...userPermissions, ' '].join(',') },
       terminateSelf: async () => calls.push(['terminateSelf']),
     };
+    const { hostDiagnostics } = diagnosticFixture(plugin);
+    const permissions = load('runtime/Permissions.ets', {
+      './Diagnostics': hostDiagnostics,
+      '@kit.AbilityKit': {
+        abilityAccessCtrl: {
+          GrantStatus: { PERMISSION_GRANTED: 0 },
+          createAtManager: () => ({
+            requestPermissionsFromUser: async (requestContext, names) => {
+              assert.equal(requestContext, context);
+              calls.push(['user-permissions', [...names]]);
+              return { authResults: names.map(() => 0) };
+            },
+            checkAccessTokenSync: () => 0,
+          }),
+        },
+        bundleManager: {
+          BundleFlag: { GET_BUNDLE_INFO_WITH_APPLICATION: 1, GET_BUNDLE_INFO_WITH_REQUESTED_PERMISSION: 2 },
+          getBundleInfoForSelfSync: () => ({
+            appInfo: { accessTokenId: 123 }, reqPermissionDetails: granted.map((name) => ({ name })),
+            permissionGrantStates: granted.map(() => 0),
+          }),
+        },
+      },
+    });
     const storage = {
       godotHostConfig: profile, godotConfigError: '', godotArguments: config.engineArguments(profile, {}), godotWindowId: 7,
     };
     const dependencies = {
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
       '../runtime/Config': config,
-      '../runtime/Permissions': {
-        grantedPermissions: () => ['ohos.permission.INTERNET'],
-        requestGamePermissions: async () => calls.push(['game-permissions']),
-      },
+      '../runtime/Permissions': permissions,
       '../runtime/Runtime': {
         prepareRuntime: async () => { calls.push(['runtime']); return '/private/runtime'; },
-        requestDotnetAccess: async () => calls.push(['sdk-permissions']),
       },
-      '../runtime/Diagnostics': diagnostics,
+      '../runtime/Diagnostics': hostDiagnostics,
       '../runtime/Launch': {
         spawnedChildPid: () => { calls.push(['child-query']); return 0; }, childHasExited: () => false,
         reportExit: () => calls.push(['exit-marker']), logInstanceState: () => calls.push(['instance-state']),
@@ -232,12 +344,17 @@ async function testIndex() {
     page.getUIContext = () => ({ getHostContext: () => context });
     await page.prepare();
     assert.deepEqual(plain(calls.find((call) => call[0] === 'configure')),
-      ['configure', '/private/files', '/private/cache', mode === 'editor-sdk' ? '/private/runtime' : '', mode === 'editor-sdk' ? 'sdk' : 'none']);
+      ['configure', paths.filesDir, paths.cacheDir, mode === 'editor-sdk' ? '/private/runtime' : '', mode === 'editor-sdk' ? 'sdk' : 'none']);
     assert.deepEqual(plain(calls.find((call) => call[0] === 'setup')),
-      ['setup', plain(storage.godotArguments), ['ohos.permission.INTERNET'], mode === 'game']);
+      ['setup', plain(storage.godotArguments), granted, mode === 'game']);
     assert.equal(calls.some((call) => call[0] === 'runtime'), mode === 'editor-sdk');
-    assert.equal(calls.some((call) => call[0] === 'sdk-permissions'), mode === 'editor-sdk');
-    assert.equal(calls.some((call) => call[0] === 'game-permissions'), mode === 'game');
+    // All roles request declared user grants, including non-SDK editor MIC.
+    // Even duplicated SDK file-access resource entries yield only one request.
+    assert.deepEqual(plain(calls.filter((call) => call[0] === 'user-permissions')),
+      [['user-permissions', userPermissions]], mode);
+    assert.equal(hostDiagnostics.diagnosticsPath(), `${paths.filesDir}/godot-11-diagnostics.log`, mode);
+    assert.equal(hostDiagnostics.engineLogPath(11), `${paths.filesDir}/godot-11-engine.log`, mode);
+    assert.ok(hostDiagnostics.readDiagnostics().includes(`cacheDir=${paths.cacheDir}`), mode);
     currentState = 3;
     page.updateEngineState(context);
     await Promise.resolve();
@@ -246,7 +363,7 @@ async function testIndex() {
       assert.ok(!calls.some((call) => ['child-query', 'instance-state', 'exit-marker'].includes(call[0])));
     }
   }
-  console.log('PASS Index logic: game/editor-none/editor-sdk NAPI tuples; SDK/permission gates; game never enters child logic');
+  console.log('PASS Index logic: game application/editor module NAPI and logs; all roles request declared permissions once; SDK-only runtime; no game child logic');
 }
 
 async function testLauncher() {
@@ -416,6 +533,7 @@ async function testRuntime() {
 async function main() {
   console.log('ArkTS host logic tests (mocks; not a substitute for CompileArkTS or HAP/device acceptance)');
   testConfig();
+  testStorageAndAbility();
   testDirectoryRace();
   await testPermissions();
   await testIndex();

@@ -104,6 +104,11 @@ permission Ability names and all SDK fields); old split-host templates must be
 rebuilt. Its preset exposes version, orientation, system-area and diagnostic
 settings, and project-only export does not require Hvigor to be installed.
 
+Native build provenance carries a shared-host ABI version. Rebuild the engine and
+rerun the current [build-cli.py](<platform/openharmony/build-cli.py>) when migrating
+an old CLI cache; the generator rejects legacy provenance before changing a
+project, instead of copying a library with incompatible bridge symbols.
+
 `--update` migrates the former Editor entry to the common `EntryAbility`, removes
 stale ArkTS/native sources, and preserves DevEco signing, dependency locks and
 local settings. Required SDK/native-layout/no-strip fields are migrated; unsupported

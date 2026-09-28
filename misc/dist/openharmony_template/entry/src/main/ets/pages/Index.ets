@@ -4,10 +4,10 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
-import { prepareRuntime, requestDotnetAccess } from '../runtime/Runtime';
+import { prepareRuntime } from '../runtime/Runtime';
 import { crashLogTime, describe, fail, initDiagnostics, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
-import { HostConfig, instancesEnabled } from '../runtime/Config';
-import { grantedPermissions, requestGamePermissions } from '../runtime/Permissions';
+import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
+import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
@@ -78,11 +78,12 @@ struct Index {
   private async prepare(): Promise<void> {
     const context = this.getUIContext().getHostContext() as common.UIAbilityContext;
     try {
-      initDiagnostics(context);
       const error = AppStorage.get<string>('godotConfigError') ?? '';
       if (error.length > 0) { throw new Error(error); }
       const config = AppStorage.get<HostConfig>('godotHostConfig');
       if (config === undefined) { throw new Error('Host configuration was not loaded by EntryAbility'); }
+      const paths = hostStorage(context, config);
+      initDiagnostics(context, paths);
       const packagedGame: boolean = config.host.role === 'game';
       this.expandSystemArea = config.window.expandIntoSystemArea;
       this.instanceSupport = instancesEnabled(config);
@@ -94,16 +95,13 @@ struct Index {
         runtime = await prepareRuntime(context);
         if (this.disposed) { return; }
         record(`runtime directory: ${runtime}`);
-        setStep('host:request-sdk-permission');
-        await requestDotnetAccess(context);
-      } else if (packagedGame) {
-        setStep('host:request-game-permissions');
-        await requestGamePermissions(context);
       }
+      setStep('host:request-user-permissions');
+      await requestUserPermissions(context);
       if (this.disposed) { return; }
       const permissions = grantedPermissions();
       setStep('host:configure');
-      plugin.configure(context.filesDir, context.cacheDir, runtime, config.managed.mode);
+      plugin.configure(paths.filesDir, paths.cacheDir, runtime, config.managed.mode);
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       const args = AppStorage.get<string[]>('godotArguments');
@@ -118,6 +116,7 @@ struct Index {
       this.ready = true;
       this.timer = setInterval(() => this.updateEngineState(context), 250);
     } catch (error) {
+      initDiagnostics(context);
       const cause = error as BusinessError;
       fail(cause);
       probeEnvironment(context);

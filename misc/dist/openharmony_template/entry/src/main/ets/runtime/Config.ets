@@ -18,6 +18,17 @@ export interface HostConfig {
   diagnostics: HostDiagnosticsConfig;
 }
 
+export interface HostStoragePaths { filesDir: string; cacheDir: string; tempDir: string; }
+
+// Preserve existing user:// roots: exported games historically used application
+// storage, while the editor used the UIAbility's module storage. Resolve SDK
+// Context paths rather than hardcoding either sandbox layout. Without a valid
+// config, diagnostics can safely fall back to this ability's private directory.
+export function hostStorage(context: common.UIAbilityContext, config?: HostConfig): HostStoragePaths {
+  const storage: common.Context = config?.host.role === 'game' ? context.getApplicationContext() : context;
+  return { filesDir: storage.filesDir, cacheDir: storage.cacheDir, tempDir: storage.tempDir };
+}
+
 // JSON.parse's type assertion is not validation. Reject missing/unknown keys,
 // arrays in place of objects, wrong scalar types and incompatible capabilities.
 function requireObject(value: Object, keys: string[], name: string): void {

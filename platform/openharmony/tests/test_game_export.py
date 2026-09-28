@@ -20,6 +20,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--godot', type=Path, required=True)
     parser.add_argument('--template', type=Path, required=True)
+    parser.add_argument('--runtime-godot', type=Path, help='Optional signed template CLI from build-cli.py; test hardened adjacent-PCK discovery')
     parser.add_argument('--output', type=Path, required=True, help='New persistent directory for evidence/project')
     args = parser.parse_args()
     if sys.platform != 'ohos':
@@ -89,8 +90,8 @@ def main():
             env[key] = str(directory)
         records = []
 
-        def run(name, command, expected=0):
-            result = subprocess.run(command, cwd=project, env=env, capture_output=True, text=True, timeout=300)
+        def run(name, command, expected=0, cwd=None):
+            result = subprocess.run(command, cwd=cwd or project, env=env, capture_output=True, text=True, timeout=300)
             text = result.stdout + result.stderr
             (output / (name + '.log')).write_text(text)
             records.append({'stage': name, 'exit_code': result.returncode})
@@ -133,6 +134,18 @@ def main():
         pck = generated / 'entry/src/main/resources/rawfile/template.pck'
         text = run('pck', [str(args.godot), '--headless', '--main-pack', str(pck)])
         assert 'SHARED_HOST_PCK_PASS' in text
+        if args.runtime_godot:
+            # Game templates disable command-line path overrides by default.
+            # Do not weaken that build for a test: use a relocated signed CLI
+            # and its matching adjacent pack, with no source project in cwd.
+            runtime = args.runtime_godot.resolve(strict=True)
+            runner = root / 'runtime'
+            runner.mkdir()
+            shutil.copy2(runtime, runner / 'godot')
+            shutil.copy2(runtime.parent / 'libgodot.so', runner / 'libgodot.so')
+            shutil.copyfile(pck, runner / 'godot.pck')
+            text = run('template-runtime', [str(runner / 'godot'), '--headless'], cwd=runner)
+            assert 'SHARED_HOST_PCK_PASS' in text
         (project / 'export_presets.cfg').write_text(preset.replace('build/sdk_version=""', 'build/sdk_version="5.1.0(18)"'))
         run('reject-old-api', [str(args.godot), '--headless', '--path', str(project), '--export-debug', 'OpenHarmony', str(root / 'Old.hap')], expected=1)
         assert not (root / 'Old').exists()

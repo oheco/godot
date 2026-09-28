@@ -4,7 +4,7 @@ import { AbilityConstant, ConfigurationConstant, UIAbility, Want } from '@kit.Ab
 import { BusinessError } from '@kit.BasicServicesKit';
 import window from '@ohos.window';
 import plugin from 'libentry.so';
-import { engineArguments, HostConfig, instancesEnabled, loadHostConfig } from '../runtime/Config';
+import { engineArguments, HostConfig, hostStorage, instancesEnabled, loadHostConfig } from '../runtime/Config';
 import { describe, initDiagnostics, record, setDiagnosticsLevel } from '../runtime/Diagnostics';
 import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportLaunchFailure, reportStarted, reportWindowReady } from '../runtime/Launch';
 
@@ -12,10 +12,10 @@ export default class EntryAbility extends UIAbility {
   private launcherEnabled: boolean = false;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    initDiagnostics(this.context);
-    this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
     try {
       const config: HostConfig = loadHostConfig(this.context);
+      initDiagnostics(this.context, hostStorage(this.context, config));
+      this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
       AppStorage.setOrCreate('godotHostConfig', config);
       AppStorage.setOrCreate('godotConfigError', '');
       setDiagnosticsLevel(config.diagnostics.level);
@@ -40,6 +40,9 @@ export default class EntryAbility extends UIAbility {
         if (!independent) { reportStarted(this.context, key); }
       }
     } catch (error) {
+      // Invalid/missing config still gets a private error log, without guessing
+      // the role or moving a game's existing application-scoped user:// data.
+      initDiagnostics(this.context);
       const detail = describe(error as BusinessError);
       record(`host configuration failed: ${detail}`);
       AppStorage.setOrCreate('godotConfigError', detail);

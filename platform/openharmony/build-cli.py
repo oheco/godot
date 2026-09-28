@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+from project_config import HOST_ABI_VERSION
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--library', type=Path, required=True)
 parser.add_argument('--native-sdk', type=Path, required=True)
@@ -37,7 +39,8 @@ git = subprocess.run(['git', '-c', 'safe.directory=' + str(source), 'rev-parse',
 revision = git.stdout.strip() if git.returncode == 0 else None
 if revision and revision[:9] not in version:
     raise SystemExit('The engine version does not match this source commit; rebuild the engine before packaging')
-metadata = {'platform': sys.platform, 'engine_version': version, 'source_commit': revision}
+metadata = {'platform': sys.platform, 'engine_version': version, 'source_commit': revision,
+            'openharmony_host_abi': HOST_ABI_VERSION}
 if revision:
     status = subprocess.run(['git', '-c', 'safe.directory=' + str(source), 'status', '--porcelain'],
                             cwd=source, capture_output=True, text=True, check=True)

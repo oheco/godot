@@ -10,9 +10,11 @@ import { common } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import plugin from 'libentry.so';
+import { hostStorage, HostStoragePaths } from './Config';
 
 let logFile: string = '';
 let directory: string = '';
+let storagePaths: HostStoragePaths | undefined = undefined;
 let step: string = 'startup';
 let verbose: boolean = false;
 
@@ -78,15 +80,16 @@ function listDirectory(path: string): string {
   }
 }
 
-export function initDiagnostics(context: common.UIAbilityContext): void {
+export function initDiagnostics(context: common.UIAbilityContext, paths: HostStoragePaths = hostStorage(context)): void {
   if (logFile.length > 0) { return; }
-  directory = context.filesDir;
+  storagePaths = paths;
+  directory = paths.filesDir;
   logFile = `${directory}/godot-${plugin.processId()}-diagnostics.log`;
   record('--- session ---');
   record(`log directory=${directory}`);
-  record(`filesDir=${context.filesDir}`);
-  record(`cacheDir=${context.cacheDir}`);
-  record(`tempDir=${context.tempDir}`);
+  record(`filesDir=${paths.filesDir}`);
+  record(`cacheDir=${paths.cacheDir}`);
+  record(`tempDir=${paths.tempDir}`);
   record(`bundle=${context.abilityInfo.bundleName} module=${context.abilityInfo.moduleName}`);
   record(`crash log=${crashLogPath(plugin.processId())}`);
 }
@@ -106,14 +109,15 @@ function crashLogPath(pid: number): string {
 // plain file instead of a directory.
 export function probeEnvironment(context: common.UIAbilityContext): void {
   if (!verbose) { return; }
+  const paths = storagePaths ?? hostStorage(context);
   record('--- environment probe ---');
-  record(inspect(`${context.filesDir}/Projects`));
-  record(inspect(`${context.filesDir}/config`));
-  record(inspect(`${context.filesDir}/nuget`));
-  record(inspect(`${context.filesDir}/dotnet-cli`));
-  record(inspect(`${context.cacheDir}/tmp`));
-  record(listDirectory(`${context.filesDir}/runtimes`));
-  record(listDirectory(context.filesDir));
+  record(inspect(`${paths.filesDir}/Projects`));
+  record(inspect(`${paths.filesDir}/config`));
+  record(inspect(`${paths.filesDir}/nuget`));
+  record(inspect(`${paths.filesDir}/dotnet-cli`));
+  record(inspect(`${paths.cacheDir}/tmp`));
+  record(listDirectory(`${paths.filesDir}/runtimes`));
+  record(listDirectory(paths.filesDir));
 }
 
 export function readDiagnostics(): string {

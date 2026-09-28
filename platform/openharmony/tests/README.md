@@ -50,7 +50,11 @@ python3 platform/openharmony/tests/test_game_export.py \
 This runs the real Editor import/export pipeline, checks application/SDK/permission
 metadata and byte-identical shell sources, boots the generated PCK headlessly,
 verifies nonzero script/export exit codes, and rejects API 18 and corrupted nested
-host/project schemas. It is not a Vulkan, input, UIAbility or installed-game test.
+host/project schemas. Optionally pass `--runtime-godot "$TEMPLATE_CLI"` to also run
+the PCK with the actual signed template engine produced by `build-cli.py`. This
+relocates the CLI/library and uses executable-adjacent pack discovery, without
+weakening the template's default disabled command-line path overrides.
+It is not a Vulkan, input, UIAbility or installed-game test.
 For SDK-enabled Editor regression, also rerun
 [test-dotnet.py](<../test-dotnet.py>) with the prepared native SDK/GodotSharp/feed.
 

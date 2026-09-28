@@ -11,7 +11,7 @@ import unittest
 
 PLATFORM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLATFORM))
-from project_config import HEADERS, HOST_PATH, read_document, write_document
+from project_config import HEADERS, HOST_PATH, HOST_ABI_VERSION, read_document, write_document
 
 
 class EditorGenerationTest(unittest.TestCase):
@@ -25,7 +25,8 @@ class EditorGenerationTest(unittest.TestCase):
         header[18:20] = (183).to_bytes(2, 'little')
         self.library.write_bytes(header)
         write_document(self.root / 'build-info.json', {
-            'libgodot.so_sha256': hashlib.sha256(header).hexdigest(), 'fixture': True})
+            'libgodot.so_sha256': hashlib.sha256(header).hexdigest(),
+            'openharmony_host_abi': HOST_ABI_VERSION, 'fixture': True})
         self.config = self.root / 'config.json'
         write_document(self.config, {'managed': {'mode': 'none'}})
         self.output = self.root / 'Generated Editor With Spaces'
@@ -72,6 +73,17 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertEqual(lock.read_text(), '{"localResolvedLock":true}\n')
         self.assertTrue((self.output / 'entry/src/main/ets/entryability/EntryAbility.ets').exists())
         self.generate(success=False)
+
+    def test_legacy_native_cache_is_rejected_before_update(self):
+        self.generate()
+        before = {p: p.read_bytes() for p in self.output.rglob('*') if p.is_file()}
+        path = self.root / 'build-info.json'
+        info = read_document(path)
+        info.pop('openharmony_host_abi')
+        write_document(path, info)
+        result = self.generate('--update', success=False)
+        self.assertIn('shared host ABI', result.stderr)
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
 
     def test_invalid_config_fails_before_touching_existing_project(self):
         self.generate()

@@ -32,6 +32,12 @@ by this refactor. A game never extracts Editor runtime resources or depends on a
 installed .NET SDK. Current native multi-window support is unchanged; application
 instances are not detached Godot subwindows.
 
+Storage scope is preserved: games use ApplicationContext files/cache directories
+(the legacy application-wide `user://` root), while the Editor retains its
+UIAbility/module-private directories. Paths come from the corresponding context,
+not a hardcoded developer machine path. All roles request the user-grant
+permissions listed in their generated resources through one shared path.
+
 Both roles use a fixed `EntryAbility` entry point. Editor project-open requests
 and new-instance launches address that same Ability. Project-manager → editor
 uses an independent application instance; Run Project retains its attached-child

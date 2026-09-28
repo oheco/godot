@@ -1,5 +1,5 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
-import { abilityAccessCtrl, common, Permissions } from '@kit.AbilityKit';
+import { common } from '@kit.AbilityKit';
 import { fileIo as fs, hash } from '@kit.CoreFileKit';
 import { BusinessError, zlib } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
@@ -10,18 +10,6 @@ import { ensureDirectory, exists, removeTree } from './FileSystem';
 interface RuntimeManifest { version: string; sha256: string; size: number; }
 let preparing: Promise<string> | undefined = undefined;
 let extractionSequence: number = 0;
-
-// Only the SDK-enabled editor calls this. ACL entries alone are not grants;
-// Permissions.ets checks the live token again before passing grants to native.
-export async function requestDotnetAccess(context: common.UIAbilityContext): Promise<void> {
-  const permissions: Permissions[] = ['ohos.permission.READ_WRITE_USER_FILE'];
-  try {
-    const result = await abilityAccessCtrl.createAtManager().requestPermissionsFromUser(context, permissions);
-    record(`READ_WRITE_USER_FILE authResults=[${result.authResults.join(',')}] (0 means granted)`);
-  } catch (error) {
-    record(`READ_WRITE_USER_FILE request failed: ${describe(error as BusinessError)}`);
-  }
-}
 
 function readyRuntime(destination: string, manifest: RuntimeManifest): boolean {
   const path = `${destination}/.ready`;
