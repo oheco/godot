@@ -74,7 +74,7 @@ def main():
     build/sdk_version=""
     build/bundle_id="org.oheco.godothosttest"
     build/version_code=7
-    build/version_name="test.7"
+    build/version_name="1.0.7"
     build/default_orientation=4
     build/expand_into_system_area=false
     build/verbose_diagnostics=true
@@ -109,7 +109,7 @@ def main():
         read = lambda name: json.loads((generated / name).read_text())
         assert read('AppScope/app.json5')['app']['bundleName'] == 'org.oheco.godothosttest'
         assert read('AppScope/app.json5')['app']['versionCode'] == 7
-        assert read('AppScope/app.json5')['app']['versionName'] == 'test.7'
+        assert read('AppScope/app.json5')['app']['versionName'] == '1.0.7'
         strings = {v['name']: v['value'] for v in read('AppScope/resources/base/element/string.json')['string']}
         assert strings['app_name'] == display_name
         product = read('build-profile.json5')['app']['products'][0]
