@@ -1,22 +1,16 @@
-# the minimum version of CMake.
-cmake_minimum_required(VERSION 3.5.0)
-project(template)
-
-set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
+cmake_minimum_required(VERSION 3.16)
+project(godot_shell LANGUAGES CXX)
 
 if(DEFINED PACKAGE_FIND_FILE)
     include(${PACKAGE_FIND_FILE})
 endif()
 
-include_directories(${NATIVERENDER_ROOT_PATH}
-                    ${NATIVERENDER_ROOT_PATH}/include)
-
-add_library(entry SHARED napi_init.cpp)
-
+# Both generated editor projects and exported games use entry/libs/<arch>.
 add_library(godot SHARED IMPORTED)
-set_target_properties(godot
-	PROPERTIES
-	IMPORTED_LOCATION ${CMAKE_CURRENT_SOURCE_DIR}/libs/${OHOS_ARCH}/libgodot.so
-)
+set_target_properties(godot PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/../../../libs/${OHOS_ARCH}/libgodot.so")
 
-target_link_libraries(entry PUBLIC libhilog_ndk.z.so libace_ndk.z.so libnative_window.so libace_napi.z.so librawfile.z.so libnative_vsync.so libohaudio.so libohinputmethod.so libnative_display_manager.so libnative_window_manager.so libnative_drawing.so libudmf.so libpasteboard.so godot)
+add_library(entry SHARED napi_init.cpp runtime_paths.cpp)
+target_compile_features(entry PRIVATE cxx_std_17)
+target_include_directories(entry PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(entry PRIVATE godot ace_napi.z native_window rawfile.z dl)

@@ -32,7 +32,7 @@
 
 #include "dir_access_openharmony.h"
 #include "display_server_openharmony.h"
-#include "editor_bridge_openharmony.h"
+#include "engine_host_openharmony.h"
 #include "file_access_openharmony.h"
 
 #include "core/input/input.h"
@@ -97,8 +97,9 @@ Size2i OS_OpenHarmony::get_display_size() const {
 }
 
 void OS_OpenHarmony::set_allowed_permissions(const char *p_allowed_permissions) {
-	String permissions = p_allowed_permissions;
-	for (const String &permission : permissions.split(",")) {
+	allowed_permissions.clear();
+	String permissions = p_allowed_permissions ? p_allowed_permissions : "";
+	for (const String &permission : permissions.split(",", false)) {
 		allowed_permissions.insert(permission);
 	}
 }
@@ -421,7 +422,8 @@ void OS_OpenHarmony::main_loop_end() {
 	if (main_loop) {
 		SceneTree *scene_tree = Object::cast_to<SceneTree>(main_loop);
 		if (scene_tree) {
-			scene_tree->quit();
+			// Teardown must not turn an export/script failure into EXIT_SUCCESS.
+			scene_tree->quit(get_exit_code());
 		}
 		main_loop->finalize();
 	}
@@ -505,7 +507,7 @@ Error OS_OpenHarmony::create_instance(const List<String> &p_arguments, ProcessID
 	for (const CharString &argument : arguments) {
 		argv.push_back(argument.get_data());
 	}
-	int32_t pid = godot_editor_create_instance(argv.size(), argv.ptr());
+	int32_t pid = godot_host_create_instance(argv.size(), argv.ptr());
 	ERR_FAIL_COND_V_MSG(pid <= 0, ERR_CANT_FORK, "The UIAbility could not start a separate Godot process.");
 	ability_processes.insert(pid);
 	if (r_child_id) {

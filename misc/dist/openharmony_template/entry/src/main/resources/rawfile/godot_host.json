@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "host": { "role": "game" },
+  "launch": {
+    "defaultMode": "packaged-game",
+    "defaultArguments": [],
+    "acceptProjectRequests": false
+  },
+  "instances": { "policy": "disabled", "maxCount": 5 },
+  "managed": { "mode": "none", "sdkSource": "oheco" },
+  "window": { "expandIntoSystemArea": true },
+  "diagnostics": { "level": "normal" }
+}

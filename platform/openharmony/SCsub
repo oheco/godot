@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 from misc.utility.scons_hints import *
 
+import importlib.util
 import os
+from pathlib import Path
 import shutil
+import tempfile
 
 from methods import print_warning
 
@@ -10,21 +13,27 @@ Import("env")
 
 
 def generate_bundle(target, source, env):
-    dst_lib_path = (
-        Dir(f"#misc/dist/openharmony_template/entry/src/main/cpp/libs/{lib_arch_dir}/").abspath + "/libgodot.so"
+    spec = importlib.util.spec_from_file_location(
+        "openharmony_project_config", File("#platform/openharmony/project_config.py").abspath
     )
-    os.makedirs(os.path.dirname(dst_lib_path), exist_ok=True)
-    shutil.copy(lib[0].abspath, dst_lib_path)
-    dst_header_path = (
-        Dir("#misc/dist/openharmony_template/entry/src/main/cpp/include/").abspath + "/bridge_openharmony.h"
-    )
-    os.makedirs(os.path.dirname(dst_header_path), exist_ok=True)
-    shutil.copy(File("#platform/openharmony/bridge_openharmony.h").abspath, dst_header_path)
-
-    template_dir = Dir("#misc/dist/openharmony_template").abspath
-    shutil.make_archive(Dir(f"#bin/openharmony_{lib_type_dir}_{lib_arch_dir}").abspath, "zip", root_dir=template_dir)
-    os.remove(dst_lib_path)
-    os.remove(dst_header_path)
+    project_config = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(project_config)
+    # Never mutate the source template or package IDE caches/stale binaries.
+    with tempfile.TemporaryDirectory(prefix="godot-ohos-template-", dir=os.environ.get("TMPDIR")) as staging:
+        project = Path(staging)
+        project_config.stage_template(project)
+        config = project_config.configuration(overrides={
+            "build": {"architectures": [lib_arch_dir]}, "engine": {"target": env["target"]}
+        })
+        project_config.configure_project(project, config, keep_history=False)
+        native = project / "entry/libs" / lib_arch_dir
+        native.mkdir(parents=True)
+        shutil.copyfile(lib[0].abspath, native / "libgodot.so")
+        include = project / "entry/src/main/cpp/include"
+        include.mkdir(parents=True)
+        for header in project_config.HEADERS:
+            shutil.copyfile(File("#platform/openharmony/" + header).abspath, include / header)
+        shutil.make_archive(Dir(f"#bin/openharmony_{lib_type_dir}_{lib_arch_dir}").abspath, "zip", root_dir=project)
 
 
 openharmony_files = [Glob("*.cpp")]

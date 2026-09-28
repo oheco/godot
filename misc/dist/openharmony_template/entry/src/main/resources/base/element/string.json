@@ -21,6 +21,10 @@
       "value": "For accessing network"
     },
     {
+      "name": "reason_user_file",
+      "value": "Access Godot projects and the installed .NET SDK."
+    },
+    {
       "name": "MICROPHONE_reason",
       "value": "For recording audio"
     }

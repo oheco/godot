@@ -30,8 +30,6 @@
 
 #pragma once
 
-#include <rawfile/raw_file_manager.h>
-
 #include <cstdint>
 
 extern "C" {
@@ -70,10 +68,9 @@ typedef struct GodotMouseEvent {
 	float relative_y;
 } GodotMouseEvent;
 
-int64_t godot_init(NativeResourceManager *p_resource_manager, void *p_native_window, int32_t window_id, int64_t window_width, int64_t window_height, const char *p_allowed_permissions);
+// Input conversion runs only on the engine thread. UI clients must enqueue
+// these DTOs through engine_host_openharmony.h instead of calling directly.
 void godot_touch(GodotTouchEvent *p_event, int count);
 void godot_mouse(GodotMouseEvent *p_event);
 void godot_key(GodotKeyEvent *p_event);
-void godot_resize(uint32_t width, uint32_t height);
-void godot_window_event(int32_t event);
 }

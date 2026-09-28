@@ -46,6 +46,9 @@ def get_flags():
 
 def configure(env):
     validate_arch(env["arch"], get_name(), ["arm64", "x86_64"])
+    if env["generate_bundle"] and env["target"] == "editor":
+        print_error("generate_bundle packages game templates. Use target=template_debug/template_release, or export-editor-project.py for the editor profile.")
+        raise SystemExit(255)
     sdk = Path(env["OPENHARMONY_SDK_PATH"]).expanduser().resolve()
     native = sdk / "native" if (sdk / "native/sysroot").is_dir() else sdk
     if not (native / "sysroot/usr/include").is_dir():

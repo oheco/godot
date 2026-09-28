@@ -1,17 +1,21 @@
-# Godot Editor .NET for OpenHarmony
+# Godot shared OpenHarmony host and .NET Editor
 
 This branch adapts Godot **4.7.2-stable** for native ARM64 OpenHarmony development.
-The intended deliverable is a **DevEco project**, containing the ArkTS UIAbility
-shell, C++ N-API bridge, native Godot editor library, GodotSharp and a complete
-native .NET SDK. The person installing it builds and signs the project in DevEco
-with their own developer account.
+Games and the Editor use one [DevEco source project](<misc/dist/openharmony_template/README.md>)
+and the same ArkTS/N-API/native engine host. Generated configuration selects the
+application identity, startup policy and optional Editor/.NET environment. Both
+profiles default to **HarmonyOS 6.1.0 / API 23**. The person installing the Editor
+builds and signs the generated project with their own DevEco account.
 
-**Experimental; application acceptance pending.** The native engine, complete
-GodotSharp toolchain, real C# scene and same-process assembly reload have passed
-on OpenHarmony. A complete DevEco project also builds an unsigned HAP. HAP
-installation, Vulkan presentation, C# execution inside its application sandbox,
-F5 and window lifecycle still need testing before calling this a working GUI
-editor. The earlier ArkTS compiler fixture is not an installable Godot editor.
+The Editor payload includes GodotSharp and an offline feed, **not a .NET SDK**.
+The installed oheco SDK is an external runtime dependency of the SDK-enabled
+Editor only; ordinary exported games have no such dependency.
+
+**Experimental.** Native/headless tests, mock boundary tests, compilation and
+signed HAP UI acceptance are separate validation scopes. A successful native C#
+scene or unsigned HAP build does not establish permission, Vulkan, input or
+multi-instance behaviour in the final signed application. Revalidate these
+application behaviours after changing the common host.
 
 ## Baseline and dependencies
 
@@ -51,6 +55,66 @@ editor. The earlier ArkTS compiler fixture is not an installable Godot editor.
 New headers do not upgrade the operating system's Vulkan driver. The current
 Maleoon 935 test host reports Vulkan **1.3.309**. The renderer must negotiate its
 actual features and extensions. No system loader or driver is replaced.
+
+## One project, configured profiles
+
+The [game host defaults](<misc/dist/openharmony_template/entry/src/main/resources/rawfile/godot_host.json>)
+and [Editor preset](<platform/openharmony/profiles/editor.json>) configure one shell;
+there is no second Editor DevEco template. `EntryAbility` is the stable entry for
+both roles. Editor and template engine libraries are still distinct build targets.
+
+[project_config.py](<platform/openharmony/project_config.py>) validates and applies
+project-generation settings. The Editor generator accepts `--config overrides.json`;
+only recognised fields can be overridden:
+
+- `application`: bundleId, displayName, vendor, versionCode, versionName,
+  deviceTypes, orientation (`system` means no manifest override), icons
+  (foreground/background PNG paths).
+- `build`: sdkVersion (default `6.1.0(23)`, applied to compile/target/compatible),
+  architectures. The current Editor generator accepts ARM64 only.
+- `engine.target`: editor, template_debug or template_release, matching the role
+  and the separately compiled input library; this is not a runtime engine switch.
+- `host`, `launch`, `instances`, `managed`, `window`, `diagnostics`: the runtime
+  settings documented in the [shared project README](<misc/dist/openharmony_template/README.md>).
+- `permissions`: additional declared permissions. Restricted kernel/sandbox
+  capabilities require the explicit generator ACL flags instead.
+
+A native-only Editor override can be as small as:
+
+```json
+{"managed":{"mode":"none"}}
+```
+
+Use a matching native editor library; GodotSharp, SDK and NuGet inputs are not
+required in this mode. Runtime-only managed game packaging is deliberately not
+implemented by this refactor and is rejected rather than emitting a broken app.
+
+Generate the game archive with the ordinary SCons target:
+
+```sh
+python3 -m SCons platform=openharmony target=template_debug arch=arm64 \
+  module_mono_enabled=no vulkan=yes opengl3=no generate_bundle=yes \
+  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j4
+```
+
+Use `target=template_release` for release. Archives are staged outside the source
+template and contain no IDE cache, signing credentials or stale native library.
+The Godot exporter updates JSON fields structurally (including escaped app names,
+permission Ability names and all SDK fields); old split-host templates must be
+rebuilt. Its preset exposes version, orientation, system-area and diagnostic
+settings, and project-only export does not require Hvigor to be installed.
+
+`--update` migrates the former Editor entry to the common `EntryAbility`, removes
+stale ArkTS/native sources, and preserves DevEco signing, dependency locks and
+local settings. Required SDK/native-layout/no-strip fields are migrated; unsupported
+local JSON5 syntax or structure fails before overwriting the project. Existing
+comments and trailing commas are accepted; generated documents use the JSON subset
+of JSON5. Unchanged profiles retain their exact bytes. Changed protected profiles
+have durable rollback versions under `.godot-config-history` (never included in
+project archives); a failed installation restores them without rewriting their
+contents. After an uncatchable interruption, restore a missing/invalid profile
+from that history before retrying. A project with personal signing configuration
+cannot be archived for distribution: generate a fresh unsigned project instead.
 
 ## Native build inputs
 

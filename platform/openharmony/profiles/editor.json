@@ -1,0 +1,21 @@
+{
+  "application": {
+    "bundleId": "org.oheco.godoteditor",
+    "displayName": "Godot Editor",
+    "vendor": "oheco",
+    "versionCode": 4070202,
+    "versionName": "4.7.2-ohos.2",
+    "deviceTypes": ["2in1"],
+    "orientation": "system"
+  },
+  "engine": { "target": "editor" },
+  "host": { "role": "editor" },
+  "launch": {
+    "defaultMode": "project-manager",
+    "defaultArguments": ["--single-window"],
+    "acceptProjectRequests": true
+  },
+  "instances": { "policy": "editor", "maxCount": 5 },
+  "managed": { "mode": "sdk", "sdkSource": "oheco" },
+  "window": { "expandIntoSystemArea": false }
+}

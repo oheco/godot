@@ -29,6 +29,7 @@
 /**************************************************************************/
 
 #include "export_plugin.h"
+#include "project_config.h"
 #include "core/object/callable_mp.h"
 
 #include "logo_svg.gen.h"
@@ -49,11 +50,7 @@
 #include "main/splash.gen.h"
 #include "scene/resources/image_texture.h"
 
-#include "modules/modules_enabled.gen.h" // For regex.
 #include "modules/svg/image_loader_svg.h"
-#ifdef MODULE_REGEX_ENABLED
-#include "modules/regex/regex.h"
-#endif
 
 #include <string.h>
 
@@ -64,13 +61,7 @@ static const char *OPENHARMONY_PERMISSIONS[] = {
 	nullptr
 };
 
-// OpenHarmony user permissions
-static const char *OPENHARMONY_USER_PERMISSIONS[] = {
-	"ohos.permission.MICROPHONE",
-	nullptr
-};
-
-static const char *OPENHARMONY_DEFAULT_SDK_VERSION = "5.1.0(18)";
+static const char *OPENHARMONY_DEFAULT_SDK_VERSION = "6.1.0(23)";
 static const char *OPENHARMONY_DEFAULT_BUNDLE_ID = "org.godotengine.template";
 static const char *OPENHARMONY_ORIENTATION_ENUMS = "landscape,landscape_inverted,auto_rotation_landscape,auto_rotation_landscape_restricted,portrait,portrait_inverted,auto_rotation_portrait,auto_rotation_portrait_restricted,auto_rotation_unspecified,auto_rotation_restricted,follow_recent,follow_desktop";
 
@@ -98,6 +89,10 @@ void EditorExportPlatformOpenHarmony::get_export_options(List<ExportOption> *r_o
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/default_orientation", PROPERTY_HINT_ENUM, OPENHARMONY_ORIENTATION_ENUMS), 0, true, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/background_image", PROPERTY_HINT_GLOBAL_FILE, "*.png"), "", false, false));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/foreground_image", PROPERTY_HINT_GLOBAL_FILE, "*.png"), "", false, false));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/version_code", PROPERTY_HINT_RANGE, "1,2147483647,1"), 1000000));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/version_name"), "1.0.0"));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "build/expand_into_system_area"), true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "build/verbose_diagnostics"), false));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "build/sign"), false, true, true));
 
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "sign/store_file", PROPERTY_HINT_GLOBAL_FILE, "*.p12", PROPERTY_USAGE_DEFAULT | PROPERTY_USAGE_SECRET), ""));
@@ -163,6 +158,13 @@ String EditorExportPlatformOpenHarmony::get_export_option_warning(const EditorEx
 			return TTR("At least one architecture must be selected.");
 		} else if (selected_count > 1) {
 			return TTR("Only one architecture can be selected at a time.");
+		}
+	}
+
+	if (p_name == "build/sdk_version") {
+		String sdk = p_preset->get(p_name);
+		if (!sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(sdk)) {
+			return TTR("The shared OpenHarmony host requires API 23 or newer (default: 6.1.0(23)).");
 		}
 	}
 
@@ -258,6 +260,11 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 
 	EditorProgress ep("export", TTR("Exporting OpenHarmony Project"), 7, true);
 
+	String requested_sdk = p_preset->get("build/sdk_version");
+	if (!requested_sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(requested_sdk)) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("The shared OpenHarmony host requires API 23 or newer (default: 6.1.0(23))."));
+		return ERR_INVALID_PARAMETER;
+	}
 	bool has_sign = p_preset->get("build/sign");
 	if (should_sign && !has_sign) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Code Signing"), TTR("Signing is not enabled in the export preset."));
@@ -440,139 +447,37 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	}
 	cl_file.unref();
 
-	String bundle_id = p_preset->get("build/bundle_id");
-	if (bundle_id.is_empty()) {
-		bundle_id = OPENHARMONY_DEFAULT_BUNDLE_ID;
-	}
-	String app_json_path = project_dir.path_join("AppScope/app.json5");
-	if (FileAccess::exists(app_json_path)) {
-		Ref<FileAccess> app_json_file = FileAccess::open(app_json_path, FileAccess::READ);
-		if (app_json_file.is_valid()) {
-			String content = app_json_file->get_as_text();
-			content = content.replace(OPENHARMONY_DEFAULT_BUNDLE_ID, bundle_id);
-			app_json_file = FileAccess::open(app_json_path, FileAccess::WRITE);
-			if (app_json_file.is_valid()) {
-				app_json_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write app json: \"%s\"."), app_json_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read app json: \"%s\"."), app_json_path));
-			return ERR_FILE_CANT_READ;
-		}
-	}
-
-	String app_name = GLOBAL_GET("application/config/name");
-	if (app_name.is_empty()) {
-		app_name = "template";
-	}
-
-	String app_string_json_path = project_dir.path_join("AppScope/resources/base/element/string.json");
-	if (FileAccess::exists(app_string_json_path)) {
-		Ref<FileAccess> string_json_file = FileAccess::open(app_string_json_path, FileAccess::READ);
-		if (string_json_file.is_valid()) {
-			String content = string_json_file->get_as_text();
-			String key = "\"app_name\"";
-			int pos = content.find(key);
-			if (pos >= 0) {
-				String value = "\"template\"";
-				pos = content.find(value, pos + key.length());
-				if (pos >= 0) {
-					content = content.left(pos) + "\"" + app_name + "\"" + content.right(content.length() - pos - value.length());
-				}
-			}
-
-			string_json_file = FileAccess::open(app_string_json_path, FileAccess::WRITE);
-			if (string_json_file.is_valid()) {
-				string_json_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write app string json: \"%s\"."), app_string_json_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read app string json: \"%s\"."), app_string_json_path));
-			return ERR_FILE_CANT_READ;
-		}
-	}
-
-	String string_json_path = project_dir.path_join("entry/src/main/resources/base/element/string.json");
-	if (FileAccess::exists(string_json_path)) {
-		Ref<FileAccess> string_json_file = FileAccess::open(string_json_path, FileAccess::READ);
-		if (string_json_file.is_valid()) {
-			String content = string_json_file->get_as_text();
-			String key = "\"EntryAbility_label\"";
-			int pos = content.find(key);
-			if (pos >= 0) {
-				String value = "\"label\"";
-				pos = content.find(value, pos + key.length());
-				if (pos >= 0) {
-					content = content.left(pos) + "\"" + app_name + "\"" + content.right(content.length() - pos - value.length());
-				}
-			}
-
-			key = "\"user_permissions\"";
-			pos = content.find(key);
-			if (pos >= 0) {
-				String value = "\"\"";
-				pos = content.find(value, pos + key.length());
-				if (pos >= 0) {
-					const char **perms = OPENHARMONY_USER_PERMISSIONS;
-					String user_permissions;
-					while (*perms) {
-						String perm_name = String(*perms);
-						String perm_option = vformat("%s/%s", PNAME("permissions"), perm_name);
-						bool perm_enabled = p_preset->get(perm_option);
-						if (perm_enabled) {
-							if (user_permissions != "") {
-								user_permissions += ",";
-							}
-							user_permissions += perm_name;
-						}
-						perms++;
-					}
-					content = content.left(pos) + "\"" + user_permissions + "\"" + content.right(content.length() - pos - value.length());
-				}
-			}
-
-			string_json_file = FileAccess::open(string_json_path, FileAccess::WRITE);
-			if (string_json_file.is_valid()) {
-				string_json_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write string json: \"%s\"."), string_json_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read string json: \"%s\"."), string_json_path));
-			return ERR_FILE_CANT_READ;
-		}
-	}
-
 	String sdk_version = p_preset->get("build/sdk_version");
 	if (sdk_version.is_empty()) {
 		sdk_version = OPENHARMONY_DEFAULT_SDK_VERSION;
 	}
-
-	String build_profile_path = project_dir.path_join("build-profile.json5");
-	if (FileAccess::exists(build_profile_path)) {
-		Ref<FileAccess> build_file = FileAccess::open(build_profile_path, FileAccess::READ);
-		if (build_file.is_valid()) {
-			String content = build_file->get_as_text();
-
-			content = content.replace("\"targetSdkVersion\": \"5.1.0(18)\"", "\"targetSdkVersion\": \"" + sdk_version + "\"");
-			content = content.replace("\"compatibleSdkVersion\": \"5.1.0(18)\"", "\"compatibleSdkVersion\": \"" + sdk_version + "\"");
-
-			build_file = FileAccess::open(build_profile_path, FileAccess::WRITE);
-			if (build_file.is_valid()) {
-				build_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write build profile: \"%s\"."), build_profile_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read build profile: \"%s\"."), build_profile_path));
-			return ERR_FILE_CANT_READ;
-		}
+	String bundle_id = p_preset->get("build/bundle_id");
+	if (bundle_id.is_empty()) {
+		bundle_id = OPENHARMONY_DEFAULT_BUNDLE_ID;
+	}
+	String app_name = GLOBAL_GET("application/config/name");
+	if (app_name.is_empty()) {
+		app_name = "template";
+	}
+	const Vector<String> orientations = String(OPENHARMONY_ORIENTATION_ENUMS).split(",");
+	const int orientation = p_preset->get("build/default_orientation");
+	ERR_FAIL_INDEX_V(orientation, orientations.size(), ERR_INVALID_PARAMETER);
+	Dictionary host_options;
+	host_options["sdk"] = sdk_version;
+	host_options["bundle"] = bundle_id;
+	host_options["name"] = app_name;
+	host_options["version_code"] = p_preset->get("build/version_code");
+	host_options["version_name"] = p_preset->get("build/version_name");
+	host_options["arch"] = bool(p_preset->get("architectures/x86_64")) ? "x86_64" : "arm64-v8a";
+	host_options["orientation"] = orientations[orientation];
+	host_options["internet"] = p_preset->get("permissions/ohos.permission.INTERNET");
+	host_options["microphone"] = p_preset->get("permissions/ohos.permission.MICROPHONE");
+	host_options["expand_safe_area"] = p_preset->get("build/expand_into_system_area");
+	host_options["verbose"] = p_preset->get("build/verbose_diagnostics");
+	err = OpenHarmonyProjectConfig::configure_game(project_dir, host_options);
+	if (err != OK) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Unable to configure the shared host. Use a current OpenHarmony game template and API 23 or newer."));
+		return err;
 	}
 
 	String background_image = p_preset->get("build/background_image");
@@ -611,102 +516,11 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 		}
 	}
 
-	String entry_build_profile_path = project_dir.path_join("entry/build-profile.json5");
-	if (FileAccess::exists(entry_build_profile_path)) {
-		Ref<FileAccess> entry_build_file = FileAccess::open(entry_build_profile_path, FileAccess::READ);
-		if (entry_build_file.is_valid()) {
-			String content = entry_build_file->get_as_text();
-
-			String selected_arch;
-			if (p_preset->get("architectures/arm64")) {
-				selected_arch = "arm64-v8a";
-			} else if (p_preset->get("architectures/x86_64")) {
-				selected_arch = "x86_64";
-			} else {
-				selected_arch = "arm64-v8a";
-			}
-
-#ifdef MODULE_REGEX_ENABLED
-			RegEx regex;
-			regex.compile("\"abiFilters\"\\s*:\\s*\\[[^\\]]*\\]");
-			content = regex.sub(content, "\"abiFilters\": [\"" + selected_arch + "\"]", true);
-#else
-			int start = content.find("\"abiFilters\"");
-			if (start != -1) {
-				int bracket_start = content.find_char('[', start);
-				int bracket_end = content.find_char(']', bracket_start);
-				if (bracket_start != -1 && bracket_end != -1) {
-					String before = content.substr(0, bracket_start + 1);
-					String after = content.substr(bracket_end);
-					content = before + "\"" + selected_arch + "\"" + after;
-				}
-			}
-#endif
-
-			entry_build_file = FileAccess::open(entry_build_profile_path, FileAccess::WRITE);
-			if (entry_build_file.is_valid()) {
-				entry_build_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write entry build profile: \"%s\"."), entry_build_profile_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read entry build profile: \"%s\"."), entry_build_profile_path));
-			return ERR_FILE_CANT_READ;
-		}
-	}
-
-	String module_json_path = project_dir.path_join("entry/src/main/module.json5");
-	if (FileAccess::exists(module_json_path)) {
-		Ref<FileAccess> module_json_file = FileAccess::open(module_json_path, FileAccess::READ);
-		if (module_json_file.is_valid()) {
-			String content = module_json_file->get_as_text();
-
-			String permissions_json = "  \"requestPermissions\": [\n";
-			const char **perms = OPENHARMONY_PERMISSIONS;
-			while (*perms) {
-				String perm_name = String(*perms);
-				String perm_option = vformat("%s/%s", PNAME("permissions"), perm_name);
-				bool perm_enabled = p_preset->get(perm_option);
-				if (perm_enabled) {
-					permissions_json += "    {\n";
-					permissions_json += "      \"name\": \"" + perm_name + "\",\n";
-					permissions_json += "      \"reason\": \"$string:" + perm_name.trim_prefix("ohos.permission.") + "_reason\",\n";
-					permissions_json += "      \"usedScene\": {\n";
-					permissions_json += "        \"abilities\": [\n";
-					permissions_json += "          \"FormAbility\"\n";
-					permissions_json += "        ],\n";
-					permissions_json += "        \"when\": \"always\"\n";
-					permissions_json += "      }\n";
-					permissions_json += "    },\n";
-				}
-				perms++;
-			}
-			permissions_json += "  ],\n";
-			content = content.replace("\"requestPermissions\": [],", permissions_json);
-
-			uint32_t orientation_index = p_preset->get("build/default_orientation");
-			String orientation = String(OPENHARMONY_ORIENTATION_ENUMS).split(",")[orientation_index];
-			content = content.replace("\"orientation\": \"portrait\",", "\"orientation\": \"" + orientation + "\",");
-
-			module_json_file = FileAccess::open(module_json_path, FileAccess::WRITE);
-			if (module_json_file.is_valid()) {
-				module_json_file->store_string(content);
-			} else {
-				add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not write module json: \"%s\"."), module_json_path));
-				return ERR_FILE_CANT_WRITE;
-			}
-		} else {
-			add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), vformat(TTR("Could not read module json: \"%s\"."), module_json_path));
-			return ERR_FILE_CANT_READ;
-		}
-	}
-
 	if (ep.step(TTR("Saving project data..."), 4)) {
 		return ERR_SKIP;
 	}
 
-	String pck_path = project_dir.path_join("/entry/src/main/resources/rawfile/template.pck");
+	String pck_path = project_dir.path_join("entry/src/main/resources/rawfile/template.pck");
 	err = save_pack(p_preset, p_debug, pck_path);
 	if (err != OK) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Could not write package file."));
@@ -1170,7 +984,7 @@ bool EditorExportPlatformOpenHarmony::has_valid_export_configuration(const Ref<E
 	}
 
 	String tool_path = get_tool_path();
-	if (tool_path.is_empty()) {
+	if (tool_path.is_empty() && !bool(p_preset->get("build/export_project_only"))) {
 		valid = false;
 		err += TTR("OpenHarmony tool path not configured. Please set it in the Editor Settings (Export > OpenHarmony > OpenHarmony Tool Path).") + "\n";
 	}

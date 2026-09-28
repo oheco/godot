@@ -47,6 +47,9 @@
 		<member name="build/default_orientation" type="int" setter="" getter="">
 			The default screen orientation for the application. Determines how the application will be displayed when launched on OpenHarmony devices.
 		</member>
+		<member name="build/expand_into_system_area" type="bool" setter="" getter="">
+			Expand the shared host surface into the system safe area. Enabled by default for games.
+		</member>
 		<member name="build/export_project_only" type="bool" setter="" getter="">
 			When enabled, only exports the project files without building the final application package. This is useful for manual building or integration with external build systems. When disabled, the complete build process including Hvigor compilation will be executed.
 		</member>
@@ -57,10 +60,19 @@
 			When enabled, allows overriding the default project directory structure during export. This can be useful for custom build configurations or when integrating with existing OpenHarmony projects.
 		</member>
 		<member name="build/sdk_version" type="String" setter="" getter="">
-			The target OpenHarmony SDK version for the application. This version will be used in the build configuration and determines the available APIs and features. The version should match an installed SDK version.
+			The SDK version applied to compile, target and compatible SDK fields. Defaults to [code]6.1.0(23)[/code]. The shared host requires API 23 or newer, and the version must match an installed SDK.
 		</member>
 		<member name="build/sign" type="bool" setter="" getter="">
 			Enable application signing during the export process. When enabled, the application will be signed using the provided certificate and profile files. This is required for distribution and installation on real devices. When enabled, all signing options become visible and required.
+		</member>
+		<member name="build/verbose_diagnostics" type="bool" setter="" getter="">
+			Enable verbose shared-host diagnostics. Logs remain in application-private storage.
+		</member>
+		<member name="build/version_code" type="int" setter="" getter="">
+			Application version code written to the app manifest. Must be a positive integer.
+		</member>
+		<member name="build/version_name" type="String" setter="" getter="">
+			Human-readable application version written to the app manifest.
 		</member>
 		<member name="custom_template/debug" type="String" setter="" getter="">
 			Path to a custom debug template ZIP file. When specified, this template will be used instead of the default "openharmony_debug_arm64-v8a.zip" template. The template should contain the complete OpenHarmony project structure. This option is only visible when advanced options are enabled in the export preset.
