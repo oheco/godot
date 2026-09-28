@@ -42,7 +42,7 @@ def main():
         root = Path(temporary)
         project = root / 'project'
         shutil.copytree(args.project, project, ignore=shutil.ignore_patterns(
-            'node_modules', 'oh_modules', '.hvigor', '.cxx', 'build', '.git', '.bitfun', '.idea',
+            'node_modules', 'oh_modules', '.hvigor', '.cxx', 'build', '.git', '.bitfun', '.idea', '.godot-config-history',
             '*.p12', '*.p7b', '*.cer', 'local.properties'))
         profile = read_document(project / 'build-profile.json5')
         profile['app']['signingConfigs'] = []
@@ -53,6 +53,16 @@ def main():
                                targetSdkVersion=args.openharmony_sdk_version,
                                compatibleSdkVersion=23, runtimeOS='OpenHarmony')
         write_document(project / 'build-profile.json5', profile)
+        module_path = project / 'entry/src/main/module.json5'
+        module = read_document(module_path)
+        original_devices = list(module['module']['deviceTypes'])
+        if args.openharmony_sdk_version:
+            # HarmonyOS calls this device class 'phone'; the actual OpenHarmony
+            # SDK syscap definitions call it 'default'. Normalize only this
+            # explicit alternate-SDK test copy, never the generated source or SDK.
+            module['module']['deviceTypes'] = [
+                'default' if device == 'phone' else device for device in original_devices]
+            write_document(module_path, module)
         (project / 'node_modules').symlink_to(args.node_modules, target_is_directory=True)
         env = dict(os.environ)
         env.update(NODE_PATH=str(args.node_modules), HVIGOR_USER_HOME=str(root / 'hvigor-home'),
@@ -76,7 +86,9 @@ def main():
         write_document(output / 'result.json', {
             'scope': 'OpenHarmony alternate SDK compatibility build' if args.openharmony_sdk_version else 'HarmonyOS project build',
             'installed_or_ui_tested': False, 'source_project': str(args.project),
-            'build_profile': profile, 'exit_code': result.returncode, 'artifacts': artifacts})
+            'build_profile': profile, 'original_device_types': original_devices,
+            'test_device_types': module['module']['deviceTypes'],
+            'exit_code': result.returncode, 'artifacts': artifacts})
         print(output)
         raise SystemExit(result.returncode)
 

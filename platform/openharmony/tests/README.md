@@ -69,7 +69,10 @@ python3 platform/openharmony/tests/build_deveco_project.py \
 The source project is not modified; a private copy is built without signing or
 installing. API 23 HarmonyOS configuration is preserved by default. If only an
 OpenHarmony SDK is available, `--openharmony-sdk-version 26.0.0` selects an
-**explicit alternate-SDK compatibility build**. This result must not be described
+**explicit alternate-SDK compatibility build**. In that isolated copy only,
+HarmonyOS's `phone` device name is mapped to the actual OpenHarmony SDK's `default`
+syscap definition; both original and test device lists are recorded. No SDK
+capability files are invented or modified. This result must not be described
 as HarmonyOS API 23 acceptance. `--arkts-only` checks the real ArkTS compiler without
 assembling a HAP. Existing personal signing material/history is never copied into
 this test's distributable output.
