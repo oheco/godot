@@ -14,6 +14,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { types: nativeTypes } = require('node:util');
 
 function compilerPath() {
   const args = process.argv.slice(2);
@@ -66,6 +67,39 @@ function load(file, dependencies, globals = {}, transform = (source) => source) 
 }
 
 const config = load('runtime/Config.ets', { '@kit.ArkTS': { util } });
+const nativeArguments = load('runtime/NativeArguments.ets', {});
+
+// ArkUI AppStorage returns observed Proxy arrays. V8's napi_is_array accepts
+// those, whereas Ark N-API checks the raw JSArray/SharedArray kinds. Model this
+// measured Ark boundary explicitly, rather than accidentally testing V8 semantics.
+function expectNativeArray(value) {
+  assert.ok(Array.isArray(value) && !nativeTypes.isProxy(value), 'Ark native boundary requires a plain array');
+}
+function testNativeArguments() {
+  const source = ['--path', '/a project/中文🎮', '--', '', 'user-argument'];
+  const observed = new Proxy(source, {});
+  const nested = new Proxy(observed, {});
+  assert.ok(Array.isArray(nested));
+  assert.equal(nested.join(' '), source.join(' '));
+  assert.throws(() => expectNativeArray(nested), /plain array/);
+  for (const input of [source, observed, nested]) {
+    const snapshot = nativeArguments.nativeStringArray(input, 'setup.arguments');
+    expectNativeArray(snapshot);
+    assert.notEqual(snapshot, input);
+    assert.deepEqual(plain(snapshot), source);
+    snapshot[0] = 'changed';
+    assert.equal(source[0], '--path');
+  }
+  expectNativeArray(nativeArguments.nativeStringArray(new Proxy([], {}), 'setup.grantedPermissions'));
+  const maximum = nativeArguments.nativeStringArray(new Proxy(new Array(65536).fill('x'), {}), 'setup.arguments');
+  expectNativeArray(maximum);
+  assert.equal(maximum.length, 65536);
+  for (const input of [null, { 0: 'x', length: 1 }, new Set(['x']), new Uint8Array(1),
+    ['bad\0arg'], [1], [undefined], new Array(1), new Array(65537).fill('x')]) {
+    assert.throws(() => nativeArguments.nativeStringArray(input, 'setup.arguments'));
+  }
+  console.log('PASS native arrays: observed/nested Proxy detachment; Unicode/order/empty values; strict rejection of array-like and invalid inputs');
+}
 function gameProfile() {
   return {
     schemaVersion: 1, host: { role: 'game' },
@@ -280,7 +314,11 @@ async function testIndex() {
     let currentState = 1;
     const plugin = {
       configure: (...args) => calls.push(['configure', ...args]), setResourceManager: () => {}, setWindowId: () => {},
-      setup: (...args) => calls.push(['setup', ...args]), state: () => currentState,
+      setup: (...args) => {
+        expectNativeArray(args[0]);
+        expectNativeArray(args[1]);
+        calls.push(['setup', ...args]);
+      }, state: () => currentState,
       processId: () => 11, destroySurface: () => {},
     };
     const paths = mode === 'game' ? applicationPaths : modulePaths;
@@ -317,11 +355,13 @@ async function testIndex() {
       },
     });
     const storage = {
-      godotHostConfig: profile, godotConfigError: '', godotArguments: config.engineArguments(profile, {}), godotWindowId: 7,
+      godotHostConfig: profile, godotConfigError: '',
+      godotArguments: new Proxy(config.engineArguments(profile, {}), {}), godotWindowId: 7,
     };
     const dependencies = {
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
       '../runtime/Config': config,
+      '../runtime/NativeArguments': nativeArguments,
       '../runtime/Permissions': permissions,
       '../runtime/Runtime': {
         prepareRuntime: async () => { calls.push(['runtime']); return '/private/runtime'; },
@@ -343,6 +383,8 @@ async function testIndex() {
     const page = new Index();
     page.getUIContext = () => ({ getHostContext: () => context });
     await page.prepare();
+    assert.equal(page.ready, true, `${mode}: native setup failed: ${page.message}`);
+    assert.ok(calls.some((call) => call[0] === 'setup'), `${mode}: setup must reach the plain-array native boundary`);
     assert.deepEqual(plain(calls.find((call) => call[0] === 'configure')),
       ['configure', paths.filesDir, paths.cacheDir, mode === 'editor-sdk' ? '/private/runtime' : '', mode === 'editor-sdk' ? 'sdk' : 'none']);
     assert.deepEqual(plain(calls.find((call) => call[0] === 'setup')),
@@ -533,6 +575,7 @@ async function testRuntime() {
 async function main() {
   console.log('ArkTS host logic tests (mocks; not a substitute for CompileArkTS or HAP/device acceptance)');
   testConfig();
+  testNativeArguments();
   testStorageAndAbility();
   testDirectoryRace();
   await testPermissions();

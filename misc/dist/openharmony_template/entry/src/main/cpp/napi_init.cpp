@@ -76,16 +76,29 @@ bool string_value(napi_env env, napi_value value, std::string &result) {
 	}
 	return true;
 }
-bool array_length(napi_env env, napi_value value, uint32_t &count) {
+bool array_length(napi_env env, napi_value value, uint32_t &count, const char *name) {
 	bool array = false;
-	if (napi_is_array(env, value, &array) != napi_ok || !array || napi_get_array_length(env, value, &count) != napi_ok || count > 65536) {
-		return type_error(env, "Expected an array with at most 65536 elements");
+	napi_status status = napi_is_array(env, value, &array);
+	if (status != napi_ok) {
+		return status == napi_pending_exception ? false : type_error(env,
+				(std::string(name) + ": napi_is_array failed, status=" + std::to_string(status)).c_str());
+	}
+	if (!array) {
+		return type_error(env, (std::string(name) + ": expected a native array (copy ArkUI observed arrays before calling N-API)").c_str());
+	}
+	status = napi_get_array_length(env, value, &count);
+	if (status != napi_ok) {
+		return status == napi_pending_exception ? false : type_error(env,
+				(std::string(name) + ": napi_get_array_length failed, status=" + std::to_string(status)).c_str());
+	}
+	if (count > 65536) {
+		return type_error(env, (std::string(name) + ": expected at most 65536 elements").c_str());
 	}
 	return true;
 }
-bool string_array(napi_env env, napi_value value, std::vector<std::string> &result) {
+bool string_array(napi_env env, napi_value value, std::vector<std::string> &result, const char *name) {
 	uint32_t count;
-	if (!array_length(env, value, count)) {
+	if (!array_length(env, value, count, name)) {
 		return false;
 	}
 	for (uint32_t i = 0; i < count; ++i) {
@@ -393,7 +406,7 @@ napi_value setup(napi_env env, napi_callback_info info) {
 	napi_value args[3];
 	std::vector<std::string> parsed_args, granted;
 	bool packaged;
-	if (!values(env, info, 3, args) || !string_array(env, args[0], parsed_args) || !string_array(env, args[1], granted) ||
+	if (!values(env, info, 3, args) || !string_array(env, args[0], parsed_args, "setup.arguments") || !string_array(env, args[1], granted, "setup.grantedPermissions") ||
 			!bool_value(env, args[2], packaged) || !alive(env)) {
 		return nullptr;
 	}
@@ -429,7 +442,7 @@ napi_value status(napi_env env, napi_callback_info info) {
 napi_value input_touch(napi_env env, napi_callback_info info) {
 	napi_value args[1];
 	uint32_t count;
-	if (!values(env, info, 1, args) || !array_length(env, args[0], count)) {
+	if (!values(env, info, 1, args) || !array_length(env, args[0], count, "inputTouch.events")) {
 		return nullptr;
 	}
 	std::vector<GodotTouchEvent> events;

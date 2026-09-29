@@ -14,6 +14,10 @@ import { hostStorage, HostStoragePaths } from './Config';
 
 let logFile: string = '';
 let directory: string = '';
+let sessionPid: number = 0;
+let sessionStartTime: number = 0;
+let engineLogBaseline: fs.Stat | undefined = undefined;
+let crashLogBaseline: fs.Stat | undefined = undefined;
 let storagePaths: HostStoragePaths | undefined = undefined;
 let step: string = 'startup';
 let verbose: boolean = false;
@@ -84,14 +88,19 @@ export function initDiagnostics(context: common.UIAbilityContext, paths: HostSto
   if (logFile.length > 0) { return; }
   storagePaths = paths;
   directory = paths.filesDir;
-  logFile = `${directory}/godot-${plugin.processId()}-diagnostics.log`;
+  sessionPid = plugin.processId();
+  // CoreFileKit Stat.mtime is Unix seconds, whereas Date.now() is milliseconds.
+  sessionStartTime = Math.floor(Date.now() / 1000);
+  engineLogBaseline = existingLogInfo(engineLogPath(sessionPid));
+  crashLogBaseline = existingLogInfo(crashLogPath(sessionPid));
+  logFile = `${directory}/godot-${sessionPid}-diagnostics.log`;
   record('--- session ---');
   record(`log directory=${directory}`);
   record(`filesDir=${paths.filesDir}`);
   record(`cacheDir=${paths.cacheDir}`);
   record(`tempDir=${paths.tempDir}`);
   record(`bundle=${context.abilityInfo.bundleName} module=${context.abilityInfo.moduleName}`);
-  record(`crash log=${crashLogPath(plugin.processId())}`);
+  record(`crash log=${crashLogPath(sessionPid)}`);
 }
 
 // The engine writes its stdout/stderr to this path (--log-file) and the native
@@ -170,16 +179,39 @@ function newestLog(kind: string, contentOnly: boolean = false): string {
   }
 }
 
+function existingLogInfo(path: string): fs.Stat | undefined {
+  try { return fs.statSync(path); } catch (ignored) { return undefined; }
+}
+
+// Display only this process/session, never the newest legacy or other-PID log.
+// Keep this separate from newestLog(): crash monitoring needs its historical,
+// multi-process baseline. Remember pre-existing files as well as startup time
+// so an unchanged log from a reused PID in the same second is not shown.
+function readSessionLog(kind: string, baseline: fs.Stat | undefined): string {
+  const label = `${kind} log`;
+  if (directory.length === 0) { return `${label}: diagnostics are not initialised yet`; }
+  const path = kind === 'engine' ? engineLogPath(sessionPid) : crashLogPath(sessionPid);
+  const absent = `${label}: nothing recorded for this session yet (pid=${sessionPid}, ${path})`;
+  try {
+    if (!fs.accessSync(path)) { return absent; }
+    const info = fs.statSync(path);
+    if (info.size === 0 || info.mtime < sessionStartTime) { return absent; }
+    // mtimeNs is optional (API 15+); without it, indistinguishable same-second,
+    // same-size rewrites are conservatively hidden rather than showing history.
+    if (baseline !== undefined && info.mtime === baseline.mtime && info.size === baseline.size &&
+      info.mtimeNs === baseline.mtimeNs) { return absent; }
+    return `--- ${path} (current session, pid=${sessionPid}) ---\n${readTail(path, label)}`;
+  } catch (error) {
+    return `${label}: cannot read current session log ${path}: ${describe(error as BusinessError)}`;
+  }
+}
+
 export function readEngineLog(): string {
-  const newest = newestLog('engine');
-  if (newest.length === 0) { return 'engine log: nothing recorded yet'; }
-  return `--- ${newest} ---\n${readTail(newest, 'engine log')}`;
+  return readSessionLog('engine', engineLogBaseline);
 }
 
 export function readCrashLog(): string {
-  const newest = newestLog('crash', true);
-  if (newest.length === 0) { return 'crash log: nothing recorded yet'; }
-  return `--- ${newest} ---\n${readTail(newest, 'crash log')}`;
+  return readSessionLog('crash', crashLogBaseline);
 }
 
 // With a PID, watch only that parent-attached child: independent application
@@ -196,9 +228,29 @@ export function crashLogTime(pid: number = 0): number {
   }
 }
 
-// Everything the application can observe about the engine processes, including
-// each engine's own output and the native backtrace of one that crashed.
-export function readFullDiagnostics(): string {
+// Only the caller that detected an attached child's new crash may request its
+// backtrace. Never scan for a child or substitute its old engine output.
+function readAttachedChildCrashLog(pid: number, baseline: number): string {
+  const label = `attached child crash log (pid=${pid})`;
+  if (directory.length === 0) { return `${label}: diagnostics are not initialised yet`; }
+  const path = crashLogPath(pid);
+  const absent = `${label}: nothing recorded for this session after baseline=${baseline} (${path})`;
+  try {
+    if (!fs.accessSync(path)) { return absent; }
+    const info = fs.statSync(path);
+    if (info.size === 0 || info.mtime < sessionStartTime || info.mtime <= baseline) { return absent; }
+    return `--- ${path} (attached child, pid=${pid}) ---\n${readTail(path, label)}`;
+  } catch (error) {
+    return `${label}: cannot read ${path}: ${describe(error as BusinessError)}`;
+  }
+}
+
+// Engine output and native backtrace default to this process/session. A caller
+// may explicitly append a new attached-child crash without replacing parent logs.
+// The directory listing may include history, but is never a log-content fallback.
+export function readFullDiagnostics(childPid: number = 0, childCrashBaseline: number = 0): string {
+  const childLog = childPid > 0 ? `===== attached child crash log (pid=${childPid}) =====\n` +
+    `${readAttachedChildCrashLog(childPid, childCrashBaseline)}\n\n` : '';
   return `${readDiagnostics()}\n\n===== engine log =====\n${readEngineLog()}\n\n` +
-    `===== crash log =====\n${readCrashLog()}\n\n===== log directory =====\n${listDirectory(directory)}`;
+    `===== crash log =====\n${readCrashLog()}\n\n${childLog}===== log directory =====\n${listDirectory(directory)}`;
 }

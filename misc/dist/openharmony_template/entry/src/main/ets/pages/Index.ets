@@ -8,6 +8,7 @@ import { prepareRuntime } from '../runtime/Runtime';
 import { crashLogTime, describe, fail, initDiagnostics, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
 import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
+import { nativeStringArray } from '../runtime/NativeArguments';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
@@ -111,8 +112,12 @@ struct Index {
       // No _cl_ parsing, PCK selection or global renderer/window flags here.
       // The native packaged-game path owns _cl_ and the embedded PCK. Default
       // logs for both roles are native-configured under the private filesDir.
-      plugin.setup(args, permissions, packagedGame);
-      record('engine thread started');
+      // Do not pass AppStorage's observed Proxy array into native_array APIs.
+      const nativeArgs = nativeStringArray(args, 'setup.arguments');
+      const nativePermissions = nativeStringArray(permissions, 'setup.grantedPermissions');
+      record(`native setup snapshot: arguments=${nativeArgs.length} permissions=${nativePermissions.length}`);
+      plugin.setup(nativeArgs, nativePermissions, packagedGame);
+      record('engine setup accepted; waiting for surface/start state');
       this.ready = true;
       this.timer = setInterval(() => this.updateEngineState(context), 250);
     } catch (error) {
@@ -156,7 +161,7 @@ struct Index {
       this.crashed = true;
       this.ready = false;
       this.message = '子进程崩溃了';
-      this.logText = readFullDiagnostics();
+      this.logText = readFullDiagnostics(attachedPid, this.crashTime);
       this.showLog = true;
     }
     if (state === 3 && !this.crashed) {

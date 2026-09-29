@@ -25,6 +25,7 @@ replacement:
 
 ```sh
 node platform/openharmony/tests/test_arkts_host.cjs --compiler "$TYPESCRIPT_JS"
+node platform/openharmony/tests/test_host_diagnostics.cjs --compiler "$TYPESCRIPT_JS"
 python3 platform/openharmony/tests/test_native_shell.py --sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_engine_arguments.py --sdk "$NATIVE_SDK"
 ```
@@ -35,6 +36,22 @@ contexts. The native shell fixture compiles and signs the actual NAPI glue, but
 mocks the engine/window/resource boundaries. The argument test includes the
 production helper and executes both normal and hardened builds. See the
 [native fixture details](<README_native_shell.md>) for requirements and limits.
+
+Important regression: ArkUI AppStorage wraps stored arrays in state-management
+Proxies. On the inspected native API 26 / OpenHarmony 7.0.0.105 installation,
+`napi_is_array` uses raw `JSValueRef::IsJSArray`/`IsSharedArray`, not the
+ECMAScript `IsArray` proxy-unwrapping path. `join()` and `Array.isArray()` succeeding
+is therefore insufficient. V8-based Node N-API tests alone missed this difference.
+The host fixture now returns an observed Proxy from AppStorage and explicitly
+models that Ark native-array boundary, requiring a detached plain snapshot.
+It checks sparse/non-string/NUL/oversized inputs, Unicode, empty arguments and
+snapshot independence without accepting arbitrary array-like objects. This is
+still not an API 23 HAP runtime probe; target-device startup remains required.
+
+The diagnostics fixture verifies that a pre-engine `setup` failure cannot display
+legacy or another PID's engine log as this session's output. It covers PID reuse,
+seconds/nanoseconds timestamps, bounded reads, and explicitly identified fresh
+attached-child crash logs without changing the multi-process crash baseline.
 
 ## Real native engine and export
 
