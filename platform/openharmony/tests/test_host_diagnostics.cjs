@@ -290,6 +290,8 @@ function testCrashMonitoring(root) {
     'libentry.so': { default: f.plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
     '../runtime/Diagnostics': f.diagnostics, '../runtime/Config': {}, '../runtime/Permissions': {}, '../runtime/Runtime': {},
     '../runtime/NativeArguments': {},
+    // This fixture exercises the crash poller, not input (covered separately).
+    '../runtime/TouchInput': { TouchInput: class {} },
     '../runtime/Launch': {
       spawnedChildPid: () => childPid, childHasExited: () => false, logInstanceState: () => {}, reportExit: () => {},
     },

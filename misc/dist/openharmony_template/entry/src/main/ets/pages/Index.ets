@@ -9,6 +9,7 @@ import { crashLogTime, describe, fail, initDiagnostics, probeEnvironment, readFu
 import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
 import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
 import { nativeStringArray } from '../runtime/NativeArguments';
+import { TouchInput } from '../runtime/TouchInput';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
@@ -31,6 +32,7 @@ struct Index {
   private instanceSupport: boolean = false;
   private disposed: boolean = false;
   private controller: GodotSurface = new GodotSurface();
+  private touchInput: TouchInput = new TouchInput();
   private timer: number = -1;
   private crashTime: number = 0;
   private spawnedPid: number = 0;
@@ -53,6 +55,7 @@ struct Index {
   aboutToDisappear(): void {
     this.disposed = true;
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
+    this.releaseInput();
     plugin.destroySurface();
   }
   private async terminateHost(context: common.UIAbilityContext): Promise<void> {
@@ -249,6 +252,22 @@ struct Index {
     if (pressed) { this.pressedKeys.add(event.keyCode); } else { this.pressedKeys.delete(event.keyCode); }
     plugin.inputKey(input); return true;
   }
+  private touch(event: TouchEvent): void {
+    if (this.disposed || this.terminating) { return; }
+    const touches: SimplifiedTouchEvent[] = this.touchInput.convert(event,
+      (value: number): number => this.getUIContext().vp2px(value));
+    if (touches.length > 0) { plugin.inputTouch(touches); }
+  }
+  private releaseInput(): void {
+    const cancelled: SimplifiedTouchEvent[] = this.touchInput.cancelAll();
+    if (cancelled.length > 0) { plugin.inputTouch(cancelled); }
+    this.pressedKeys.clear();
+    this.metaPressed = false;
+    this.mouseMask = 0;
+    this.lastClickTime = 0;
+    this.lastClickButton = 0;
+    plugin.sendWindowEvent(3);
+  }
   build() {
     Stack() {
       if (this.ready) {
@@ -263,15 +282,8 @@ struct Index {
             this.wheel(event, event.getVerticalAxisValue(), 4, 5);
             this.wheel(event, event.getHorizontalAxisValue(), 6, 7);
           })
-          .onTouch((event: TouchEvent) => {
-            const touches: SimplifiedTouchEvent[] = [];
-            for (const touch of event.changedTouches) {
-              touches.push({ type: event.type, id: touch.id,
-                x: this.getUIContext().vp2px(touch.x), y: this.getUIContext().vp2px(touch.y) });
-            }
-            plugin.inputTouch(touches);
-          })
-          .onBlur(() => { this.pressedKeys.clear(); this.metaPressed = false; this.mouseMask = 0; plugin.sendWindowEvent(3); })
+          .onTouch((event: TouchEvent) => this.touch(event))
+          .onBlur(() => this.releaseInput())
           .onFocus(() => plugin.sendWindowEvent(2))
       } else {
         Column({ space: 16 }) {

@@ -102,7 +102,20 @@ assert.throws(() => addon.setWindowId(5.5), TypeError);
 assert.throws(() => addon.setSurfaceId(23), TypeError);
 assert.throws(() => addon.changeSurface(23n, NaN, 600), TypeError);
 assert.throws(() => addon.setLauncher(7), TypeError);
-assert.throws(() => addon.inputTouch([{ type: 2, id: -1, x: 0, y: 0 }]), TypeError);
+// Platform-generated mouse/hover contacts must not kill the Ability or reach
+// the engine's touch-history vector with unbounded indices.
+process.env.GODOT_TEST_TOUCH_COUNT = '0';
+assert.doesNotThrow(() => addon.inputTouch([
+  { type: 0, id: 1001, x: 0, y: 0 }, { type: 2, id: -1, x: 0, y: 0 },
+  { type: 0, id: 32, x: 0, y: 0 }, { type: 9, id: 0, x: 0, y: 0 },
+  { type: 18, id: 0, x: 0, y: 0 }, { type: 0, id: 4294967295, x: 0, y: 0 },
+]));
+process.env.GODOT_TEST_TOUCH_COUNT = '1';
+addon.inputTouch([{ type: 0, id: 31, x: 1, y: 2 }, { type: 0, id: 1001, x: 0, y: 0 }]);
+delete process.env.GODOT_TEST_TOUCH_COUNT;
+assert.throws(() => addon.inputTouch([{ type: 2, id: 0.5, x: 0, y: 0 }]), TypeError);
+assert.throws(() => addon.inputTouch([{ type: 2, id: 'bad', x: 0, y: 0 }]), TypeError);
+assert.throws(() => addon.inputTouch([{ type: 2, id: 0, x: NaN, y: 0 }]), TypeError);
 assert.throws(() => addon.inputMouse({ type: 2, button: 0, mask: 0, x: NaN, y: 0 }), TypeError);
 assert.throws(() => addon.sendWindowEvent(9), TypeError);
 assert.throws(() => addon.spawnResult('request-id', 123), TypeError);

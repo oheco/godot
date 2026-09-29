@@ -68,6 +68,10 @@ function load(file, dependencies, globals = {}, transform = (source) => source) 
 
 const config = load('runtime/Config.ets', { '@kit.ArkTS': { util } });
 const nativeArguments = load('runtime/NativeArguments.ets', {});
+const touchInput = load('runtime/TouchInput.ets', {}, {
+  SourceType: { Unknown: 0, Mouse: 1, TouchScreen: 2 },
+  TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 },
+});
 
 // ArkUI AppStorage returns observed Proxy arrays. V8's napi_is_array accepts
 // those, whereas Ark N-API checks the raw JSArray/SharedArray kinds. Model this
@@ -362,6 +366,7 @@ async function testIndex() {
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
       '../runtime/Config': config,
       '../runtime/NativeArguments': nativeArguments,
+      '../runtime/TouchInput': touchInput,
       '../runtime/Permissions': permissions,
       '../runtime/Runtime': {
         prepareRuntime: async () => { calls.push(['runtime']); return '/private/runtime'; },

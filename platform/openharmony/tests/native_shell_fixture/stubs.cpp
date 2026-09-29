@@ -54,7 +54,15 @@ void godot_host_set_create_instance_callback(GodotCreateInstanceCallback) {}
 int32_t godot_host_create_instance(int, const char *const *) {
 	return -1;
 }
-void godot_host_touch(const GodotTouchEvent *, int) {}
+void godot_host_touch(const GodotTouchEvent *events, int count) {
+	assert(count >= 0 && count <= 65536);
+	for (int i = 0; i < count; ++i) {
+		assert(events[i].type <= 3 && events[i].id < 32);
+	}
+	if (const char *expected = getenv("GODOT_TEST_TOUCH_COUNT")) {
+		assert(count == atoi(expected));
+	}
+}
 void godot_host_mouse(const GodotMouseEvent *) {}
 void godot_host_key(const GodotKeyEvent *) {}
 void godot_host_resize(int32_t, int32_t) {}

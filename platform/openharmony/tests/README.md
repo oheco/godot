@@ -26,6 +26,7 @@ replacement:
 ```sh
 node platform/openharmony/tests/test_arkts_host.cjs --compiler "$TYPESCRIPT_JS"
 node platform/openharmony/tests/test_host_diagnostics.cjs --compiler "$TYPESCRIPT_JS"
+node platform/openharmony/tests/test_touch_input.cjs --compiler "$TYPESCRIPT_JS"
 python3 platform/openharmony/tests/test_native_shell.py --sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_engine_arguments.py --sdk "$NATIVE_SDK"
 ```
@@ -52,6 +53,16 @@ The diagnostics fixture verifies that a pre-engine `setup` failure cannot displa
 legacy or another PID's engine log as this session's output. It covers PID reuse,
 seconds/nanoseconds timestamps, bounded reads, and explicitly identified fresh
 attached-child crash logs without changing the multi-process crash baseline.
+
+The touch regression exercises real `Index` input methods, not just startup:
+ArkUI delivers a mouse left click to both `onMouse` and a synthesized `onTouch`.
+Only the mouse route should reach Godot for that input. Touchscreen IDs are opaque,
+not native vector indices; the router maps `(deviceId, rawId)` to at most 32 active
+slots and explicitly handles release/cancel/blur/disposal. Hover/unknown sources,
+capacity overflow and orphan updates cannot create ghost contacts. The native
+fixture verifies unsupported integer touch types/slots are safely dropped without
+letting huge IDs reach the engine; malformed JS types remain rejected. These
+fixtures do not substitute for real mouse/touch/IME/device acceptance.
 
 ## Real native engine and export
 

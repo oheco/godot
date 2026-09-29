@@ -447,16 +447,28 @@ napi_value input_touch(napi_env env, napi_callback_info info) {
 	}
 	std::vector<GodotTouchEvent> events;
 	for (uint32_t i = 0; i < count; ++i) {
-		napi_value value;
+		napi_value value, type_value, id_value;
+		double type, id;
 		GodotTouchEvent event{};
-		if (napi_get_element(env, args[0], i, &value) != napi_ok || !integer(env, value, "type", event.type) ||
-				!integer(env, value, "id", event.id) || !number(env, value, "x", event.x) || !number(env, value, "y", event.y)) {
+		if (napi_get_element(env, args[0], i, &value) != napi_ok ||
+				!property(env, value, "type", type_value) || !number_value(env, type_value, type) ||
+				!property(env, value, "id", id_value) || !number_value(env, id_value, id) ||
+				!number(env, value, "x", event.x) || !number(env, value, "y", event.y)) {
 			return nullptr;
 		}
-		if (event.type > 3 || event.id >= 32) {
-			type_error(env, "Touch type or ID is out of range");
+		if (std::trunc(type) != type || std::trunc(id) != id) {
+			type_error(env, "Touch type and normalized ID must be integers");
 			return nullptr;
 		}
+		// ArkUI may deliver mouse-synthesized/hover contacts with opaque IDs.
+		// The host maps real contacts to 32 slots. Reject unsupported samples
+		// without throwing through an input callback and terminating the Ability;
+		// never use a raw device ID to resize the engine's touch history vector.
+		if (type < 0 || type > 3 || id < 0 || id >= 32) {
+			continue;
+		}
+		event.type = static_cast<uint32_t>(type);
+		event.id = static_cast<uint32_t>(id);
 		events.push_back(event);
 	}
 	godot_host_touch(events.data(), events.size());
