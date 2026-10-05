@@ -65,6 +65,8 @@ class GDMono {
 
 	void *hostfxr_dll_handle = nullptr;
 	void *coreclr_dll_handle = nullptr;
+	// NativeAOT owns process-wide runtime state and is never hot-unloaded.
+	void *native_aot_dll_handle = nullptr;
 
 	String project_assembly_path;
 	uint64_t project_assembly_modified_time = 0;

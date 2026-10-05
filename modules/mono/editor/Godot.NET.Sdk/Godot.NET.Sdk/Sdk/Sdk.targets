@@ -50,5 +50,6 @@
 
   <!-- iOS-specific build targets -->
   <Import Project="$(MSBuildThisFileDirectory)\iOS.targets" Condition=" '$(GodotTargetPlatform)' == 'ios' " />
+  <Import Project="$(MSBuildThisFileDirectory)\OpenHarmony.targets" Condition=" '$(GodotTargetPlatform)' == 'openharmony' " />
 
 </Project>

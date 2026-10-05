@@ -22,7 +22,7 @@
     },
     {
       "name": "reason_user_file",
-      "value": "Access Godot projects and the installed .NET SDK."
+      "value": "Access Godot projects and the user-installed oo build tools, OpenHarmony SDK and .NET SDK."
     },
     {
       "name": "MICROPHONE_reason",

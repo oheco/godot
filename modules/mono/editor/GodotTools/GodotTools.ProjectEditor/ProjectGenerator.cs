@@ -35,6 +35,11 @@ namespace GodotTools.ProjectEditor
 
             mainGroup.AddProperty("EnableDynamicLoading", "true");
 
+            var openHarmonyExport = root.AddPropertyGroup();
+            openHarmonyExport.Condition = " '$(GodotTargetPlatform)' == 'openharmony' and ('$(Configuration)' == 'ExportDebug' or '$(Configuration)' == 'ExportRelease') ";
+            openHarmonyExport.AddProperty("PublishAot", "true");
+            openHarmonyExport.AddProperty("NativeLib", "Shared");
+
             string sanitizedName = IdentifierUtils.SanitizeQualifiedIdentifier(name, allowEmptyIdentifiers: true);
 
             // If the name is not a valid namespace, manually set RootNamespace to a sanitized one.

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 
 PLATFORM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLATFORM))
@@ -73,6 +74,39 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertEqual(lock.read_text(), '{"localResolvedLock":true}\n')
         self.assertTrue((self.output / 'entry/src/main/ets/entryability/EntryAbility.ets').exists())
         self.generate(success=False)
+
+    def template_zip(self, kind, mono=True):
+        path = self.root / (kind + '.zip')
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('entry/src/main/resources/rawfile/godot_template.json', json.dumps({
+                'hostAbi': HOST_ABI_VERSION, 'monoEnabled': mono,
+                'architecture': 'arm64-v8a', 'target': 'template_' + kind}))
+            archive.writestr('tools/build.cjs', '// configuration-only fixture, not executable\n')
+        return path
+
+    def test_bundled_template_pair_digest_and_explicit_removal(self):
+        debug, release = self.template_zip('debug'), self.template_zip('release')
+        self.generate('--game-template-debug', str(debug), '--game-template-release', str(release))
+        raw = self.output / 'entry/src/main/resources/rawfile'
+        manifest = read_document(raw / 'export-templates.json')
+        self.assertEqual(manifest['schemaVersion'], 1)
+        self.assertEqual(len(manifest['files']), 2)
+        for entry in manifest['files']:
+            payload = (raw / 'export-templates' / entry['name']).read_bytes()
+            self.assertEqual(entry['size'], len(payload))
+            self.assertEqual(entry['sha256'], hashlib.sha256(payload).hexdigest())
+        identity = hashlib.sha256(json.dumps(manifest['files'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        self.assertEqual(manifest['sha256'], identity)
+        self.generate('--update')
+        self.assertFalse((raw / 'export-templates.json').exists())
+        self.assertFalse((raw / 'export-templates').exists())
+
+    def test_incomplete_or_non_mono_templates_do_not_touch_output(self):
+        debug, release = self.template_zip('debug'), self.template_zip('release', mono=False)
+        self.generate('--game-template-debug', str(debug), success=False)
+        self.assertFalse(self.output.exists())
+        self.generate('--game-template-debug', str(debug), '--game-template-release', str(release), success=False)
+        self.assertFalse(self.output.exists())
 
     def test_legacy_native_cache_is_rejected_before_update(self):
         self.generate()

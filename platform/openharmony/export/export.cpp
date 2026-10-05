@@ -32,8 +32,8 @@
 
 #include "export_plugin.h"
 
-#include "core/os/os.h"
 #include "core/object/class_db.h"
+#include "core/os/os.h"
 #include "editor/export/editor_export.h"
 #include "editor/settings/editor_settings.h"
 
@@ -42,10 +42,17 @@ void register_openharmony_exporter_types() {
 }
 
 void register_openharmony_exporter() {
-	EDITOR_DEF_BASIC("export/openharmony/openharmony_tool_path", "");
-	EditorSettings::get_singleton()->add_property_hint(PropertyInfo(Variant::STRING, "export/openharmony/openharmony_tool_path", PROPERTY_HINT_GLOBAL_DIR));
-	EDITOR_DEF_BASIC("export/openharmony/java_sdk_path", "");
-	EditorSettings::get_singleton()->add_property_hint(PropertyInfo(Variant::STRING, "export/openharmony/java_sdk_path", PROPERTY_HINT_GLOBAL_DIR));
+	// Empty paths resolve the oo-installed tools and fixed SDK views at runtime.
+	for (const char *name : { "sdk_root", "node_path", "hvigor_entry", "hdc_path" }) {
+		String setting = String("export/openharmony/") + name;
+		EDITOR_DEF_BASIC(setting, "");
+		EditorSettings::get_singleton()->add_property_hint(PropertyInfo(Variant::STRING, setting,
+				String(name) == "sdk_root" ? PROPERTY_HINT_GLOBAL_DIR : PROPERTY_HINT_GLOBAL_FILE));
+	}
+
+#ifdef OPENHARMONY_ENABLED
+	EDITOR_DEF_BASIC("export/openharmony/use_broker", true);
+#endif
 
 	Ref<EditorExportPlatformOpenHarmony> exporter;
 	exporter.instantiate();

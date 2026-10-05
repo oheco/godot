@@ -377,17 +377,18 @@ void EditorRunBar::_run_scene(const String &p_scene_path, const Vector<String> &
 void EditorRunBar::_run_native(const Ref<EditorExportPreset> &p_preset) {
 	EditorNode::get_singleton()->try_autosave();
 
-	if (run_native->is_deploy_debug_remote_enabled()) {
-		stop_playing();
-
-		if (!EditorNode::get_singleton()->call_build()) {
-			return; // Build failed.
-		}
-
-		EditorDebuggerNode::get_singleton()->start(p_preset->get_platform()->get_debug_protocol());
-		emit_signal(SNAME("play_pressed"));
-		editor_run.run_native_notify();
+	stop_playing();
+	if (!EditorNode::get_singleton()->call_build()) {
+		return; // Do not deploy after a failed build.
 	}
+	if (run_native->is_deploy_debug_remote_enabled()) {
+		EditorDebuggerNode::get_singleton()->start(p_preset->get_platform()->get_debug_protocol());
+	}
+	// A deployment still owns a running game when remote debugging is disabled.
+	editor_run.run_native_notify();
+	_update_play_buttons();
+	stop_button->set_disabled(false);
+	emit_signal(SNAME("play_pressed"));
 }
 
 void EditorRunBar::_profiler_autostart_indicator_pressed() {
@@ -460,6 +461,9 @@ void EditorRunBar::play_custom_scene(const String &p_custom, const Vector<String
 }
 
 void EditorRunBar::stop_playing() {
+	if (run_native) {
+		run_native->stop_run_native();
+	}
 	if (editor_run.get_status() == EditorRun::STATUS_STOP) {
 		return;
 	}

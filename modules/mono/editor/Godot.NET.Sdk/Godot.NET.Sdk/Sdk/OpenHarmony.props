@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <!-- The editor checks this before publishing old projects: AOT without roots can
+         successfully link a library whose game scripts have all been removed. -->
+    <GodotOpenHarmonyNativeAotSupported>true</GodotOpenHarmonyNativeAotSupported>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'ExportDebug' or '$(Configuration)' == 'ExportRelease'">
+    <PublishAot Condition="'$(PublishAot)' == ''">true</PublishAot>
+    <NativeLib Condition="'$(NativeLib)' == ''">Shared</NativeLib>
+    <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
+  </PropertyGroup>
+</Project>

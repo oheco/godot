@@ -4,8 +4,10 @@ This branch adapts Godot **4.7.2-stable** for native ARM64 OpenHarmony developme
 Games and the Editor use one [DevEco source project](<misc/dist/openharmony_template/README.md>)
 and the same ArkTS/N-API/native engine host. Generated configuration selects the
 application identity, startup policy and optional Editor/.NET environment. Both
-profiles default to **HarmonyOS 6.1.0 / API 23**. The person installing the Editor
-builds and signs the generated project with their own DevEco account.
+profiles default to the oo **OpenHarmony SDK 26.0.0**, with minimum compatible
+API **23**. Game device types default to **`default`**; the Editor remains
+2-in-1-only because its external build tools/user-file permissions require that
+profile. The person installing the Editor supplies their own signing material.
 
 The Editor payload includes GodotSharp and an offline feed, **not a .NET SDK**.
 The installed oheco SDK is an external runtime dependency of the SDK-enabled
@@ -70,8 +72,10 @@ only recognised fields can be overridden:
 - `application`: bundleId, displayName, vendor, versionCode, versionName,
   deviceTypes, orientation (`system` means no manifest override), icons
   (foreground/background PNG paths).
-- `build`: sdkVersion (default `6.1.0(23)`, applied to compile/target/compatible),
-  architectures. The current Editor generator accepts ARM64 only.
+- `build`: sdkVersion (default `26.0.0`, applied to compile/target), compatibleApi
+  (default `23`), architectures. OpenHarmony SDK views use runtimeOS=OpenHarmony;
+  legacy HarmonyOS version strings remain an explicit project-generation option,
+  not an automatic fallback. The current Editor generator accepts ARM64 only.
 - `engine.target`: editor, template_debug or template_release, matching the role
   and the separately compiled input library; this is not a runtime engine switch.
 - `host`, `launch`, `instances`, `managed`, `window`, `diagnostics`: the runtime
@@ -85,15 +89,17 @@ A native-only Editor override can be as small as:
 {"managed":{"mode":"none"}}
 ```
 
-Use a matching native editor library; GodotSharp, SDK and NuGet inputs are not
-required in this mode. Runtime-only managed game packaging is deliberately not
-implemented by this refactor and is rejected rather than emitting a broken app.
+Use a matching native editor library; GodotSharp, the .NET SDK and NuGet inputs
+are not required in this mode. Native-only Editors still need user-file/external
+code access and the weak sandbox to run the oo export tools. C# games keep host
+managed.mode=none: the .NET export plugin embeds a signed self-contained runtime
+in the PCK, rather than adding another runtime ZIP or an external SDK dependency.
 
 Generate the game archive with the ordinary SCons target:
 
 ```sh
 python3 -m SCons platform=openharmony target=template_debug arch=arm64 \
-  module_mono_enabled=no vulkan=yes opengl3=no generate_bundle=yes \
+  module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=yes \
   debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j4
 ```
 
@@ -131,9 +137,11 @@ Prepare these before the offline build:
 - The existing native LLVM tools and `binary-sign-tool` on PATH
   (`oo install ohos-sdk-toolchains`).
 - The packaged native .NET SDK (`oo install dotnet-sdk`) and the pinned NuGet feed.
-- DevEco Studio and the matching SDK for the final application build. Optional
-  native Hvigor validation uses the user's adapted Node 24 and isolated Hvigor
-  6.26.4 tooling; these tools are not installed by the project packager.
+- Native Node 24, oo Hvigor adapter **6.26.4-ohos.1**, all five matching SDK
+  components, and the fixed SDK view. These export tools are not installed by
+  the project packager. No Java, broker, npx download or SDK file patch is used.
+- User-supplied signing material for signed HAP/APP export or device deployment.
+  DevEco remains optional for manually building/signing the generated Editor project.
 
 Commands below run on the OpenHarmony host, from this source checkout. The `oo`
 package manager installs every toolchain input; no build command downloads
@@ -183,6 +191,101 @@ and rebuilding/reloading an assembly in one headless editor process. It uses a
 project path containing spaces and removes loader-path overrides. HAP sandbox
 and Vulkan presentation acceptance remain separate checks.
 
+## On-device export, run and GDScript debug
+
+Prepare the external build tools once (oheco 0.10.0 or newer):
+
+```sh
+oo install nodejs
+NPM_CONFIG_REGISTRY=https://repo.harmonyos.com/npm/ oo install hvigor
+oo install ohos-sdk-native@26.0.0.35-Beta ohos-sdk-ets@26.0.0.35-Beta \
+  ohos-sdk-js@26.0.0.35-Beta ohos-sdk-toolchains@26.0.0.35-Beta \
+  ohos-sdk-previewer@26.0.0.35-Beta
+oo sdk create 26.0.0.35-Beta
+"$(npm prefix --global)/bin/hvigor" --adapter-info
+```
+
+The native exporter discovers the active oo Node/global adapter and SDK view.
+Editor Settings exposes `export/openharmony/{node_path,hvigor_entry,sdk_root,hdc_path}`
+for explicit paths; empty settings mean automatic discovery. C# build/publish also
+uses SDK Root to resolve `toolchains/lib/binary-sign-tool`, or the oo command when
+no root is configured, and passes the absolute `OpenHarmonySigningTool` property
+in the MSBuild child environment. Only that child's PATH is extended; a GUI
+launch does not need the terminal's PATH. No fifth signing-tool setting is required.
+A project-only export
+needs no build tools. Full HAP/APP export calls the template's
+[build runner](<misc/dist/openharmony_template/tools/BUILD_RUNNER.md>) directly with
+Node, uses only installed dependencies, and never changes the Editor's global
+PATH/cwd to imitate DevEco. Credentials are passed in a checked private cache
+request, not command arguments; generated signing configuration uses environment
+references and the original profile is restored after the build. Error output is
+redacted. Signed exports require the user's actual certificate/profile/keystore;
+file-signature validation does not prove device trust.
+
+Build both `module_mono_enabled=yes` templates. Bundle them with the Editor using
+`--game-template-debug` and `--game-template-release` below. On startup only the
+Editor streams/verifies these archives into private digest-versioned storage;
+ordinary games do not prepare templates. This is separate from `runtime.zip`.
+Old/manual export templates remain a fallback when no bundled manifest exists.
+
+- F5/F6 launch another attached UIAbility process with the project/scene/debugger
+  arguments. F8 stops the recorded game PID; no HAP packaging or HDC is involved.
+- Remote Deploy requires an authorized HDC target and signing preset. Every
+  install/start/forward command names that target, uses the actual debugger port
+  and loopback address, and checks success. Debug/file-server deployments add
+  INTERNET. Only owned forwarding rules are removed. F8 and debugger disconnect
+  explicitly stop the device bundle; failed cleanup is retained for retry before
+  the next deployment, not silently forgotten. Do not concurrently manage the
+  same device ports from independent HDC clients.
+- On HarmonyOS, **Editor Settings → Export → OpenHarmony → Use Broker** is
+  enabled by default. Start `oheco-broker shell serve` in the terminal (`oo install
+  oheco-broker` if needed). The editor reads `~/.oheco/broker/endpoint`, independently
+  of the SDK/tool root, and connects to its numeric loopback endpoint;
+  there is no port setting. Device discovery, HDC installation, ability start/stop,
+  debugger/file-server port forwarding and forwarding cleanup use that service.
+  Commands keep their executable and argument arrays; they are never shell strings.
+  Broker failures are reported without retrying or falling back to direct HDC.
+- The native HDC socket at `/data/hdc/hdc_debug/hdc_server` is absent from the
+  inspected editor application's sandbox: direct `hdc -v` works, but `hdc list
+  targets` retries `ENOENT` and returns exit code 0 with empty output. The broker
+  runs in the terminal's namespace, where HDC can access the existing service.
+  The editor does not request the restricted `MOUNT_HDCDEBUG_PATH` permission.
+  Remote Deploy builds its DevEco project and signed debug HAP under the current
+  project's `.godot/openharmony/run_<pid>_<ticks>/` directory. HDC receives that same
+  absolute HAP path through the broker; the command connection carries only
+  executable/arguments and output. The project directory must be accessible to both
+  the editor and the terminal running the broker. The owned run directory is
+  removed after deployment.
+  OpenHarmony export/build/sign operations and local UIAbility F5/F6/F8 execution
+  retain their existing toolchain. Turning Use Broker off selects direct HDC.
+- Debug templates support GDScript breakpoints, stack/locals, step/continue and
+  Remote SceneTree. Release templates intentionally reject remote debugging.
+- C# ARM64 games use .NET 10 NativeAOT Shared for `openharmony-arm64` in both
+  `ExportDebug` and `ExportRelease`. Use `Godot.NET.Sdk/4.7.2-ohos.3` or newer:
+  this SDK preserves GodotSharp, the game assembly and referenced source-project
+  assemblies so trimming keeps script constructors and generated bridges.
+  Existing projects must update their SDK version; the exporter rejects older
+  SDKs before publishing. Normal editor `Debug` builds retain CoreCLR/JIT.
+- The AOT game library is packaged as `libs/arm64-v8a/libgodot-csharp-game.so`
+  with its ICU, OpenSSL and C++ dependencies beside `libgodot.so`. The PCK holds
+  scenes, resources and a small NativeAOT initialization record. Ordinary IL
+  DLLs and the CoreCLR/JIT runtime are excluded. Existing native signatures are
+  retained and missing signatures are added only to export copies. When debug
+  symbols are enabled, they are saved beside the export under `<name>.symbols`.
+- NativeAOT games initialize through the HAP library namespace without extracting
+  executable code into private data or registering independent library paths.
+  Generated games do not request `kernel.LOAD_INDEPENDENT_LIBRARY` or
+  `kernel.ALLOW_WRITABLE_CODE_MEMORY`. The editor keeps its development SDK and
+  permissions. Editor-only references are rejected before AOT compilation.
+  Third-party code must support AOT; dynamic assembly loading, runtime compilation
+  and arbitrary reflection may require changes or explicit trimming roots.
+  Compiler trimming/AOT warnings remain visible.
+  **C# source breakpoints/stepping are not implemented by this adaptation.**
+
+Native CLI/PCK, unsigned Hvigor HAP/APP, protocol-peer and fixture tests are
+separate from a signed application's UIAbility/sandbox/permission and physical
+HDC-device acceptance. A minimum-API field does not prove all older devices work.
+
 ## Assemble a DevEco project
 
 After the native editor and managed assemblies have been validated, export once
@@ -195,6 +298,8 @@ python3 platform/openharmony/export-editor-project.py \
   --godotsharp bin/GodotSharp \
   --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
+  --game-template-debug bin/openharmony_debug_arm64-v8a.zip \
+  --game-template-release bin/openharmony_release_arm64-v8a.zip \
   --output /path/to/GodotEditor
 
 # later iterations: same directory, no new copy to open
@@ -203,6 +308,8 @@ python3 platform/openharmony/export-editor-project.py \
   --godotsharp bin/GodotSharp \
   --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
+  --game-template-debug bin/openharmony_debug_arm64-v8a.zip \
+  --game-template-release bin/openharmony_release_arm64-v8a.zip \
   --output /path/to/GodotEditor --update
 ```
 

@@ -16,12 +16,16 @@ import tempfile
 import textwrap
 import zipfile
 
+from pck_audit import pack_index
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--godot', type=Path, required=True)
     parser.add_argument('--template', type=Path, required=True)
     parser.add_argument('--runtime-godot', type=Path, help='Optional signed template CLI from build-cli.py; test hardened adjacent-PCK discovery')
     parser.add_argument('--output', type=Path, required=True, help='New persistent directory for evidence/project')
+    parser.add_argument('--build-bundles', action='store_true', help='Also run real oo Hvigor unsigned HAP/APP builds')
+    parser.add_argument('--release-template', type=Path, help='Complete template_release ZIP for bundle validation')
     args = parser.parse_args()
     if sys.platform != 'ohos':
         raise SystemExit('Run on native OpenHarmony')
@@ -31,7 +35,7 @@ def main():
     output = args.output.resolve()
     with tempfile.TemporaryDirectory(prefix='godot-export-test-', dir=os.environ['TMPDIR']) as temporary:
         root = Path(temporary)
-        project = root / 'project'
+        project = root / 'project with spaces'
         project.mkdir()
         display_name = 'Game "quoted" \\ host'
         (project / 'project.godot').write_text(textwrap.dedent('''    config_version=5
@@ -91,7 +95,7 @@ def main():
         records = []
 
         def run(name, command, expected=0, cwd=None):
-            result = subprocess.run(command, cwd=cwd or project, env=env, capture_output=True, text=True, timeout=300)
+            result = subprocess.run(command, cwd=cwd or project, env=env, capture_output=True, text=True, timeout=900)
             text = result.stdout + result.stderr
             (output / (name + '.log')).write_text(text)
             records.append({'stage': name, 'exit_code': result.returncode})
@@ -113,10 +117,11 @@ def main():
         strings = {v['name']: v['value'] for v in read('AppScope/resources/base/element/string.json')['string']}
         assert strings['app_name'] == display_name
         product = read('build-profile.json5')['app']['products'][0]
-        for key in ('compileSdkVersion', 'targetSdkVersion', 'compatibleSdkVersion'):
-            assert product[key] == '6.1.0(23)', (key, product)
+        assert product['compileSdkVersion'] == '26.0.0' and product['targetSdkVersion'] == '26.0.0', product
+        assert product['compatibleSdkVersion'] == 23 and product['runtimeOS'] == 'OpenHarmony', product
         module = read('entry/src/main/module.json5')['module']
         assert module['mainElement'] == 'EntryAbility'
+        assert module['deviceTypes'] == ['default']
         assert module['abilities'][0]['orientation'] == 'portrait'
         permissions = {p['name']: p for p in module['requestPermissions']}
         assert set(permissions) == {'ohos.permission.INTERNET', 'ohos.permission.MICROPHONE'}
@@ -132,6 +137,7 @@ def main():
                 if name.endswith(('.ets', '.cpp', '.h', '.ts')):
                     assert (generated / name).read_bytes() == template.read(name), name
         pck = generated / 'entry/src/main/resources/rawfile/template.pck'
+        pack_index(pck)  # Fail even when the engine hides duplicate paths while mounting.
         text = run('pck', [str(args.godot), '--headless', '--main-pack', str(pck)])
         assert 'SHARED_HOST_PCK_PASS' in text
         if args.runtime_godot:
@@ -170,9 +176,28 @@ def main():
             (project / 'export_presets.cfg').write_text(preset.replace(json.dumps(str(args.template)), json.dumps(str(broken))))
             run(f'reject-bad-schema-{index}', [str(args.godot), '--headless', '--path', str(project),
                 '--export-debug', 'OpenHarmony', str(root / f'Broken{index}.hap')], expected=1)
+        if args.build_bundles:
+            import hashlib
+            bundle_preset = preset.replace('build/export_project_only=true', 'build/export_project_only=false')
+            if args.release_template:
+                bundle_preset = bundle_preset.replace('custom_template/release=' + json.dumps(str(args.template)),
+                                                       'custom_template/release=' + json.dumps(str(args.release_template.resolve(strict=True))))
+            (project / 'export_presets.cfg').write_text(bundle_preset)
+            for name, switch, suffix in [('debug-hap', '--export-debug', 'hap'),
+                                         ('release-hap', '--export-release', 'hap'),
+                                         ('release-app', '--export-release', 'app')]:
+                target = root / f'{name} with spaces.{suffix}'
+                run(name, [str(args.godot), '--headless', '--path', str(project), switch, 'OpenHarmony', str(target)])
+                assert target.is_file() and target.stat().st_size > 0, target
+                with zipfile.ZipFile(target) as archive:
+                    assert archive.testzip() is None
+                    if suffix == 'hap':
+                        assert any(entry.endswith('/template.pck') for entry in archive.namelist())
+                with target.open('rb') as stream:
+                    records[-1].update(size=target.stat().st_size, sha256=hashlib.file_digest(stream, 'sha256').hexdigest())
         shutil.copytree(generated, output / 'Game')
         (output / 'result.json').write_text(json.dumps({'scope': 'real native export and headless PCK, not HAP', 'stages': records}, indent=2) + '\n')
-    print('PASS real native game export, API 23 metadata, permissions, shared sources, PCK boot and API 18 rejection')
+    print('PASS real native game export, oo SDK26/default metadata, permissions, shared sources, PCK boot and API 18 rejection')
 
 
 if __name__ == "__main__":

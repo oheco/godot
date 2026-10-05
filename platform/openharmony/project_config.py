@@ -17,7 +17,7 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[2]
 TEMPLATE = SOURCE / 'misc/dist/openharmony_template'
 HOST_PATH = 'entry/src/main/resources/rawfile/godot_host.json'
-SDK_VERSION = '6.1.0(23)'
+SDK_VERSION = '26.0.0'
 HOST_ABI_VERSION = 1
 HEADERS = ('bridge_openharmony.h', 'engine_host_openharmony.h')
 EXCLUDED = {'.hvigor', '.cxx', 'node_modules', 'oh_modules', 'build', '.git', '.idea', '.appanalyzer', '.bitfun', '.godot-config-history'}
@@ -119,10 +119,17 @@ def merge_known(base, overrides, prefix=''):
     return base
 
 
-def validate_sdk(version):
-    match = re.fullmatch(r'\d+\.\d+\.\d+\((\d+)\)', version)
+def sdk_api(version):
+    harmony = re.fullmatch(r'\d+\.\d+\.\d+\((\d+)\)', version)
+    openharmony = re.fullmatch(r'(\d+)\.\d+\.\d+', version)
+    match = harmony or openharmony
     if not match or int(match[1]) < 23:
-        raise ValueError('The shared host requires API 23 or newer (default 6.1.0(23))')
+        raise ValueError('The shared host requires API 23 or newer (oo SDK default 26.0.0)')
+    return int(match[1])
+
+
+def validate_sdk(version):
+    sdk_api(version)
 
 
 def configuration(profile='game', overrides=None):
@@ -130,9 +137,9 @@ def configuration(profile='game', overrides=None):
     config.update({
         'application': {'bundleId': 'org.godotengine.template', 'displayName': 'template',
                         'vendor': 'example', 'versionCode': 1000000, 'versionName': '1.0.0',
-                        'deviceTypes': ['phone', 'tablet', '2in1'], 'orientation': 'portrait',
+                        'deviceTypes': ['default'], 'orientation': 'portrait',
                         'icons': {'foreground': '', 'background': ''}},
-        'build': {'sdkVersion': SDK_VERSION, 'architectures': ['arm64-v8a']},
+        'build': {'sdkVersion': SDK_VERSION, 'compatibleApi': 23, 'architectures': ['arm64-v8a']},
         'engine': {'target': 'template_release'},
         'permissions': [],
     })
@@ -183,13 +190,15 @@ def validate_configuration(config):
     targets = ('editor',) if role == 'editor' else ('template_debug', 'template_release')
     if config['engine']['target'] not in targets:
         raise ValueError(f'{role} requires engine.target in {targets}')
-    if not app['deviceTypes'] or any(t not in ('phone', 'tablet', '2in1') for t in app['deviceTypes']):
+    if not app['deviceTypes'] or any(t not in ('default', 'phone', 'tablet', '2in1') for t in app['deviceTypes']):
         raise ValueError('Invalid application.deviceTypes')
     if role == 'editor' and app['deviceTypes'] != ['2in1']:
         raise ValueError('The editor instance/SDK profile is supported on 2in1 only')
     if not config['build']['architectures'] or any(a not in ('arm64-v8a', 'x86_64') for a in config['build']['architectures']):
         raise ValueError('Unsupported build.architectures')
-    validate_sdk(config['build']['sdkVersion'])
+    api = sdk_api(config['build']['sdkVersion'])
+    if not 23 <= config['build']['compatibleApi'] <= api:
+        raise ValueError('build.compatibleApi must be between 23 and the compile API')
     for permission in config['permissions']:
         if not isinstance(permission, str) or not permission.startswith('ohos.permission.'):
             raise ValueError('permissions must contain OpenHarmony permission names')
@@ -281,9 +290,11 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
     else:
         app.pop('multiAppMode', None)
     for product in documents['build-profile.json5']['app']['products']:
-        for field in ('compileSdkVersion', 'targetSdkVersion', 'compatibleSdkVersion'):
-            product[field] = config['build']['sdkVersion']
-        product['runtimeOS'] = 'HarmonyOS'
+        sdk = config['build']['sdkVersion']
+        product['compileSdkVersion'] = sdk
+        product['targetSdkVersion'] = sdk
+        product['compatibleSdkVersion'] = sdk if '(' in sdk else config['build']['compatibleApi']
+        product['runtimeOS'] = 'HarmonyOS' if '(' in sdk else 'OpenHarmony'
     entry = documents['entry/build-profile.json5']
     build = entry.setdefault('buildOption', {})
     native = build.setdefault('externalNativeOptions', {})
@@ -309,9 +320,9 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
         module.pop('extensionAbilities', None)
     permissions = set(config['permissions'])
     if role == 'editor':
-        permissions.update(('ohos.permission.INTERNET', 'ohos.permission.LOCK_WINDOW_CURSOR'))
-    if config['managed']['mode'] == 'sdk':
-        permissions.update(('ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
+        # Native-only editors also use oo Node/Hvigor/SDK and user projects.
+        permissions.update(('ohos.permission.INTERNET', 'ohos.permission.LOCK_WINDOW_CURSOR',
+                            'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
     permissions.update(restricted)
     user_reasons = {'ohos.permission.MICROPHONE': 'MICROPHONE_reason',
                     'ohos.permission.READ_WRITE_USER_FILE': 'reason_user_file'}

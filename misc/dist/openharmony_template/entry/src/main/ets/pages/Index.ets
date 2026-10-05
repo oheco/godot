@@ -5,6 +5,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime } from '../runtime/Runtime';
+import { prepareTemplates } from '../runtime/Templates';
 import { crashLogTime, describe, fail, initDiagnostics, probeEnvironment, readFullDiagnostics, record, setStep } from '../runtime/Diagnostics';
 import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
 import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
@@ -99,6 +100,11 @@ struct Index {
         runtime = await prepareRuntime(context);
         if (this.disposed) { return; }
         record(`runtime directory: ${runtime}`);
+      }
+      if (!packagedGame) {
+        setStep('host:prepare-export-templates');
+        await prepareTemplates(context, paths.filesDir);
+        if (this.disposed) { return; }
       }
       setStep('host:request-user-permissions');
       await requestUserPermissions(context);

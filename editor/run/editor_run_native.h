@@ -35,6 +35,8 @@
 #include "scene/gui/menu_button.h"
 #include "scene/gui/rich_text_label.h"
 
+class EditorExportPlatform;
+
 class EditorRunNative : public HBoxContainer {
 	GDCLASS(EditorRunNative, HBoxContainer);
 
@@ -47,6 +49,7 @@ class EditorRunNative : public HBoxContainer {
 	bool first = true;
 
 	int resume_id = -1;
+	Ref<EditorExportPlatform> active_platform;
 
 	void _confirm_run_native();
 
@@ -57,6 +60,7 @@ protected:
 public:
 	Error start_run_native(int p_id);
 	void resume_run_native();
+	void stop_run_native();
 
 	bool is_deploy_debug_remote_enabled() const;
 

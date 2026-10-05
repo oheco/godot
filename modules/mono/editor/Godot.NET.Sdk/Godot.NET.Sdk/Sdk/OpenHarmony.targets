@@ -1,0 +1,35 @@
+<Project>
+  <Target Name="GodotOpenHarmonyRequireNativeAot" BeforeTargets="PrepareForPublish"
+          Condition="'$(Configuration)' == 'ExportDebug' or '$(Configuration)' == 'ExportRelease'">
+    <Error Condition="'$(PublishAot)' != 'true' or '$(NativeLib)' != 'Shared' or '$(SelfContained)' != 'true'"
+           Text="OpenHarmony C# games require PublishAot=true, NativeLib=Shared and SelfContained=true. CoreCLR/JIT export is not supported." />
+    <Error Condition="'$(RuntimeIdentifier)' != 'openharmony-arm64' or '$(TargetFrameworkIdentifier)' != '.NETCoreApp' or '$(TargetFrameworkVersion)' != 'v10.0'"
+           Text="OpenHarmony NativeAOT games require net10.0 and RuntimeIdentifier=openharmony-arm64 with the oo-installed .NET 10 NativeAOT SDK." />
+  </Target>
+
+  <!-- Resolve the graph before AOT makes its assemblies disappear from publish. -->
+  <Target Name="GodotOpenHarmonyCheckGameReferences" AfterTargets="ResolveReferences" BeforeTargets="CoreCompile"
+          Condition="'$(Configuration)' == 'ExportDebug' or '$(Configuration)' == 'ExportRelease'">
+    <ItemGroup>
+      <_GodotOpenHarmonyEditorReference Include="@(ReferencePath)"
+          Condition="'%(ReferencePath.Filename)' == 'GodotSharpEditor' or '%(ReferencePath.Filename)' == 'GodotTools' or $([System.String]::Copy('%(ReferencePath.Filename)').StartsWith('GodotTools.'))" />
+    </ItemGroup>
+    <Error Condition="'@(_GodotOpenHarmonyEditorReference)' != ''"
+           Text="OpenHarmony game references editor-only assembly '@(_GodotOpenHarmonyEditorReference->'%(Filename)%(Extension)')'. Guard editor code with #if TOOLS and references with Configuration=Debug." />
+  </Target>
+
+  <!-- NativeAOT's roots are items, and the compiler reads them in this target.
+       Keep constructors and generated reflection bridges for every game script. -->
+  <Target Name="GodotOpenHarmonyNativeAotRootAssemblies" BeforeTargets="WriteIlcRspFileForCompilation"
+          Condition="'$(PublishAot)' == 'true' and ('$(Configuration)' == 'ExportDebug' or '$(Configuration)' == 'ExportRelease')">
+    <ItemGroup>
+      <TrimmerRootAssembly Include="GodotSharp" KeepDuplicates="false"
+          Condition="'$(EnableGodotDotNetPreview)' != 'true' and '$(DisableImplicitGodotSharpReferences)' != 'true'" />
+      <TrimmerRootAssembly Include="Godot.Bindings" KeepDuplicates="false" Condition="'$(EnableGodotDotNetPreview)' == 'true'" />
+      <TrimmerRootAssembly Include="$(TargetName)" KeepDuplicates="false" />
+      <!-- Referenced source projects can also contain reflected Godot scripts.
+           Package libraries retain their own explicit trimming annotations. -->
+      <TrimmerRootAssembly Include="@(ReferencePath->WithMetadataValue('ReferenceSourceTarget', 'ProjectReference'))" KeepDuplicates="false" />
+    </ItemGroup>
+  </Target>
+</Project>

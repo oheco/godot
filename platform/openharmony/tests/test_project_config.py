@@ -36,8 +36,22 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertFalse((self.root / 'entry/src/main/resources/rawfile/runtime.zip').exists())
         self.assertEqual(self.document('entry/src/main/module.json5')['module']['requestPermissions'], [])
         self.assertNotIn('multiAppMode', self.document('AppScope/app.json5')['app'])
-        for name in ('compileSdkVersion', 'targetSdkVersion', 'compatibleSdkVersion'):
-            self.assertEqual(self.document('build-profile.json5')['app']['products'][0][name], '6.1.0(23)')
+        product = self.document('build-profile.json5')['app']['products'][0]
+        self.assertEqual(product['compileSdkVersion'], '26.0.0')
+        self.assertEqual(product['targetSdkVersion'], '26.0.0')
+        self.assertEqual(product['compatibleSdkVersion'], 23)
+        self.assertEqual(product['runtimeOS'], 'OpenHarmony')
+        self.assertEqual(self.document('entry/src/main/module.json5')['module']['deviceTypes'], ['default'])
+
+    def test_explicit_harmony_configuration_is_not_confused_with_sdk_view(self):
+        config = project.configuration(overrides={'build': {'sdkVersion': '6.1.0(23)'}})
+        project.configure_project(self.root, config)
+        product = self.document('build-profile.json5')['app']['products'][0]
+        self.assertEqual(product['runtimeOS'], 'HarmonyOS')
+        self.assertEqual(product['compatibleSdkVersion'], '6.1.0(23)')
+        for compatible in (22, 27):
+            with self.assertRaises(ValueError):
+                project.configuration(overrides={'build': {'compatibleApi': compatible}})
 
     def test_editor_only_changes_configuration(self):
         sources = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*')
@@ -56,6 +70,7 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertEqual(self.document('AppScope/app.json5')['app']['multiAppMode']['maxCount'], 5)
         permissions = {p['name']: p for p in module['requestPermissions']}
         self.assertIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
+        self.assertNotIn('ohos.permission.MOUNT_HDCDEBUG_PATH', permissions)
         self.assertEqual(permissions['ohos.permission.READ_WRITE_USER_FILE']['usedScene']['abilities'], ['EntryAbility'])
         self.assertTrue(project.RESTRICTED.isdisjoint(permissions))
 
@@ -63,8 +78,9 @@ class ProjectConfigurationTest(unittest.TestCase):
         config = project.configuration('editor', {'managed': {'mode': 'none'}})
         project.configure_project(self.root, config)
         permissions = {p['name'] for p in self.document('entry/src/main/module.json5')['module']['requestPermissions']}
-        self.assertNotIn('ohos.permission.READ_WRITE_USER_FILE', permissions)
-        self.assertNotIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
+        self.assertIn('ohos.permission.READ_WRITE_USER_FILE', permissions)
+        self.assertIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
+        self.assertNotIn('ohos.permission.MOUNT_HDCDEBUG_PATH', permissions)
         self.assertEqual(self.document(project.HOST_PATH)['managed']['mode'], 'none')
 
     def test_preserve_signing_but_migrate_required_build_fields(self):
@@ -87,7 +103,7 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertEqual(after['signingConfigs'], signing)
         self.assertEqual(after['products'][0]['signingConfig'], 'personal')
         self.assertEqual(after['products'][0]['customBuildField'], {'keep': True})
-        self.assertEqual(after['products'][0]['compatibleSdkVersion'], '6.1.0(23)')
+        self.assertEqual(after['products'][0]['compatibleSdkVersion'], 23)
         entry = self.document('entry/build-profile.json5')['buildOption']
         self.assertEqual(entry['externalNativeOptions']['arguments'], '-DUSER_OPTION=ON')
         self.assertFalse(entry['nativeLib']['debugSymbol']['strip'])

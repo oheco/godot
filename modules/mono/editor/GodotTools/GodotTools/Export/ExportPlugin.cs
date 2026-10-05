@@ -32,7 +32,9 @@ namespace GodotTools.Export
             if (!ProjectContainsDotNet())
                 return Array.Empty<string>();
 
-            return new string[] { "dotnet" };
+            return platform.GetOsName().Equals("OpenHarmony", StringComparison.OrdinalIgnoreCase)
+                ? new string[] { "dotnet", "dotnet_native_aot" }
+                : new string[] { "dotnet" };
         }
 
         public override Godot.Collections.Array<Godot.Collections.Dictionary> _GetExportOptions(EditorExportPlatform platform)
@@ -179,7 +181,7 @@ namespace GodotTools.Export
             if (!TryDeterminePlatformFromOSName(osName, out string? platform))
                 throw new NotSupportedException("Target platform not supported.");
 
-            if (!new[] { OS.Platforms.Windows, OS.Platforms.LinuxBSD, OS.Platforms.MacOS, OS.Platforms.Android, OS.Platforms.iOS }
+            if (!new[] { OS.Platforms.Windows, OS.Platforms.LinuxBSD, OS.Platforms.MacOS, OS.Platforms.Android, OS.Platforms.iOS, OS.Platforms.OpenHarmony }
                     .Contains(platform))
             {
                 throw new NotImplementedException("Target platform not yet implemented.");
@@ -225,6 +227,12 @@ namespace GodotTools.Export
                 }
             }
 
+            if (platform == OS.Platforms.OpenHarmony && !publishConfig.Archs.SetEquals(new[] { "arm64" }))
+                throw new NotSupportedException("OpenHarmony C# export requires the openharmony-arm64 runtime pack and an ARM64 template.");
+
+            string? openHarmonySigningTool = platform == OS.Platforms.OpenHarmony
+                ? BuildSystem.ResolveOpenHarmonySigningTool() : null;
+
             var targets = new List<PublishConfig> { publishConfig };
 
             if (platform == OS.Platforms.iOS)
@@ -242,7 +250,9 @@ namespace GodotTools.Export
 
             List<string> outputPaths = new();
 
-            bool embedBuildResults = ((bool)GetOption("dotnet/embed_build_outputs") || platform == OS.Platforms.Android) && platform != OS.Platforms.MacOS;
+            // OpenHarmony deploys NativeAOT libraries through the native exporter.
+            bool embedBuildResults = ((bool)GetOption("dotnet/embed_build_outputs") ||
+                platform == OS.Platforms.Android) && platform != OS.Platforms.MacOS && platform != OS.Platforms.OpenHarmony;
 
             var exportedJars = new HashSet<string>();
 
@@ -267,8 +277,8 @@ namespace GodotTools.Export
 
                     if (config.UseTempDir)
                     {
-                        publishOutputDir = Path.Combine(Path.GetTempPath(), "godot-publish-dotnet",
-                            $"{System.Environment.ProcessId}-{buildConfig}-{runtimeIdentifier}");
+                        publishOutputDir = Path.Combine(Path.GetTempPath(),
+                            $"godot-publish-dotnet-{System.Environment.ProcessId}-{Guid.NewGuid():N}-{buildConfig}-{runtimeIdentifier}");
                         _tempFolders.Add(publishOutputDir);
                     }
                     else
@@ -304,6 +314,20 @@ namespace GodotTools.Export
                     {
                         throw new NotSupportedException(
                             $"Publish succeeded but project assembly not found at '{assemblyPath}' or '{nativeAotPath}'.");
+                    }
+
+                    if (platform == OS.Platforms.OpenHarmony)
+                    {
+                        string nativeStaging = Path.Combine(Path.GetTempPath(),
+                            $"godot-native-aot-export-{System.Environment.ProcessId}-{Guid.NewGuid():N}");
+                        _tempFolders.Add(nativeStaging);
+                        foreach (string library in OpenHarmonyExport.StageNativeLibraries(publishOutputDir,
+                                     GodotSharpDirs.ProjectAssemblyName, nativeStaging, openHarmonySigningTool))
+                            AddSharedObject(library, tags: new string[] { "arm64" }, target: "");
+                        if (includeDebugSymbols)
+                            OpenHarmonyExport.ExportDebugSymbols(publishOutputDir, GodotSharpDirs.ProjectAssemblyName, path);
+                        AddFile(OpenHarmonyExport.NativeAotMetadataPath, OpenHarmonyExport.NativeAotMetadata(), false);
+                        continue;
                     }
 
                     // For ios simulator builds, skip packaging the build outputs.
@@ -395,7 +419,9 @@ namespace GodotTools.Export
                                     }
 
                                     string filePath = SanitizeSlashes(Path.GetRelativePath(publishOutputDir, path));
-                                    byte[] fileData = File.ReadAllBytes(path);
+                                    byte[] fileData = platform == OS.Platforms.OpenHarmony
+                                        ? OpenHarmonyExport.ReadPackagedFile(path, openHarmonySigningTool)
+                                        : File.ReadAllBytes(path);
                                     string hash = Convert.ToBase64String(SHA512.HashData(fileData));
 
                                     manifest.Append(CultureInfo.InvariantCulture, $"{filePath}\t{hash}\n");
@@ -421,7 +447,7 @@ namespace GodotTools.Export
 
                     if (embedBuildResults)
                     {
-                        byte[] fileData = Encoding.Default.GetBytes(manifest.ToString());
+                        byte[] fileData = Encoding.UTF8.GetBytes(manifest.ToString());
                         AddFile($"res://.godot/mono/publish/{arch}/.dotnet-publish-manifest", fileData, false);
                     }
                 }
@@ -525,7 +551,8 @@ namespace GodotTools.Export
 
             foreach (string folder in _tempFolders)
             {
-                Directory.Delete(folder, recursive: true);
+                if (Directory.Exists(folder))
+                    Directory.Delete(folder, recursive: true);
             }
             _tempFolders.Clear();
         }

@@ -110,4 +110,5 @@
 
   <Import Project="$(MSBuildThisFileDirectory)\Android.props" Condition=" '$(GodotTargetPlatform)' == 'android' " />
   <Import Project="$(MSBuildThisFileDirectory)\iOS.props" Condition=" '$(GodotTargetPlatform)' == 'ios' " />
+  <Import Project="$(MSBuildThisFileDirectory)\OpenHarmony.props" Condition=" '$(GodotTargetPlatform)' == 'openharmony' " />
 </Project>

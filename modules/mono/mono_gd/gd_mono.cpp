@@ -50,11 +50,16 @@
 #include "core/config/project_settings.h"
 #include "core/io/dir_access.h"
 #include "core/io/file_access.h"
+#include "core/io/json.h"
 #include "core/os/os.h"
 #include "core/os/thread.h"
 
 #ifdef UNIX_ENABLED
 #include <dlfcn.h>
+#endif
+
+#if defined(OPENHARMONY_ENABLED) && !defined(TOOLS_ENABLED)
+#include "platform/openharmony/os_openharmony.h"
 #endif
 
 #ifndef TOOLS_ENABLED
@@ -108,6 +113,36 @@ HostFxrCharString str_to_hostfxr(const String &p_str) {
 const char_t *get_data(const HostFxrCharString &p_char_str) {
 	return (const char_t *)p_char_str.get_data();
 }
+
+#if defined(OPENHARMONY_ENABLED) && !defined(TOOLS_ENABLED)
+void register_game_native_directories(const String &p_directory) {
+	// hostfxr and P/Invoke load native dependencies without calling Godot's
+	// open_dynamic_library hook. Register all native directories from this
+	// game's extracted publish, never an external SDK or a shared host runtime.
+	Ref<DirAccess> directory = DirAccess::open(p_directory);
+	ERR_FAIL_COND_MSG(directory.is_null(), ".NET: Cannot open the extracted publish directory: " + p_directory);
+	ERR_FAIL_COND(directory->list_dir_begin() != OK);
+	Vector<String> children;
+	bool has_native_files = false;
+	for (String entry = directory->get_next(); !entry.is_empty(); entry = directory->get_next()) {
+		if (entry == "." || entry == ".." || directory->is_link(entry)) {
+			continue;
+		}
+		if (directory->current_is_dir()) {
+			children.push_back(p_directory.path_join(entry));
+		} else if (entry.ends_with(".so") || entry.contains(".so.")) {
+			has_native_files = true;
+		}
+	}
+	directory->list_dir_end();
+	if (has_native_files) {
+		OS_OpenHarmony::add_independent_library_path(p_directory);
+	}
+	for (const String &child : children) {
+		register_game_native_directories(child);
+	}
+}
+#endif
 
 #ifdef TOOLS_ENABLED
 bool try_get_dotnet_root_from_command_line(String &r_dotnet_root) {
@@ -478,7 +513,7 @@ godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime
 	String assembly_name = Path::get_csharp_project_name();
 
 	HostFxrCharString assembly_path = str_to_hostfxr(GodotSharpDirs::get_api_assemblies_dir()
-					.path_join(assembly_name + ".dll"));
+															 .path_join(assembly_name + ".dll"));
 
 	load_assembly_and_get_function_pointer_fn load_assembly_and_get_function_pointer =
 			initialize_hostfxr_self_contained(get_data(assembly_path));
@@ -500,6 +535,15 @@ godot_plugins_initialize_fn initialize_hostfxr_and_godot_plugins(bool &r_runtime
 }
 
 godot_plugins_initialize_fn try_load_native_aot_library(void *&r_aot_dll_handle) {
+#if defined(OPENHARMONY_ENABLED)
+	Ref<FileAccess> manifest = FileAccess::open("res://.godot/mono/openharmony_aot.json", FileAccess::READ);
+	ERR_FAIL_COND_V_MSG(manifest.is_null() || manifest->get_length() > 4096, nullptr, ".NET: Missing or invalid OpenHarmony NativeAOT manifest.");
+	Variant parsed = JSON::parse_string(manifest->get_as_text());
+	ERR_FAIL_COND_V_MSG(parsed.get_type() != Variant::DICTIONARY, nullptr, ".NET: NativeAOT manifest must be an object.");
+	Dictionary record = parsed;
+	ERR_FAIL_COND_V_MSG(record.size() != 3 || int(record.get("schemaVersion", 0)) != 1 || String(record.get("mode", "")) != "native-aot" || String(record.get("library", "")) != "libgodot-csharp-game.so", nullptr, ".NET: Unsupported OpenHarmony NativeAOT manifest.");
+	Error err = static_cast<OS_OpenHarmony *>(OS::get_singleton())->open_hap_native_library("libgodot-csharp-game.so", r_aot_dll_handle);
+#else
 	String assembly_name = Path::get_csharp_project_name();
 
 #if defined(WINDOWS_ENABLED)
@@ -515,6 +559,7 @@ godot_plugins_initialize_fn try_load_native_aot_library(void *&r_aot_dll_handle)
 #endif
 
 	Error err = OS::get_singleton()->open_dynamic_library(native_aot_so_path, r_aot_dll_handle);
+#endif
 
 	if (err != OK) {
 		return nullptr;
@@ -672,38 +717,58 @@ void GDMono::initialize() {
 
 	godot_plugins_initialize_fn godot_plugins_initialize = nullptr;
 
+#if defined(OPENHARMONY_ENABLED) && !defined(TOOLS_ENABLED)
+	if (OS::get_singleton()->has_feature("dotnet_native_aot") || FileAccess::exists("res://.godot/mono/openharmony_aot.json")) {
+		// This is a declared HAP NativeAOT game, not a failed CoreCLR probe.
+		// Load before GodotSharpDirs can extract a publish tree into private data.
+		godot_plugins_initialize = try_load_native_aot_library(native_aot_dll_handle);
+		ERR_FAIL_NULL_MSG(godot_plugins_initialize, ".NET: Cannot initialize the HAP's NativeAOT game library. No CoreCLR/JIT fallback is permitted for this package.");
+		runtime_initialized = true;
+	} else
+#endif
+	{
 #if !defined(APPLE_EMBEDDED_ENABLED)
-	// Check that the .NET assemblies directory exists before trying to use it.
-	if (!DirAccess::exists(GodotSharpDirs::get_api_assemblies_dir())) {
-		OS::get_singleton()->alert(vformat(RTR("Unable to find the .NET assemblies directory.\nMake sure the '%s' directory exists and contains the .NET assemblies."), GodotSharpDirs::get_api_assemblies_dir()), RTR(".NET assemblies not found"));
-		ERR_FAIL_MSG(".NET: Assemblies not found");
-	}
+		// Check that the .NET assemblies directory exists before trying to use it.
+		if (!DirAccess::exists(GodotSharpDirs::get_api_assemblies_dir())) {
+			OS::get_singleton()->alert(vformat(RTR("Unable to find the .NET assemblies directory.\nMake sure the '%s' directory exists and contains the .NET assemblies."), GodotSharpDirs::get_api_assemblies_dir()), RTR(".NET assemblies not found"));
+			ERR_FAIL_MSG(".NET: Assemblies not found");
+		}
 #endif
 
-	if (load_hostfxr(hostfxr_dll_handle)) {
-		godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
-		ERR_FAIL_NULL(godot_plugins_initialize);
-	} else {
-#if !defined(TOOLS_ENABLED)
-		if (load_coreclr(coreclr_dll_handle)) {
-			godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
-		} else {
-			void *dll_handle = nullptr;
-			godot_plugins_initialize = try_load_native_aot_library(dll_handle);
-			if (godot_plugins_initialize != nullptr) {
-				runtime_initialized = true;
-			}
-		}
+#if defined(OPENHARMONY_ENABLED) && !defined(TOOLS_ENABLED)
+		register_game_native_directories(GodotSharpDirs::get_api_assemblies_dir());
+#endif
 
-		if (godot_plugins_initialize == nullptr) {
-			ERR_FAIL_MSG(".NET: Failed to load hostfxr");
-		}
+		if (load_hostfxr(hostfxr_dll_handle)) {
+			godot_plugins_initialize = initialize_hostfxr_and_godot_plugins(runtime_initialized);
+			ERR_FAIL_NULL(godot_plugins_initialize);
+		} else {
+#if defined(OPENHARMONY_ENABLED) && !defined(TOOLS_ENABLED)
+			// This platform exports a complete self-contained CoreCLR publish. The
+			// MonoVM/CoreCLR fallback does not process its runtimeconfig/deps; do not
+			// hide an unsigned/missing hostfxr or a denied HAP linker permission.
+			ERR_FAIL_MSG(".NET: Cannot load the game's packaged libhostfxr.so. Verify the self-contained publish, native code signatures and signing-profile ACL for ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY and ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY. No external .NET SDK is required.");
+#elif !defined(TOOLS_ENABLED)
+			if (load_coreclr(coreclr_dll_handle)) {
+				godot_plugins_initialize = initialize_coreclr_and_godot_plugins(runtime_initialized);
+			} else {
+				void *dll_handle = nullptr;
+				godot_plugins_initialize = try_load_native_aot_library(dll_handle);
+				if (godot_plugins_initialize != nullptr) {
+					runtime_initialized = true;
+				}
+			}
+
+			if (godot_plugins_initialize == nullptr) {
+				ERR_FAIL_MSG(".NET: Failed to load hostfxr");
+			}
 #else
 
-		// Show a message box to the user to make the problem explicit (and explain a potential crash).
-		OS::get_singleton()->alert(TTR("Unable to load .NET runtime, specifically hostfxr.\nAttempting to create/edit a project will lead to a crash.\n\nPlease install the .NET SDK 8.0 or later from https://get.dot.net and restart Godot."), TTR("Failed to load .NET runtime"));
-		ERR_FAIL_MSG(".NET: Failed to load hostfxr");
+			// Show a message box to the user to make the problem explicit (and explain a potential crash).
+			OS::get_singleton()->alert(TTR("Unable to load .NET runtime, specifically hostfxr.\nAttempting to create/edit a project will lead to a crash.\n\nPlease install the .NET SDK 8.0 or later from https://get.dot.net and restart Godot."), TTR("Failed to load .NET runtime"));
+			ERR_FAIL_MSG(".NET: Failed to load hostfxr");
 #endif
+		}
 	}
 
 	int32_t interop_funcs_size = 0;

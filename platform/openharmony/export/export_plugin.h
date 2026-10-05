@@ -30,6 +30,8 @@
 
 #pragma once
 
+#include "device_run.h"
+
 #include "core/config/project_settings.h"
 #include "core/io/image_loader.h"
 #include "core/io/marshalls.h"
@@ -44,19 +46,28 @@
 
 #include <string.h>
 
+#include <memory>
+
 class EditorExportPlatformOpenHarmony : public EditorExportPlatform {
 	GDCLASS(EditorExportPlatformOpenHarmony, EditorExportPlatform);
 
 	Ref<ImageTexture> logo;
 	Ref<ImageTexture> run_icon;
 
-	String get_tool_path() const;
-	String get_java_sdk_path() const;
-	String get_sdk_path() const;
+	String find_game_template(const String &p_filename, String &r_error) const;
+	String get_node_path() const;
+	String get_sdk_path(const String &p_version = "26.0.0") const;
 	String get_hvigor_path() const;
-	String get_hvigor_path_ide() const;
 	String get_hdc_path() const;
-	String get_sign_tool_path() const;
+	int get_debug_port() const;
+	Error build_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, bool p_sign);
+	bool use_broker() const;
+	String get_broker_endpoint() const;
+	Error execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000, const String *p_broker_endpoint = nullptr);
+	Error execute_hdc(const String &p_hdc, const List<String> &p_arguments, String &r_output, const String *p_broker_endpoint = nullptr);
+	void clear_remote_run(bool p_stop);
+	void remote_debugger_stopped();
+	std::unique_ptr<DeviceRunSession> remote_run;
 
 	Vector<String> devices;
 	SafeFlag devices_changed;
@@ -104,6 +115,7 @@ public:
 	Error export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify = true);
 
 	virtual Error run(const Ref<EditorExportPreset> &p_preset, int p_device, BitField<EditorExportPlatform::DebugFlags> p_debug_flags) override;
+	virtual void stop_remote_run() override;
 
 	virtual void get_platform_features(List<String> *r_features) const override;
 

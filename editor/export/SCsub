@@ -4,3 +4,11 @@ from misc.utility.scons_hints import *
 Import("env")
 
 env.add_source_files(env.editor_sources, "*.cpp")
+
+# The broker transport is POSIX-only and belongs to the OpenHarmony editor,
+# never to templates or exporters hosted on another platform.
+if env["platform"] == "openharmony" and "openharmony" in env.platform_exporters:
+    env_broker = env.Clone()
+    env_broker.disable_warnings()
+    env_broker.Append(CFLAGS=["-std=c11"])
+    env_broker.add_source_files(env.editor_sources, "#thirdparty/oheco-broker/oheco_broker.c")

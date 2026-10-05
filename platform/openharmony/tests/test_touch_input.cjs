@@ -341,7 +341,7 @@ function testIndexIntegration(touchModule, temporary) {
     'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
     '../runtime/TouchInput': touchModule,
     '../runtime/Config': {}, '../runtime/NativeArguments': {}, '../runtime/Permissions': {},
-    '../runtime/Runtime': {}, '../runtime/Diagnostics': {}, '../runtime/Launch': {},
+    '../runtime/Runtime': {}, '../runtime/Templates': {}, '../runtime/Diagnostics': {}, '../runtime/Launch': {},
   }, { XComponentController: class {}, clearInterval: () => calls.push(['clearInterval']) }, temporary, transform);
   const page = new Index();
   page.getUIContext = () => ({ vp2px: pixels });

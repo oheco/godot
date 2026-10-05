@@ -178,6 +178,7 @@ protected:
 	};
 
 	HashSet<String> get_features(const Ref<EditorExportPreset> &p_preset, bool p_debug) const;
+	bool has_export_feature(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_feature) const;
 
 	Dictionary _find_export_template(const String &p_template_file_name) const {
 		Dictionary ret;
@@ -349,6 +350,8 @@ public:
 
 	virtual void cleanup() {}
 	virtual Error run(const Ref<EditorExportPreset> &p_preset, int p_device, BitField<EditorExportPlatform::DebugFlags> p_debug_flags) { return OK; }
+	// Deployment platforms can own a remote process and forwarding resources.
+	virtual void stop_remote_run() {}
 	virtual Ref<Texture2D> get_run_icon() const { return get_logo(); }
 
 	virtual bool can_export(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug = false) const;

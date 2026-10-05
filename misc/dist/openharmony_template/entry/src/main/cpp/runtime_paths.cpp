@@ -212,7 +212,7 @@ bool configure_runtime_paths(const std::string &files, const std::string &cache,
 			return false;
 		}
 	}
-	const std::string sample = files + "/Projects/CSharpSmoke-4.7.2-ohos.2";
+	const std::string sample = files + "/Projects/CSharpSmoke-4.7.2-ohos.3";
 	if (!std::filesystem::exists(sample, error)) {
 		std::filesystem::copy(runtime + "/Examples/CSharpSmoke", sample, std::filesystem::copy_options::recursive, error);
 		if (error) {

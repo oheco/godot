@@ -34,18 +34,21 @@
 #include "display_server_openharmony.h"
 #include "engine_host_openharmony.h"
 #include "file_access_openharmony.h"
+#include "process_openharmony.h"
 
 #include "core/input/input.h"
+#include "core/os/mutex.h"
+#include "core/templates/list.h"
 #include "main/main.h"
 #include "scene/main/scene_tree.h"
 
+#include <dlfcn.h>
 #include <hilog/log.h>
 #include <native_drawing/drawing_text_font_descriptor.h>
 #include <native_drawing/drawing_text_typography.h>
 #include <signal.h>
 
 #include <cerrno>
-#include <dlfcn.h>
 
 #undef LOG_DOMAIN
 #undef LOG_TAG
@@ -516,6 +519,39 @@ Error OS_OpenHarmony::create_instance(const List<String> &p_arguments, ProcessID
 	return OK;
 }
 
+Error OS_OpenHarmony::execute(const String &p_path, const List<String> &p_arguments, String *r_pipe, int *r_exitcode, bool p_read_stderr, Mutex *p_pipe_mutex, bool p_open_console) {
+	std::vector<std::string> arguments;
+	for (const String &argument : p_arguments) {
+		const CharString encoded = argument.utf8();
+		arguments.emplace_back(encoded.get_data(), encoded.length());
+	}
+	const CharString command = p_path.utf8();
+	const auto result = OpenHarmonyProcess::execute(std::string(command.get_data(), command.length()), arguments, r_pipe != nullptr, p_read_stderr);
+	if (r_exitcode) {
+		*r_exitcode = result.exit_code;
+	}
+	if (r_pipe && !result.output.empty()) {
+		String output;
+		if (output.append_utf8(result.output.data(), result.output.size()) != OK) {
+			output = String(result.output.c_str());
+		}
+		if (p_pipe_mutex) {
+			p_pipe_mutex->lock();
+		}
+		*r_pipe += output;
+		if (p_pipe_mutex) {
+			p_pipe_mutex->unlock();
+		}
+	}
+	if (result.error == ENOENT) {
+		return ERR_FILE_NOT_FOUND;
+	}
+	if (result.error == EACCES) {
+		return ERR_FILE_NO_PERMISSION;
+	}
+	return result.error == 0 ? OK : ERR_CANT_FORK;
+}
+
 Error OS_OpenHarmony::create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id, bool p_open_console) {
 	if (ui_ability && p_path == get_executable_path()) {
 		return create_instance(p_arguments, r_child_id);
@@ -524,12 +560,23 @@ Error OS_OpenHarmony::create_process(const String &p_path, const List<String> &p
 }
 
 void OS_OpenHarmony::add_independent_library_path(const String &p_directory) {
-	if (p_directory.is_empty()) {
+	// Ordinary CLI processes use their default namespace and do not have HAP
+	// permission tokens. Registration is required only for the UIAbility host.
+	if (p_directory.is_empty() || !get_singleton()->ui_ability) {
 		return;
 	}
 	// HarmonyOS only loads a plugin from a directory that the process registered
 	// with the linker, and the registration only takes effect when the restricted
 	// ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY permission is granted.
+	static Mutex mutex;
+	static HashSet<String> registered;
+	// The linker interface takes a writable pointer. Keep its storage for the
+	// process lifetime, including libraries loaded later by managed P/Invoke.
+	static List<CharString> storage;
+	MutexLock lock(mutex);
+	if (registered.has(p_directory)) {
+		return;
+	}
 	void *libc = dlopen("libc.so", RTLD_LAZY);
 	if (libc == nullptr) {
 		ERR_PRINT(vformat("Cannot open libc.so to register '%s': %s", p_directory, dlerror()));
@@ -538,9 +585,13 @@ void OS_OpenHarmony::add_independent_library_path(const String &p_directory) {
 	typedef int (*AddPluginPathFunc)(char *);
 	AddPluginPathFunc add_path = (AddPluginPathFunc)dlsym(libc, "dlns_add_plugin_default_ld_dictionary");
 	if (add_path != nullptr) {
-		CharString directory = p_directory.utf8();
-		const int result = add_path(directory.ptrw());
-		print_verbose(vformat("OpenHarmony: registered plugin directory '%s' (result %d).", p_directory, result));
+		storage.push_back(p_directory.utf8());
+		const int result = add_path(storage.back()->get().ptrw());
+		if (result == 0) {
+			registered.insert(p_directory);
+		} else {
+			ERR_PRINT(vformat("Could not register native library directory '%s' (error %d). Check LOAD_INDEPENDENT_LIBRARY and the signing profile ACL.", p_directory, result));
+		}
 	} else {
 		ERR_PRINT("dlns_add_plugin_default_ld_dictionary is missing from libc.so.");
 	}
@@ -552,6 +603,37 @@ Error OS_OpenHarmony::open_dynamic_library(const String &p_path, void *&p_librar
 	// first needs the directory it lives in registered with the linker.
 	add_independent_library_path(p_path.get_base_dir());
 	return OS_Unix::open_dynamic_library(p_path, p_library_handle, p_data);
+}
+
+static void _openharmony_native_library_anchor() {
+}
+
+Error OS_OpenHarmony::open_hap_native_library(const String &p_basename, void *&p_library_handle) {
+	p_library_handle = nullptr;
+	ERR_FAIL_COND_V_MSG(p_basename.is_empty() || p_basename.get_file() != p_basename || p_basename.contains("\\") || p_basename.contains(":"), ERR_INVALID_PARAMETER, "Expected a bundled native library basename.");
+	// NativeAOT libraries are signed HAP libraries in the same namespace as
+	// libgodot. Do not register private/user directories or extract PCK code.
+	p_library_handle = dlopen(p_basename.utf8().get_data(), RTLD_NOW | RTLD_LOCAL);
+	if (p_library_handle) {
+		return OK;
+	}
+	String message = String::utf8(dlerror());
+	// CLI fixtures (and extracted HAP libraries) can load by the actual loaded
+	// engine path. EXEC_PATH is only a logical host name on UIAbility launches.
+	Dl_info info{};
+	if (dladdr(reinterpret_cast<void *>(&_openharmony_native_library_anchor), &info) != 0 && info.dli_fname) {
+		const String engine = String::utf8(info.dli_fname);
+		if (engine.is_absolute_path()) {
+			const String path = engine.get_base_dir().path_join(p_basename);
+			p_library_handle = dlopen(path.utf8().get_data(), RTLD_NOW | RTLD_LOCAL);
+			if (p_library_handle) {
+				return OK;
+			}
+			message += "\n" + String::utf8(dlerror());
+		}
+	}
+	ERR_PRINT("Cannot load bundled NativeAOT library '" + p_basename + "': " + message);
+	return ERR_CANT_OPEN;
 }
 
 Error OS_OpenHarmony::kill(const ProcessID &p_pid) {

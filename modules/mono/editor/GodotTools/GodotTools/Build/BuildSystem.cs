@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Godot;
 using GodotTools.BuildLogger;
+using GodotTools.Export;
 using GodotTools.Internals;
 using GodotTools.Utils;
 using Directory = GodotTools.Utils.Directory;
@@ -17,6 +18,24 @@ namespace GodotTools.Build
 {
     public static class BuildSystem
     {
+        internal static string ResolveOpenHarmonySigningTool()
+        {
+            var settings = EditorInterface.Singleton.GetEditorSettings();
+            string? sdkRoot = settings.HasSetting("export/openharmony/sdk_root")
+                ? settings.GetSetting("export/openharmony/sdk_root").AsString() : null;
+            return OpenHarmonyExport.FindSignTool(sdkRoot) ?? throw new FileNotFoundException(
+                "Cannot locate OpenHarmony binary-sign-tool. Install ohos-sdk-toolchains with oo, or select its SDK view in Export > OpenHarmony > SDK Root.");
+        }
+
+        internal static string ResolveOpenHarmonyNativeCompiler()
+        {
+            var settings = EditorInterface.Singleton.GetEditorSettings();
+            string? sdkRoot = settings.HasSetting("export/openharmony/sdk_root")
+                ? settings.GetSetting("export/openharmony/sdk_root").AsString() : null;
+            return OpenHarmonyExport.FindNativeCompiler(sdkRoot) ?? throw new FileNotFoundException(
+                "Cannot locate OpenHarmony NativeAOT clang. Install ohos-sdk-native with oo, or select its SDK view in Export > OpenHarmony > SDK Root.");
+        }
+
         private static Process LaunchBuild(BuildInfo buildInfo, Action<string?>? stdOutHandler,
             Action<string?>? stdErrHandler)
         {
@@ -30,6 +49,9 @@ namespace GodotTools.Build
             var startInfo = new ProcessStartInfo(dotnetPath);
 
             BuildArguments(buildInfo, startInfo.ArgumentList, editorSettings);
+            if (Utils.OS.IsOpenHarmony && !buildInfo.OnlyClean &&
+                (string.IsNullOrEmpty(buildInfo.RuntimeIdentifier) || buildInfo.RuntimeIdentifier.StartsWith("openharmony-", StringComparison.Ordinal)))
+                OpenHarmonyExport.ConfigureSigningEnvironment(startInfo, ResolveOpenHarmonySigningTool());
 
             string launchMessage = startInfo.GetCommandLineDisplay(new StringBuilder("Running: ")).ToString();
             stdOutHandler?.Invoke(launchMessage);
@@ -101,6 +123,15 @@ namespace GodotTools.Build
             var startInfo = new ProcessStartInfo(dotnetPath);
 
             BuildPublishArguments(buildInfo, startInfo.ArgumentList, editorSettings);
+            if (buildInfo.RuntimeIdentifier?.StartsWith("openharmony-", StringComparison.Ordinal) == true)
+            {
+                if (Utils.OS.IsOpenHarmony)
+                {
+                    OpenHarmonyExport.ConfigureSigningEnvironment(startInfo, ResolveOpenHarmonySigningTool());
+                    OpenHarmonyExport.ConfigureNativeAotEnvironment(startInfo, ResolveOpenHarmonyNativeCompiler());
+                }
+                RequireOpenHarmonyNativeAotSdk(buildInfo, startInfo);
+            }
 
             string launchMessage = startInfo.GetCommandLineDisplay(new StringBuilder("Running: ")).ToString();
             stdOutHandler?.Invoke(launchMessage);
@@ -135,6 +166,39 @@ namespace GodotTools.Build
             process.BeginErrorReadLine();
 
             return process;
+        }
+
+        private static void RequireOpenHarmonyNativeAotSdk(BuildInfo buildInfo, ProcessStartInfo publish)
+        {
+            var query = new ProcessStartInfo(publish.FileName)
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            query.Environment.Clear();
+            foreach (var variable in publish.Environment)
+                query.Environment[variable.Key] = variable.Value;
+            query.ArgumentList.Add("msbuild");
+            query.ArgumentList.Add(buildInfo.Project);
+            query.ArgumentList.Add("-p:Configuration=" + buildInfo.Configuration);
+            query.ArgumentList.Add("-p:RuntimeIdentifier=" + buildInfo.RuntimeIdentifier);
+            foreach (var property in buildInfo.CustomProperties)
+                query.ArgumentList.Add("-p:" + (string)property);
+            query.ArgumentList.Add("-getProperty:GodotOpenHarmonyNativeAotSupported");
+            query.ArgumentList.Add("-verbosity:quiet");
+            using var process = Process.Start(query) ?? throw new InvalidOperationException("Cannot query the project's Godot .NET SDK.");
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            process.WaitForExit();
+            string output = stdout.GetAwaiter().GetResult();
+            string errors = stderr.GetAwaiter().GetResult();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"Cannot evaluate the Godot .NET SDK for OpenHarmony NativeAOT: {output}{errors}");
+            string? supported = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).LastOrDefault()?.Trim();
+            if (!string.Equals(supported, "true", StringComparison.OrdinalIgnoreCase))
+                throw new NotSupportedException("OpenHarmony NativeAOT export requires the Godot.NET.Sdk supplied by this editor (4.7.2-ohos.3 or newer), which preserves game scripts and GodotSharp. Update the project's Godot.NET.Sdk version and restore from the editor's local feed. Older .2 projects cannot be exported safely with AOT.");
         }
 
         public static int Publish(BuildInfo buildInfo, Action<string?>? stdOutHandler, Action<string?>? stdErrHandler)

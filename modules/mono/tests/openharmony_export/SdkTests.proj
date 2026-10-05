@@ -1,0 +1,40 @@
+<Project DefaultTargets="SdkProbe">
+  <PropertyGroup>
+    <GodotTargetPlatform>openharmony</GodotTargetPlatform>
+    <RuntimeIdentifier>openharmony-arm64</RuntimeIdentifier>
+    <TargetName>AotFixture</TargetName>
+    <TargetFrameworkIdentifier>.NETCoreApp</TargetFrameworkIdentifier>
+    <TargetFrameworkVersion>v10.0</TargetFrameworkVersion>
+    <_SdkDirectory>$(MSBuildThisFileDirectory)../../editor/Godot.NET.Sdk/Godot.NET.Sdk/Sdk/</_SdkDirectory>
+    <EditorReferenceName Condition="'$(EditorReferenceName)' == ''">GodotSharpEditor.dll</EditorReferenceName>
+  </PropertyGroup>
+  <Import Project="$(_SdkDirectory)OpenHarmony.props" />
+  <ItemGroup>
+    <ReferencePath Include="$(ProjectReferenceFixturePath)">
+      <ReferenceSourceTarget>ProjectReference</ReferenceSourceTarget>
+    </ReferencePath>
+    <ReferencePath Include="$(EditorReferenceName)" Condition="'$(EditorReference)' == 'true'" />
+  </ItemGroup>
+  <!-- These stubs isolate the real platform targets from native compilation. -->
+  <Target Name="PrepareForPublish" />
+  <Target Name="ResolveReferences" />
+  <Target Name="CoreCompile" />
+  <Target Name="WriteIlcRspFileForCompilation" />
+  <Import Project="$(_SdkDirectory)OpenHarmony.targets" />
+  <Target Name="SdkProbe" DependsOnTargets="PrepareForPublish;ResolveReferences;CoreCompile;WriteIlcRspFileForCompilation">
+    <Error Condition="'$(GodotOpenHarmonyNativeAotSupported)' != 'true'" Text="Missing NativeAOT SDK capability marker." />
+    <Error Condition="'$(Configuration)' == 'Debug' and ('$(PublishAot)' != '' or '$(NativeLib)' != '' or '@(TrimmerRootAssembly)' != '')"
+           Text="Ordinary Debug build must retain its managed editor workflow." />
+    <Error Condition="'$(Configuration)' != 'Debug' and ('$(PublishAot)' != 'true' or '$(NativeLib)' != 'Shared' or '$(SelfContained)' != 'true')"
+           Text="Export defaults must produce a self-contained AOT shared library." />
+    <ItemGroup>
+      <_GodotSharpRoot Include="@(TrimmerRootAssembly)" Condition="'%(TrimmerRootAssembly.Identity)' == 'GodotSharp'" />
+      <_GameRoot Include="@(TrimmerRootAssembly)" Condition="'%(TrimmerRootAssembly.Identity)' == 'AotFixture'" />
+      <_ProjectRoot Include="@(TrimmerRootAssembly)" Condition="'%(TrimmerRootAssembly.Identity)' == '$(ProjectReferenceFixturePath)'" />
+    </ItemGroup>
+    <Error Condition="'$(Configuration)' != 'Debug' and '@(_GodotSharpRoot)' == ''" Text="GodotSharp root is missing." />
+    <Error Condition="'$(Configuration)' != 'Debug' and '@(_GameRoot)' == ''" Text="Game assembly root is missing." />
+    <Error Condition="'$(Configuration)' != 'Debug' and '@(_ProjectRoot)' == ''" Text="Resolved source project root is missing." />
+    <Message Importance="high" Text="OHOS_NATIVEAOT_SDK_PROBE_PASS $(Configuration)" />
+  </Target>
+</Project>

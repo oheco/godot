@@ -307,6 +307,14 @@ namespace GodotTools.Build
 
             buildInfo.CustomProperties.Add($"GodotTargetPlatform={platform}");
 
+            if (platform == Utils.OS.Platforms.OpenHarmony)
+            {
+                // The HAP's Godot template hosts the game's NativeAOT shared library.
+                buildInfo.CustomProperties.Add("PublishAot=true");
+                buildInfo.CustomProperties.Add("NativeLib=Shared");
+                buildInfo.CustomProperties.Add("PublishSingleFile=false");
+            }
+
             if (Internal.GodotIsRealTDouble())
                 buildInfo.CustomProperties.Add("GodotFloat64=true");
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Build an isolated generated project with preinstalled native Hvigor/SDK inputs.
 
-No dependency downloads, signing or installation are performed. By default the
-project's API 23 HarmonyOS configuration is preserved. --openharmony-sdk-version
-explicitly selects a compatibility build with the available OpenHarmony SDK;
-that result is NOT a HarmonyOS API 23 HAP acceptance result.
+No dependency downloads, signing or installation are performed. The source
+project's configuration is preserved; current templates use oo SDK26/default.
+--openharmony-sdk-version explicitly selects a different OpenHarmony SDK in the
+isolated copy; no terminal build establishes signed-device/HAP acceptance.
 """
 import argparse
 import json
@@ -19,7 +19,8 @@ import tempfile
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project', type=Path, required=True)
-    parser.add_argument('--node-modules', type=Path, required=True, help='Offline prepared Hvigor dependencies')
+    parser.add_argument('--hvigor-entry', type=Path, help='Installed @oheco/hvigor/bin/hvigor.cjs; defaults to the selected Node global prefix')
+    parser.add_argument('--node-modules', type=Path, help='Legacy path, only accepted if it contains @oheco/hvigor')
     parser.add_argument('--sdk', type=Path, required=True, help='Prepared SDK root for Hvigor')
     parser.add_argument('--node', default=shutil.which('node'))
     parser.add_argument('--output', type=Path, required=True, help='New persistent evidence directory')
@@ -29,11 +30,15 @@ def main():
     if sys.platform != 'ohos':
         parser.error('Run with native OpenHarmony Python/Node and SDK tools')
     args.project = args.project.resolve(strict=True)
-    args.node_modules = args.node_modules.resolve(strict=True)
     args.sdk = args.sdk.resolve(strict=True)
-    hvigor = args.node_modules / '@ohos/hvigor/bin/hvigor.js'
-    if not hvigor.is_file() or not args.node:
-        parser.error('Native Node and prepared @ohos/hvigor are required')
+    if not args.node:
+        parser.error('Install oo Node before building')
+    node = Path(args.node).resolve(strict=True)
+    hvigor = args.hvigor_entry or ((args.node_modules / '@oheco/hvigor/bin/hvigor.cjs') if args.node_modules else
+                                   node.parent.parent / 'lib/node_modules/@oheco/hvigor/bin/hvigor.cjs')
+    hvigor = hvigor.resolve(strict=True)
+    if not hvigor.is_file():
+        parser.error('Install the oo @oheco/hvigor adapter; direct official Hvigor execution is not supported')
     args.output.mkdir(parents=True, exist_ok=False)
     output = args.output.resolve()
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -63,14 +68,17 @@ def main():
             module['module']['deviceTypes'] = [
                 'default' if device == 'phone' else device for device in original_devices]
             write_document(module_path, module)
-        (project / 'node_modules').symlink_to(args.node_modules, target_is_directory=True)
         env = dict(os.environ)
-        env.update(NODE_PATH=str(args.node_modules), HVIGOR_USER_HOME=str(root / 'hvigor-home'),
+        env.pop('JAVA_HOME', None)
+        env.update(HOME=str(root / 'home'), HVIGOR_USER_HOME=str(root / 'hvigor-home'),
                    DEVECO_SDK_HOME=str(args.sdk), OHOS_SDK_HOME=str(args.sdk), OHOS_BASE_SDK_HOME=str(args.sdk),
                    SHELL=shutil.which('sh') or '/usr/bin/sh')
         # Inherit explicitly configured proxy variables; never change transport
         # or install dependencies as a side effect of a validation run.
-        command = [args.node, str(hvigor), '--mode', 'module', '-p', 'module=entry@default',
+        (root / 'home').mkdir()
+        (root / 'tmp').mkdir()
+        env['TMPDIR'] = str(root / 'tmp')
+        command = [str(node), str(hvigor), '--mode', 'module', '-p', 'module=entry@default',
                    '-p', 'product=default', '-p', 'buildMode=debug',
                    'default@CompileArkTS' if args.arkts_only else 'assembleHap', '--no-daemon', '--stacktrace']
         with (output / 'build.log').open('w') as log:

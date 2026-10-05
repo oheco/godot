@@ -755,6 +755,21 @@ void EditorExportPlatform::_edit_filter_list(HashSet<String> &r_list, const Stri
 	_edit_files_with_filter(da, filters, r_list, exclude);
 }
 
+bool EditorExportPlatform::has_export_feature(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_feature) const {
+	if (get_features(p_preset, p_debug).has(p_feature)) {
+		return true;
+	}
+	const Ref<EditorExportPlatform> platform = p_preset->get_platform();
+	for (const Ref<EditorExportPlugin> &plugin : EditorExport::get_singleton()->get_export_plugins()) {
+		// Match PCK custom feature collection: legacy export plugins need not
+		// implement supports_platform() to contribute their runtime marker.
+		if (plugin->_get_export_features(platform, p_debug).find(p_feature) >= 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 HashSet<String> EditorExportPlatform::get_features(const Ref<EditorExportPreset> &p_preset, bool p_debug) const {
 	Ref<EditorExportPlatform> platform = p_preset->get_platform();
 	List<String> feature_list;

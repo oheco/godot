@@ -33,6 +33,13 @@ def generate_bundle(target, source, env):
         include.mkdir(parents=True)
         for header in project_config.HEADERS:
             shutil.copyfile(File("#platform/openharmony/" + header).abspath, include / header)
+        project_config.write_document(project / "entry/src/main/resources/rawfile/godot_template.json", {
+            "hostAbi": project_config.HOST_ABI_VERSION,
+            "monoEnabled": bool(env["module_mono_enabled"]),
+            "nativeAotEnabled": bool(env["module_mono_enabled"]),
+            "architecture": lib_arch_dir,
+            "target": env["target"],
+        })
         shutil.make_archive(Dir(f"#bin/openharmony_{lib_type_dir}_{lib_arch_dir}").abspath, "zip", root_dir=project)
 
 

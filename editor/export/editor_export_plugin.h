@@ -72,6 +72,8 @@ class EditorExportPlugin : public RefCounted {
 	}
 
 	_FORCE_INLINE_ void _export_end_clear() {
+		// An export can fail before its queued files and shared objects are consumed.
+		_clear();
 		apple_embedded_platform_frameworks.clear();
 		apple_embedded_platform_embedded_frameworks.clear();
 		apple_embedded_platform_bundle_files.clear();

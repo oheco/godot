@@ -13,7 +13,7 @@ parser.add_argument('--godot', type=Path, required=True, help='Signed native God
 parser.add_argument('--dotnet-sdk', type=Path, required=True)
 parser.add_argument('--nuget-feed', type=Path, required=True)
 parser.add_argument('--log', type=Path, required=True)
-parser.add_argument('--package-version', default='4.7.2-ohos.2')
+parser.add_argument('--package-version', default='4.7.2-ohos.3')
 args = parser.parse_args()
 if sys.platform != 'ohos':
     raise SystemExit('Run this build on the native OpenHarmony host')

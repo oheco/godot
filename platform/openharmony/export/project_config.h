@@ -8,22 +8,26 @@
 
 namespace OpenHarmonyProjectConfig {
 
-inline bool valid_sdk(const String &p_version) {
+inline int sdk_api(const String &p_version) {
 	const int open = p_version.find("(");
-	if (open < 0 || !p_version.ends_with(")")) {
-		return false;
+	if (open >= 0 && !p_version.ends_with(")")) {
+		return 0;
 	}
-	const String api = p_version.substr(open + 1, p_version.length() - open - 2);
-	const Vector<String> version = p_version.substr(0, open).split(".");
-	if (version.size() != 3 || !api.is_valid_int() || api.to_int() < 23) {
-		return false;
+	const Vector<String> version = (open < 0 ? p_version : p_version.substr(0, open)).split(".");
+	if (version.size() != 3) {
+		return 0;
 	}
 	for (const String &part : version) {
 		if (!part.is_valid_int() || part.to_int() < 0) {
-			return false;
+			return 0;
 		}
 	}
-	return true;
+	const String api = open < 0 ? version[0] : p_version.substr(open + 1, p_version.length() - open - 2);
+	return api.is_valid_int() ? api.to_int() : 0;
+}
+
+inline bool valid_sdk(const String &p_version) {
+	return sdk_api(p_version) >= 23;
 }
 
 inline Error read_document(const String &p_path, Dictionary &r_document) {
@@ -90,13 +94,11 @@ inline bool has_shape(const Dictionary &p_value, std::initializer_list<Field> p_
 }
 
 inline bool valid_game_host(const Dictionary &p_host) {
-	if (!has_shape(p_host, { { "schemaVersion", Variant::FLOAT }, { "host", Variant::DICTIONARY },
-			{ "launch", Variant::DICTIONARY }, { "instances", Variant::DICTIONARY }, { "managed", Variant::DICTIONARY },
-			{ "window", Variant::DICTIONARY }, { "diagnostics", Variant::DICTIONARY } }, true)) {
+	if (!has_shape(p_host, { { "schemaVersion", Variant::FLOAT }, { "host", Variant::DICTIONARY }, { "launch", Variant::DICTIONARY }, { "instances", Variant::DICTIONARY }, { "managed", Variant::DICTIONARY }, { "window", Variant::DICTIONARY }, { "diagnostics", Variant::DICTIONARY } }, true)) {
 		return false;
 	}
 	Dictionary host = p_host["host"], launch = p_host["launch"], instances = p_host["instances"],
-			managed = p_host["managed"], window = p_host["window"], diagnostics = p_host["diagnostics"];
+			   managed = p_host["managed"], window = p_host["window"], diagnostics = p_host["diagnostics"];
 	if (!has_shape(host, { { "role", Variant::STRING } }, true) ||
 			!has_shape(launch, { { "defaultMode", Variant::STRING }, { "defaultArguments", Variant::ARRAY }, { "acceptProjectRequests", Variant::BOOL } }, true) ||
 			!has_shape(instances, { { "policy", Variant::STRING }, { "maxCount", Variant::FLOAT } }, true) ||
@@ -172,7 +174,9 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	}
 	ERR_FAIL_COND_V_MSG(!valid_documents(documents), ERR_INVALID_DATA,
 			"Invalid shared game host schema. Rebuild or repair the OpenHarmony template.");
-	ERR_FAIL_COND_V(!valid_sdk(p_options["sdk"]), ERR_INVALID_PARAMETER);
+	const String sdk = p_options["sdk"];
+	const int compatible_api = p_options.get("compatible_api", 23);
+	ERR_FAIL_COND_V(!valid_sdk(sdk) || compatible_api < 23 || compatible_api > sdk_api(sdk), ERR_INVALID_PARAMETER);
 	const int64_t version_code = p_options["version_code"];
 	ERR_FAIL_COND_V(version_code < 1 || version_code > 2147483647 || String(p_options["version_name"]).is_empty(), ERR_INVALID_PARAMETER);
 	Dictionary app = documents[0]["app"];
@@ -189,9 +193,10 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	ERR_FAIL_COND_V(products.is_empty(), ERR_INVALID_DATA);
 	for (int i = 0; i < products.size(); i++) {
 		Dictionary product = products[i];
-		product["compileSdkVersion"] = p_options["sdk"];
-		product["targetSdkVersion"] = p_options["sdk"];
-		product["compatibleSdkVersion"] = p_options["sdk"];
+		product["compileSdkVersion"] = sdk;
+		product["targetSdkVersion"] = sdk;
+		product["compatibleSdkVersion"] = sdk.contains("(") ? Variant(sdk) : Variant(compatible_api);
+		product["runtimeOS"] = sdk.contains("(") ? "HarmonyOS" : "OpenHarmony";
 	}
 	Dictionary build = documents[4]["buildOption"];
 	Dictionary native = build.get("externalNativeOptions", Dictionary());
@@ -200,6 +205,7 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	native["abiFilters"] = architectures;
 	build["externalNativeOptions"] = native;
 	Dictionary module = documents[5]["module"];
+	module["deviceTypes"] = Array{ "default" };
 	Array abilities = module.get("abilities", Array());
 	ERR_FAIL_COND_V(abilities.is_empty(), ERR_INVALID_DATA);
 	Dictionary ability = abilities[0];
@@ -222,6 +228,15 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 		permission["reason"] = "$string:MICROPHONE_reason";
 		permission["usedScene"] = scene;
 		permissions.push_back(permission);
+	}
+	// Only legacy CoreCLR games load private extracted native code and JIT it.
+	// NativeAOT code/dependencies are signed native HAP libraries.
+	if (bool(p_options.get("dotnet", false)) && !bool(p_options.get("dotnet_native_aot", false))) {
+		for (const char *name : { "ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY", "ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY" }) {
+			Dictionary permission;
+			permission["name"] = name;
+			permissions.push_back(permission);
+		}
 	}
 	module["requestPermissions"] = permissions;
 	Dictionary window = documents[6]["window"];

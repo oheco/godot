@@ -30,6 +30,8 @@
 
 #include "editor_run_native.h"
 
+#include "editor_run_bar.h"
+
 #include "core/object/callable_mp.h"
 #include "editor/editor_node.h"
 #include "editor/export/editor_export.h"
@@ -127,6 +129,10 @@ Error EditorRunNative::start_run_native(int p_id) {
 
 	if (eep->is_option_runnable(idx)) {
 		emit_signal(SNAME("native_run"), preset);
+		if (!EditorRunBar::get_singleton()->is_playing()) {
+			return ERR_COMPILATION_FAILED;
+		}
+		active_platform = eep;
 	}
 
 	BitField<EditorExportPlatform::DebugFlags> flags = 0;
@@ -151,6 +157,9 @@ Error EditorRunNative::start_run_native(int p_id) {
 
 	eep->clear_messages();
 	Error err = eep->run(preset, idx, flags);
+	if (err != OK && eep->is_option_runnable(idx)) {
+		EditorRunBar::get_singleton()->stop_playing();
+	}
 	result_dialog_log->clear();
 	if (eep->fill_log_messages(result_dialog_log, err)) {
 		if (eep->get_worst_message_type() >= EditorExportPlatform::EXPORT_MESSAGE_ERROR) {
@@ -158,6 +167,14 @@ Error EditorRunNative::start_run_native(int p_id) {
 		}
 	}
 	return err;
+}
+
+void EditorRunNative::stop_run_native() {
+	if (active_platform.is_valid()) {
+		Ref<EditorExportPlatform> platform = active_platform;
+		active_platform.unref();
+		platform->stop_remote_run();
+	}
 }
 
 void EditorRunNative::resume_run_native() {

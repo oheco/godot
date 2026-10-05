@@ -108,6 +108,7 @@ public:
 	virtual String get_cache_path() const override;
 	virtual String get_temp_path() const override;
 	virtual Error create_instance(const List<String> &p_arguments, ProcessID *r_child_id = nullptr) override;
+	virtual Error execute(const String &p_path, const List<String> &p_arguments, String *r_pipe = nullptr, int *r_exitcode = nullptr, bool p_read_stderr = false, Mutex *p_pipe_mutex = nullptr, bool p_open_console = false) override;
 	virtual Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) override;
 	virtual Error kill(const ProcessID &p_pid) override;
 	virtual bool is_process_running(const ProcessID &p_pid) const override;
@@ -119,6 +120,7 @@ public:
 	// GDExtension plugins loadable without special casing them.
 	static void add_independent_library_path(const String &p_directory);
 	virtual Error open_dynamic_library(const String &p_path, void *&p_library_handle, GDExtensionData *p_data = nullptr) override;
+	Error open_hap_native_library(const String &p_basename, void *&p_library_handle);
 	virtual int get_process_exit_code(const ProcessID &p_pid) const override;
 
 	virtual Vector<String> get_system_fonts() const override;
