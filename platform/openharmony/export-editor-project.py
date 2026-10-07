@@ -296,7 +296,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
-    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.3',
+    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.4',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
                   'runtime': runtime_manifest, 'export_templates': template_manifest,
                   'dotnet_resolution': "oheco package installation; not shipped" if managed else None,

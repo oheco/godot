@@ -149,7 +149,7 @@ Generate the game archive with the ordinary SCons target:
 ```sh
 python3 -m SCons platform=openharmony target=template_debug arch=arm64 \
   module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=yes \
-  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j4
+  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j8
 ```
 
 Use `target=template_release` for release. Archives are staged outside the source
@@ -204,7 +204,7 @@ DOTNET_SDK=$OO_ROOT/packages/dotnet-sdk/10.0.401-ohos.2
 
 python3 -m SCons platform=openharmony target=editor arch=arm64 \
   module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=no \
-  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j4
+  debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j8
 
 python3 platform/openharmony/build-cli.py \
   --library bin/libgodot.openharmony.editor.arm64.so \
@@ -218,7 +218,7 @@ python3 platform/openharmony/build-dotnet.py \
 ```
 
 The managed build uses an empty private NuGet cache and locked dependencies.
-Godot package versions are pinned to **4.7.2-ohos.2** to avoid selecting upstream
+Godot managed package versions are pinned to **4.7.2-ohos.3** to avoid selecting upstream
 packages with different bindings. Godot API/tool assemblies retain their upstream
 .NET 8 target and run on .NET 10; newly created OpenHarmony C# projects target
 .NET 10. A project-local `NuGet.Config` uses the bundled feed through the
