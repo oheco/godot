@@ -18,7 +18,7 @@ SOURCE = Path(__file__).resolve().parents[2]
 TEMPLATE = SOURCE / 'misc/dist/openharmony_template'
 HOST_PATH = 'entry/src/main/resources/rawfile/godot_host.json'
 SDK_VERSION = '26.0.0'
-HOST_ABI_VERSION = 1
+HOST_ABI_VERSION = 3
 HEADERS = ('bridge_openharmony.h', 'engine_host_openharmony.h')
 EXCLUDED = {'.hvigor', '.cxx', 'node_modules', 'oh_modules', 'build', '.git', '.idea', '.appanalyzer', '.bitfun', '.godot-config-history'}
 RESTRICTED = {
@@ -206,7 +206,7 @@ def validate_configuration(config):
             raise ValueError('Restricted kernel/sandbox permissions require the explicit generator ACL flags')
         if permission not in {'ohos.permission.INTERNET', 'ohos.permission.MICROPHONE',
                               'ohos.permission.LOCK_WINDOW_CURSOR', 'ohos.permission.READ_WRITE_USER_FILE',
-                              'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'}:
+                              'ohos.permission.READ_PASTEBOARD', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'}:
             raise ValueError(f'Unsupported permission metadata: {permission}')
         if permission in {'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'} and app['deviceTypes'] != ['2in1']:
             raise ValueError(f'{permission} requires a 2in1-only application profile')
@@ -325,7 +325,8 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
                             'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
     permissions.update(restricted)
     user_reasons = {'ohos.permission.MICROPHONE': 'MICROPHONE_reason',
-                    'ohos.permission.READ_WRITE_USER_FILE': 'reason_user_file'}
+                    'ohos.permission.READ_WRITE_USER_FILE': 'reason_user_file',
+                    'ohos.permission.READ_PASTEBOARD': 'reason_pasteboard'}
     module['requestPermissions'] = []
     for name in sorted(permissions):
         item = {'name': name}

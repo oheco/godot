@@ -176,6 +176,34 @@ String OS_OpenHarmony::get_temp_path() const {
 	return configured.is_empty() || configured == "/tmp" ? get_cache_path() : configured;
 }
 
+String OS_OpenHarmony::get_system_dir(SystemDir p_dir, bool p_shared_storage) const {
+	// The desktop user's files are outside the application's private data.
+	// Games without user-file access keep an accessible sandbox default.
+	if (!ui_ability || allowed_permissions.has("ohos.permission.READ_WRITE_USER_FILE")) {
+		return "/storage/Users/currentUser";
+	}
+	return get_data_path();
+}
+
+Error OS_OpenHarmony::shell_open(const String &p_uri) {
+	ERR_FAIL_COND_V(p_uri.is_empty() || p_uri.contains_char(0), ERR_INVALID_PARAMETER);
+	return godot_host_open_external(GODOT_EXTERNAL_URI, p_uri.utf8().get_data()) == 0 ? OK : ERR_UNAVAILABLE;
+}
+
+Error OS_OpenHarmony::shell_show_in_file_manager(String p_path, bool p_open_folder) {
+	p_path = p_path.trim_prefix("file://");
+	ERR_FAIL_COND_V(!p_path.is_absolute_path() || p_path.contains_char(0), ERR_INVALID_PARAMETER);
+	if (!DirAccess::dir_exists_absolute(p_path)) {
+		p_path = p_path.get_base_dir();
+	}
+	return godot_host_open_external(GODOT_EXTERNAL_FOLDER, p_path.utf8().get_data()) == 0 ? OK : ERR_UNAVAILABLE;
+}
+
+Error OS_OpenHarmony::open_in_terminal(const String &p_directory) {
+	ERR_FAIL_COND_V(!p_directory.is_absolute_path() || p_directory.contains_char(0), ERR_INVALID_PARAMETER);
+	return godot_host_open_external(GODOT_EXTERNAL_TERMINAL, p_directory.utf8().get_data()) == 0 ? OK : ERR_UNAVAILABLE;
+}
+
 String OS_OpenHarmony::get_bundle_resource_dir() const {
 	return OS_OpenHarmony::BUNDLE_RESOURCE_DIR;
 }

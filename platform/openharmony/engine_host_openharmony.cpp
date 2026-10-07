@@ -7,21 +7,28 @@
 #include "engine_arguments_openharmony.h"
 #include "file_access_openharmony.h"
 #include "os_openharmony.h"
+#include "wrapper_openharmony.h"
+
+#ifdef TOOLS_ENABLED
+#include "export/broker_client.h"
+#endif
 
 #include "core/config/engine.h"
 #include "main/main.h"
 
 #include <native_vsync/native_vsync.h>
+#include <pthread.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
-#include <pthread.h>
 #include <string>
 #include <utility>
-#include <unistd.h>
 #include <vector>
 
 namespace {
@@ -49,6 +56,7 @@ pthread_t engine_thread = {};
 bool engine_thread_started = false;
 std::atomic<int> state{ 0 };
 std::atomic<GodotCreateInstanceCallback> create_instance_callback{ nullptr };
+std::atomic<GodotOpenExternalCallback> open_external_callback{ nullptr };
 bool stopping = false;
 bool frame = false;
 bool frame_requested = false;
@@ -334,6 +342,35 @@ int32_t godot_host_create_instance(int argc, const char *const *argv) {
 	const auto callback = create_instance_callback.load();
 	return callback ? callback(argc, argv) : -1;
 }
+void godot_host_set_open_external_callback(GodotOpenExternalCallback callback) {
+	open_external_callback = callback;
+}
+int32_t godot_host_open_external(int32_t kind, const char *target) {
+	const auto callback = open_external_callback.load();
+	return callback && target && *target && kind >= GODOT_EXTERNAL_URI && kind <= GODOT_EXTERNAL_TERMINAL ? callback(kind, target) : -1;
+}
+int32_t godot_host_open_terminal(const char *uri, char *diagnostic, uint32_t capacity) {
+	if (!uri || !diagnostic || capacity == 0) {
+		return -1;
+	}
+#ifdef TOOLS_ENABLED
+	const char *home = std::getenv("HOME");
+	const std::string endpoint = std::string(home && *home ? home : "/storage/Users/currentUser") + "/.oheco/broker/endpoint";
+	const auto result = OpenHarmonyBroker::execute(endpoint, "/system/bin/aa",
+			{ "start", "-b", "com.huawei.hmos.hishell", "-a", "EntryAbility", "-m", "entry", "--ps", "uriList", uri }, true, 10000);
+	// aa sometimes exits zero on failure. Its success marker is required too;
+	// UI/device acceptance separately verifies that HiShell keeps a window open.
+	if (result.error == 0 && result.exit_code == 0 && result.output.find("start ability successfully") != std::string::npos) {
+		diagnostic[0] = '\0';
+		return 0;
+	}
+	std::snprintf(diagnostic, capacity, "Cannot open the system terminal. Run oheco-broker shell serve in the terminal. %s %s",
+			result.diagnostic.c_str(), result.output.c_str());
+#else
+	std::snprintf(diagnostic, capacity, "Opening a terminal is available only in the editor host.");
+#endif
+	return -1;
+}
 void godot_host_touch(const GodotTouchEvent *p_events, int count) {
 	if (!p_events || count <= 0) {
 		return;
@@ -373,6 +410,10 @@ void godot_host_resize(int32_t width, int32_t height) {
 	event.second = height;
 	enqueue(event);
 }
+void godot_host_set_surface_position(int32_t window_id, double x, double y) {
+	ohos_wrapper_set_surface_position(window_id, x, y);
+}
+
 void godot_host_window_event(int32_t p_event) {
 	Event event{};
 	event.type = Event::WINDOW;

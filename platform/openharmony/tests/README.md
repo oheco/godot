@@ -67,6 +67,79 @@ fixture verifies unsupported integer touch types/slots are safely dropped withou
 letting huge IDs reach the engine; malformed JS types remain rejected. These
 fixtures do not substitute for real mouse/touch/IME/device acceptance.
 
+## Desktop integration
+
+The host logic suite also covers the logo/loading/status state transition,
+external folder/link requests, File Manager launch failures, and explicit
+unsupported terminal/local-file-editor notifications with no launch. The native
+shell fixture retains low-level queue/worker lifecycle coverage, including
+Promise failures; its internal terminal API is not used by the disabled menus.
+These are queue/host tests, separate from installed application acceptance.
+
+With a newly signed Editor CLI and the existing managed inputs, run:
+
+```sh
+python3 platform/openharmony/tests/test_desktop_defaults.py \
+  --godot "$GODOT_CLI" --godotsharp "$GODOTSHARP" --dotnet-sdk "$DOTNET_SDK"
+```
+
+This boots the actual headless Editor in a temporary project and isolated
+settings directories. It verifies the filesystem dialog and initial project
+path use the desktop home, and an explicitly selected directory is preserved.
+It does not test the ArkUI splash, installed DPI scaling or pasteboard grants.
+The short-lived headless Editor can report scan-abort/RID cleanup warnings on
+exit; the assertions and process exit code are recorded separately.
+
+The desktop input regressions run against native SDK/system objects and the
+signed engine library:
+
+```sh
+python3 platform/openharmony/tests/test_ime_geometry.py --native-sdk "$NATIVE_SDK"
+python3 platform/openharmony/tests/test_ime_cursor_notify.py --native-sdk "$NATIVE_SDK"
+python3 platform/openharmony/tests/test_ime_controls.py \
+  --native-sdk "$NATIVE_SDK" --library "$SIGNED_ENGINE_LIBRARY" --compile-controls
+python3 platform/openharmony/tests/test_popup_mouse_motion.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_ENGINE_LIBRARY"
+```
+
+The IME fixture checks surface-to-screen pixel mapping, real CursorInfo/TextConfig
+objects and concurrent geometry snapshots. Its WMS properties boundary is
+mocked; it never attaches or types into a user's input method. The cursor-notify
+fixture compiles the complete current production method, uses real SDK
+CursorInfo objects, and injects Notify errors and allocation failures. It
+verifies retries at an unchanged caret, successful update deduplication and
+balanced object ownership; `--baseline` restores the old failure fallthrough and
+is expected to fail. It substitutes mapping/state rather than attaching an IME.
+The controls fixture
+captures actual LineEdit/TextEdit submissions to a headless DisplayServer and
+compares them with the real canvas/embedded rendering transforms. It covers a
+nonzero native window origin, decorated and nested windows, display scale 1.9
+and actual 2x canvas stretching. `--compile-controls` compiles the current
+production controls; with an unfixed signed library, `--baseline` reproduces the
+doubled popup placement. This check closes the dimension missed by wrapper-only
+point mapping; it does not attach the commercial IME or operate a device GUI.
+The popup fixture uses real engine Input/Viewport/Button/PopupMenu objects and compiles the actual
+platform bridge. It checks motion velocity, zero raw-delta fallback, captured
+pointer motion and click preservation. Installed ArkUI GUI acceptance remains
+separate from these native regression fixtures.
+Rebuild the common ABI-3 host, editor and both templates, then verify Chinese
+candidate placement below the caret in moved/maximized windows and embedded
+LineEdit/TextEdit popups, as well as real mouse hover over menus and submenus.
+Screen mouse positions and Window rectangle callbacks must use the same surface
+origin as the IME mapping so that absolute viewport transforms remain correct.
+
+This revision intentionally does not launch a terminal or an external editor.
+Click those entries and verify the unsupported-feature notification, continued
+Editor responsiveness and absence of an external launch. Verify that File
+Manager still opens the requested directory, browser links still open, and
+scripts can still be edited internally. Broker and terminal cwd integration are
+not acceptance requirements for these disabled menus.
+
+Clipboard acceptance is deferred for this revision: `READ_PASTEBOARD` is not
+automatically declared or requested. A later opt-in clipboard probe requires
+its approved signing-profile ACL and the application's granted permission;
+preserve/restore clipboard contents when performing that probe.
+
 ## Real native engine and export
 
 Build/sign the Editor CLI using the platform scripts, and build an actual game

@@ -107,6 +107,10 @@ public:
 	virtual String get_config_path() const override;
 	virtual String get_cache_path() const override;
 	virtual String get_temp_path() const override;
+	virtual String get_system_dir(SystemDir p_dir, bool p_shared_storage = true) const override;
+	virtual Error shell_open(const String &p_uri) override;
+	virtual Error shell_show_in_file_manager(String p_path, bool p_open_folder) override;
+	Error open_in_terminal(const String &p_directory);
 	virtual Error create_instance(const List<String> &p_arguments, ProcessID *r_child_id = nullptr) override;
 	virtual Error execute(const String &p_path, const List<String> &p_arguments, String *r_pipe = nullptr, int *r_exitcode = nullptr, bool p_read_stderr = false, Mutex *p_pipe_mutex = nullptr, bool p_open_console = false) override;
 	virtual Error create_process(const String &p_path, const List<String> &p_arguments, ProcessID *r_child_id = nullptr, bool p_open_console = false) override;

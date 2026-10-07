@@ -40,6 +40,19 @@ std::map<uint32_t, std::shared_ptr<SpawnRequest>> spawns;
 uint32_t next_spawn = 0;
 bool launcher_stopping = false;
 napi_threadsafe_function launch_function = nullptr;
+napi_threadsafe_function external_function = nullptr;
+struct ExternalRequest {
+	int32_t kind;
+	std::string target;
+};
+struct TerminalWork {
+	napi_async_work work = nullptr;
+	napi_deferred promise = nullptr;
+	std::string uri;
+	char diagnostic[4096] = {};
+	int32_t result = -1;
+};
+uint32_t terminal_jobs = 0;
 
 napi_value undefined(napi_env env) {
 	napi_value result;
@@ -80,16 +93,14 @@ bool array_length(napi_env env, napi_value value, uint32_t &count, const char *n
 	bool array = false;
 	napi_status status = napi_is_array(env, value, &array);
 	if (status != napi_ok) {
-		return status == napi_pending_exception ? false : type_error(env,
-				(std::string(name) + ": napi_is_array failed, status=" + std::to_string(status)).c_str());
+		return status == napi_pending_exception ? false : type_error(env, (std::string(name) + ": napi_is_array failed, status=" + std::to_string(status)).c_str());
 	}
 	if (!array) {
 		return type_error(env, (std::string(name) + ": expected a native array (copy ArkUI observed arrays before calling N-API)").c_str());
 	}
 	status = napi_get_array_length(env, value, &count);
 	if (status != napi_ok) {
-		return status == napi_pending_exception ? false : type_error(env,
-				(std::string(name) + ": napi_get_array_length failed, status=" + std::to_string(status)).c_str());
+		return status == napi_pending_exception ? false : type_error(env, (std::string(name) + ": napi_get_array_length failed, status=" + std::to_string(status)).c_str());
 	}
 	if (count > 65536) {
 		return type_error(env, (std::string(name) + ": expected at most 65536 elements").c_str());
@@ -273,6 +284,29 @@ void launch_on_ui(napi_env env, napi_value callback, void *, void *data) {
 		}
 	}
 }
+int32_t open_external(int32_t kind, const char *target) {
+	std::lock_guard<std::mutex> lock(spawn_mutex);
+	if (!external_function || launcher_stopping) {
+		return -1;
+	}
+	auto *request = new ExternalRequest{ kind, target };
+	if (napi_call_threadsafe_function(external_function, request, napi_tsfn_nonblocking) != napi_ok) {
+		delete request;
+		return -1;
+	}
+	return 0;
+}
+void external_on_ui(napi_env env, napi_value callback, void *, void *data) {
+	std::unique_ptr<ExternalRequest> request(static_cast<ExternalRequest *>(data));
+	if (!env || !callback || destroyed) {
+		return;
+	}
+	napi_value args[2], receiver, ignored;
+	napi_get_undefined(env, &receiver);
+	napi_create_int32(env, request->kind, &args[0]);
+	napi_create_string_utf8(env, request->target.data(), request->target.size(), &args[1]);
+	napi_call_function(env, receiver, callback, 2, args, &ignored);
+}
 void cleanup(void *) {
 	if (destroyed) {
 		return;
@@ -287,11 +321,16 @@ void cleanup(void *) {
 		spawns.clear();
 	}
 	godot_host_set_create_instance_callback(nullptr);
+	godot_host_set_open_external_callback(nullptr);
 	// Stop and join before releasing ANY resource the engine may still use.
 	godot_host_stop();
 	if (launch_function) {
 		napi_release_threadsafe_function(launch_function, napi_tsfn_abort);
 		launch_function = nullptr;
+	}
+	if (external_function) {
+		napi_release_threadsafe_function(external_function, napi_tsfn_abort);
+		external_function = nullptr;
 	}
 	if (window) {
 		OH_NativeWindow_DestroyNativeWindow(window);
@@ -375,6 +414,21 @@ napi_value set_surface(napi_env env, napi_callback_info info) {
 	}
 	return maybe_start(env) ? undefined(env) : nullptr;
 }
+napi_value surface_position(napi_env env, napi_callback_info info) {
+	napi_value args[2];
+	double x, y;
+	if (!values(env, info, 2, args) || !number_value(env, args[0], x) || !number_value(env, args[1], y) || !alive(env)) {
+		return nullptr;
+	}
+	if (window_id < 0 || x < std::numeric_limits<int32_t>::lowest() || x > std::numeric_limits<int32_t>::max() ||
+			y < std::numeric_limits<int32_t>::lowest() || y > std::numeric_limits<int32_t>::max()) {
+		napi_throw_error(env, nullptr, "Invalid surface position or missing window ID");
+		return nullptr;
+	}
+	godot_host_set_surface_position(window_id, x, y);
+	return undefined(env);
+}
+
 napi_value resize(napi_env env, napi_callback_info info) {
 	napi_value args[3];
 	uint64_t id;
@@ -558,6 +612,74 @@ napi_value set_launcher(napi_env env, napi_callback_info info) {
 	godot_host_set_create_instance_callback(create_instance);
 	return undefined(env);
 }
+void terminal_on_worker(napi_env, void *data) {
+	auto *request = static_cast<TerminalWork *>(data);
+	request->result = godot_host_open_terminal(request->uri.c_str(), request->diagnostic, sizeof(request->diagnostic));
+}
+void terminal_complete(napi_env env, napi_status status, void *data) {
+	std::unique_ptr<TerminalWork> request(static_cast<TerminalWork *>(data));
+	--terminal_jobs;
+	if (status == napi_ok && request->result == 0) {
+		napi_resolve_deferred(env, request->promise, undefined(env));
+	} else {
+		napi_value message, error;
+		const char *detail = request->diagnostic[0] ? request->diagnostic : "Terminal launch worker was cancelled";
+		napi_create_string_utf8(env, detail, NAPI_AUTO_LENGTH, &message);
+		napi_create_error(env, nullptr, message, &error);
+		napi_reject_deferred(env, request->promise, error);
+	}
+	napi_delete_async_work(env, request->work);
+}
+napi_value open_terminal(napi_env env, napi_callback_info info) {
+	napi_value args[1], promise, name;
+	auto request = std::make_unique<TerminalWork>();
+	if (!values(env, info, 1, args) || !string_value(env, args[0], request->uri) || !alive(env)) {
+		return nullptr;
+	}
+	if (request->uri.compare(0, 7, "file://") != 0 || terminal_jobs >= 4) {
+		napi_throw_error(env, nullptr, "Expected a directory file URI and at most four pending terminal launches");
+		return nullptr;
+	}
+	if (napi_create_promise(env, &request->promise, &promise) != napi_ok ||
+			napi_create_string_utf8(env, "GodotOpenTerminal", NAPI_AUTO_LENGTH, &name) != napi_ok ||
+			napi_create_async_work(env, nullptr, name, terminal_on_worker, terminal_complete, request.get(), &request->work) != napi_ok) {
+		napi_throw_error(env, nullptr, "Could not create terminal launch worker");
+		return nullptr;
+	}
+	if (napi_queue_async_work(env, request->work) != napi_ok) {
+		napi_delete_async_work(env, request->work);
+		napi_throw_error(env, nullptr, "Could not queue terminal launch worker");
+		return nullptr;
+	}
+	++terminal_jobs;
+	request.release();
+	return promise;
+}
+napi_value set_external_opener(napi_env env, napi_callback_info info) {
+	napi_value args[1];
+	if (!values(env, info, 1, args) || !alive(env)) {
+		return nullptr;
+	}
+	napi_valuetype type;
+	if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
+		type_error(env, "Expected an external application opener function");
+		return nullptr;
+	}
+	std::lock_guard<std::mutex> lock(spawn_mutex);
+	if (external_function) {
+		napi_throw_error(env, nullptr, "External application opener already configured");
+		return nullptr;
+	}
+	napi_value name;
+	napi_create_string_utf8(env, "GodotOpenExternal", NAPI_AUTO_LENGTH, &name);
+	if (napi_create_threadsafe_function(env, args[0], nullptr, name, 64, 1, nullptr, nullptr, nullptr,
+				external_on_ui, &external_function) != napi_ok) {
+		napi_throw_error(env, nullptr, "Cannot create external application thread-safe function");
+		return nullptr;
+	}
+	godot_host_set_open_external_callback(open_external);
+	return undefined(env);
+}
 napi_value spawn_result(napi_env env, napi_callback_info info) {
 	napi_value args[2];
 	uint32_t id;
@@ -585,6 +707,8 @@ napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
 		METHOD("setLauncher", set_launcher),
+		METHOD("setExternalOpener", set_external_opener),
+		METHOD("openTerminal", open_terminal),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
 		METHOD("configure", configure),
@@ -592,6 +716,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("setWindowId", set_window),
 		METHOD("setSurfaceId", set_surface),
 		METHOD("changeSurface", resize),
+		METHOD("setSurfacePosition", surface_position),
 		METHOD("destroySurface", destroy),
 		METHOD("setup", setup),
 		METHOD("state", status),

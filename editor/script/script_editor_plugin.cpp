@@ -2213,6 +2213,11 @@ bool ScriptEditor::edit(const Ref<Resource> &p_resource, int p_line, int p_col, 
 
 	const bool should_open = (open_dominant && !use_external_editor) || !EditorNode::get_singleton()->is_changing_scene();
 
+#ifdef OPENHARMONY_ENABLED
+	if (use_external_editor && should_open) {
+		EditorNode::get_singleton()->show_warning(TTR("External script editors are not supported in this version on OpenHarmony."));
+	}
+#else
 	if (scr.is_valid() && scr->get_language()->overrides_external_editor()) {
 		if (should_open) {
 			Error err = scr->get_language()->open_in_external_editor(scr, p_line >= 0 ? p_line : 0, p_col);
@@ -2232,6 +2237,7 @@ bool ScriptEditor::edit(const Ref<Resource> &p_resource, int p_line, int p_col, 
 			ERR_PRINT("Couldn't open external text editor, falling back to the internal editor. Review your `text_editor/external/` editor settings.");
 		}
 	}
+#endif
 
 	for (int i = 0; i < tab_container->get_tab_count(); i++) {
 		ScriptEditorBase *seb = Object::cast_to<ScriptEditorBase>(tab_container->get_tab_control(i));
@@ -4225,6 +4231,10 @@ void ScriptEditorPlugin::_notification(int p_what) {
 }
 
 bool ScriptEditorPlugin::open_in_external_editor(const String &p_path, int p_line, int p_col, bool p_ignore_project) {
+#ifdef OPENHARMONY_ENABLED
+	EditorNode::get_singleton()->show_warning(TTR("External script editors are not supported in this version on OpenHarmony."));
+	return false;
+#else
 	const String path = EDITOR_GET("text_editor/external/exec_path");
 	if (path.is_empty()) {
 		return false;
@@ -4279,6 +4289,7 @@ bool ScriptEditorPlugin::open_in_external_editor(const String &p_path, int p_lin
 		args.push_back(p_path);
 	}
 	return OS::get_singleton()->create_process(path, args) == OK;
+#endif
 }
 
 void ScriptEditorPlugin::edit(Object *p_object) {

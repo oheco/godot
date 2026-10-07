@@ -203,7 +203,7 @@ function testStorageAndAbility() {
   for (const scenario of ['game', 'editor-none', 'editor-sdk', 'invalid-config', 'missing-config']) {
     const profile = scenario === 'game' ? gameProfile() : editorProfile(scenario === 'editor-sdk' ? 'sdk' : 'none');
     const events = [];
-    const plugin = { processId: () => 11, setLauncher: () => events.push('launcher') };
+    const plugin = { processId: () => 11, setLauncher: () => events.push('launcher'), setExternalOpener: () => events.push('external-opener') };
     const { hostDiagnostics, inspected } = diagnosticFixture(plugin, events);
     const storage = {};
     const context = hostContext();
@@ -217,6 +217,7 @@ function testStorageAndAbility() {
       '@kit.AbilityKit': { UIAbility: class {}, ConfigurationConstant: { ColorMode: { COLOR_MODE_NOT_SET: 0 } } },
       '@ohos.window': {}, 'libentry.so': { default: plugin }, '../runtime/Config': config,
       '../runtime/Diagnostics': hostDiagnostics,
+      '../runtime/ExternalApps': { openExternal: async () => {} },
       '../runtime/Launch': {
         hasEngineFlag: (args, flag, short) => args.includes(flag) || args.includes(short),
         logInstanceState: () => {}, reportStarted: () => {},
@@ -264,6 +265,41 @@ function testDirectoryRace() {
   code = 13900013;
   assert.throws(() => helpers.ensureDirectory('/mock/permission-denied'), /concurrent create/);
   console.log('PASS filesystem: EEXIST only accepts a directory; other creation errors propagate');
+}
+
+async function testExternalApps() {
+  const calls = [], toasts = [], logs = [];
+  let launchFailure = false;
+  const context = {
+    startAbility: async want => { calls.push(['ability', plain(want)]); if (launchFailure) throw new Error('platform denied'); },
+    openLink: async (uri, options) => calls.push(['link', uri, plain(options)]),
+  };
+  const external = load('runtime/ExternalApps.ets', {
+    '@kit.CoreFileKit': { fileUri: { getUriFromPath: value => 'file://fixture' + encodeURI(value) } },
+    '@ohos.window': { default: { getLastWindow: async () => ({ getUIContext: () => ({ getPromptAction: () => ({ showToast: value => toasts.push(value) }) }) }) } },
+    'libentry.so': { default: { openTerminal: async uri => { calls.push(['terminal-worker', uri]); if (launchFailure) throw new Error('broker missing'); } } },
+    './Diagnostics': { describe: String, record: value => logs.push(value) },
+  });
+  const directory = "/storage/Users/currentUser/a 中文 'directory'";
+  const uri = 'file://fixture' + encodeURI(directory);
+  await external.openExternal(context, 1, directory);
+  assert.deepEqual(calls.pop(), ['ability', { bundleName: 'com.huawei.hmos.filemanager', abilityName: 'MainAbility', parameters: { fileUri: uri } }]);
+  await external.openExternal(context, 2, directory);
+  assert.deepEqual(calls, [], 'Unsupported terminal must not call the broker or launch an ability');
+  assert.equal(toasts.pop().message, '当前版本暂不支持打开系统终端。');
+  for (const target of [directory + '/script.cs', uri + '/script.cs']) {
+    await external.openExternal(context, 0, target);
+    assert.deepEqual(calls, [], 'Unsupported local file editor must not launch an ability');
+    assert.equal(toasts.pop().message, '当前版本暂不支持使用外部编辑器打开文件。');
+  }
+  await external.openExternal(context, 0, 'https://godotengine.org/?x=中文');
+  assert.deepEqual(calls.pop(), ['link', 'https://godotengine.org/?x=中文', { appLinkingOnly: false }]);
+  launchFailure = true;
+  await assert.doesNotReject(external.openExternal(context, 1, directory));
+  assert.equal(toasts.length, 1);
+  assert.equal(logs.filter(value => value.includes('launch failed')).length, 1);
+  assert.equal(logs.some(value => value.includes('broker missing')), false);
+  console.log('PASS external apps: literal directory URI, unsupported terminal/file editor notifications without launch, browser link, asynchronous File Manager failure');
 }
 
 async function testPermissions() {
@@ -324,6 +360,8 @@ async function testIndex() {
         calls.push(['setup', ...args]);
       }, state: () => currentState,
       processId: () => 11, destroySurface: () => {},
+      setSurfacePosition: (x, y) => calls.push(['surface-position', x, y]),
+      inputTouch: () => {}, sendWindowEvent: () => {},
     };
     const paths = mode === 'game' ? applicationPaths : modulePaths;
     const userPermissions = ['ohos.permission.MICROPHONE'];
@@ -362,7 +400,14 @@ async function testIndex() {
       godotHostConfig: profile, godotConfigError: '',
       godotArguments: new Proxy(config.engineArguments(profile, {}), {}), godotWindowId: 7,
     };
+    let geometryListener;
+    const hostWindow = {
+      on: (name, listener) => { assert.equal(name, 'windowRectChange'); geometryListener = listener; },
+      off: (name, listener) => { assert.equal(name, 'windowRectChange'); assert.equal(listener, geometryListener); geometryListener = null; },
+    };
     const dependencies = {
+      '@kit.AbilityKit': {},
+      '@kit.ArkUI': { window: { getLastWindow: async () => hostWindow } },
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
       '../runtime/Config': config,
       '../runtime/NativeArguments': nativeArguments,
@@ -375,6 +420,7 @@ async function testIndex() {
         prepareTemplates: async (_context, filesDir) => { calls.push(['templates', filesDir]); },
       },
       '../runtime/Diagnostics': hostDiagnostics,
+      '../runtime/ExternalApps': { openExternal: async () => {} },
       '../runtime/Launch': {
         spawnedChildPid: () => { calls.push(['child-query']); return 0; }, childHasExited: () => false,
         reportExit: () => calls.push(['exit-marker']), logInstanceState: () => calls.push(['instance-state']),
@@ -385,11 +431,17 @@ async function testIndex() {
       return (source.slice(0, source.indexOf('  build() {')) + '}\n')
         .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
     };
+    const surfaceRect = { surfaceWidth: 800, surfaceHeight: 600, offsetX: 13.25, offsetY: -4.5 };
+    let framePosition = { x: 125.5, y: 50.25 };
     const { Index } = load('pages/Index.ets', dependencies, {
-      XComponentController: class {}, AppStorage: { get: (key) => storage[key] }, setInterval: () => 1, clearInterval: () => {},
+      XComponentController: class { getXComponentSurfaceRect() { return surfaceRect; } },
+      AppStorage: { get: (key) => storage[key] }, setInterval: () => 1, clearInterval: () => {},
     }, transform);
     const page = new Index();
-    page.getUIContext = () => ({ getHostContext: () => context });
+    page.getUIContext = () => ({
+      getHostContext: () => context, vp2px: (value) => value * 2.5,
+      getFrameNodeById: (id) => { assert.equal(id, 'godot-surface'); return { getGlobalPositionOnDisplay: () => framePosition }; },
+    });
     await page.prepare();
     assert.equal(page.ready, true, `${mode}: native setup failed: ${page.message}`);
     assert.ok(calls.some((call) => call[0] === 'setup'), `${mode}: setup must reach the plain-array native boundary`);
@@ -407,6 +459,18 @@ async function testIndex() {
     assert.equal(hostDiagnostics.diagnosticsPath(), `${paths.filesDir}/godot-11-diagnostics.log`, mode);
     assert.equal(hostDiagnostics.engineLogPath(11), `${paths.filesDir}/godot-11-engine.log`, mode);
     assert.ok(hostDiagnostics.readDiagnostics().includes(`cacheDir=${paths.cacheDir}`), mode);
+    assert.equal(page.showStatus, false);
+    assert.equal(page.engineRunning, false);
+    page.updateImeSurfacePosition();
+    assert.deepEqual(calls.at(-1), ['surface-position', 327, 121.125], 'convert only node vp, retain surface px offsets');
+    framePosition = { x: 250.25, y: 100.75 };
+    geometryListener();
+    assert.deepEqual(calls.at(-1), ['surface-position', 638.875, 247.375], 'window-only move refreshes actual screen origin');
+    page.updateEngineState(context);
+    assert.equal(page.engineRunning, false, 'loading must keep the splash');
+    currentState = 2;
+    page.updateEngineState(context);
+    assert.equal(page.engineRunning, true, 'running releases the splash');
     currentState = 3;
     page.updateEngineState(context);
     await Promise.resolve();
@@ -414,6 +478,11 @@ async function testIndex() {
     if (mode === 'game') {
       assert.ok(!calls.some((call) => ['child-query', 'instance-state', 'exit-marker'].includes(call[0])));
     }
+    page.aboutToDisappear();
+    assert.equal(geometryListener, null, 'window geometry listener is released');
+    const count = calls.length;
+    page.updateImeSurfacePosition();
+    assert.equal(calls.length, count, 'destroyed pages never publish surface geometry');
   }
   console.log('PASS Index logic: game application/editor module NAPI and logs; all roles request declared permissions once; SDK-only runtime; no game child logic');
 }
@@ -588,6 +657,7 @@ async function main() {
   testNativeArguments();
   testStorageAndAbility();
   testDirectoryRace();
+  await testExternalApps();
   await testPermissions();
   await testIndex();
   await testLauncher();

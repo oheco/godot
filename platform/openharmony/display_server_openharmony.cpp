@@ -44,6 +44,8 @@
 #include <database/udmf/udmf.h>
 #include <database/udmf/uds.h>
 
+#include <memory>
+
 void DisplayServerOpenHarmony::_dispatch_input_events(const Ref<InputEvent> &p_event) {
 	get_singleton()->send_input_event(p_event);
 }
@@ -177,8 +179,9 @@ void DisplayServerOpenHarmony::resize_window(uint32_t p_width, uint32_t p_height
 	}
 #endif
 
-	Variant resize_rect = Rect2i(Point2i(), size);
-	_window_callback(window_resize_callback, resize_rect);
+	reported_window_rect = Rect2i(window_get_position(), size);
+	reported_window_rect_valid = window_resize_callback.is_valid();
+	_window_callback(window_resize_callback, reported_window_rect);
 }
 
 void DisplayServerOpenHarmony::send_window_event(DisplayServerEnums::WindowEvent p_event) const {
@@ -230,7 +233,7 @@ int DisplayServerOpenHarmony::screen_get_dpi(int p_screen) const {
 }
 
 float DisplayServerOpenHarmony::screen_get_scale(int p_screen) const {
-	return ohos_wrapper_get_display_scaled_density();
+	return ohos_wrapper_get_display_scale();
 }
 
 float DisplayServerOpenHarmony::screen_get_refresh_rate(int p_screen) const {
@@ -261,43 +264,50 @@ DisplayServerEnums::ScreenOrientation DisplayServerOpenHarmony::screen_get_orien
 }
 
 void DisplayServerOpenHarmony::clipboard_set(const String &p_text) {
-	OH_Pasteboard *pasteboard = OH_Pasteboard_Create();
-	OH_UdsPlainText *plainText = OH_UdsPlainText_Create();
-	OH_UdsPlainText_SetContent(plainText, p_text.utf8().get_data());
-	OH_UdmfRecord *record = OH_UdmfRecord_Create();
-	OH_UdmfRecord_AddPlainText(record, plainText);
-	OH_UdmfData *data = OH_UdmfData_Create();
-	OH_UdmfData_AddRecord(data, record);
-	int status = OH_Pasteboard_SetData(pasteboard, data);
-	if (status != 0) {
-		ERR_PRINT("Failed to set clipboard data with PASTEBOARD_ErrCode: " + itos(status));
+	std::unique_ptr<OH_Pasteboard, decltype(&OH_Pasteboard_Destroy)> pasteboard(OH_Pasteboard_Create(), OH_Pasteboard_Destroy);
+	std::unique_ptr<OH_UdsPlainText, decltype(&OH_UdsPlainText_Destroy)> text(OH_UdsPlainText_Create(), OH_UdsPlainText_Destroy);
+	std::unique_ptr<OH_UdmfRecord, decltype(&OH_UdmfRecord_Destroy)> record(OH_UdmfRecord_Create(), OH_UdmfRecord_Destroy);
+	std::unique_ptr<OH_UdmfData, decltype(&OH_UdmfData_Destroy)> data(OH_UdmfData_Create(), OH_UdmfData_Destroy);
+	ERR_FAIL_COND_MSG(!pasteboard || !text || !record || !data, "Could not allocate clipboard data.");
+	int status = OH_UdsPlainText_SetContent(text.get(), p_text.utf8().get_data());
+	if (status == 0) {
+		status = OH_UdmfRecord_AddPlainText(record.get(), text.get());
 	}
-	OH_UdsPlainText_Destroy(plainText);
-	OH_UdmfRecord_Destroy(record);
-	OH_UdmfData_Destroy(data);
-	OH_Pasteboard_Destroy(pasteboard);
+	if (status == 0) {
+		status = OH_UdmfData_AddRecord(data.get(), record.get());
+	}
+	ERR_FAIL_COND_MSG(status != 0, "Could not create clipboard text (UDMF error " + itos(status) + ").");
+	status = OH_Pasteboard_SetData(pasteboard.get(), data.get());
+	ERR_FAIL_COND_MSG(status != 0, "Could not copy clipboard text (pasteboard error " + itos(status) + ").");
 }
 
 String DisplayServerOpenHarmony::clipboard_get() const {
-	String content;
-	OH_Pasteboard *pasteboard = OH_Pasteboard_Create();
-	bool hasPlainTextData = OH_Pasteboard_HasType(pasteboard, "text/plain");
-	if (hasPlainTextData) {
-		int status = 0;
-		OH_UdmfData *udmfData = OH_Pasteboard_GetData(pasteboard, &status);
-		if (status == 0) {
-			OH_UdmfRecord *record = OH_UdmfData_GetRecord(udmfData, 0);
-			OH_UdsPlainText *plainText = OH_UdsPlainText_Create();
-			OH_UdmfRecord_GetPlainText(record, plainText);
-			content = String::utf8(OH_UdsPlainText_GetContent(plainText));
-			OH_UdsPlainText_Destroy(plainText);
-		} else {
-			ERR_PRINT("Failed to get clipboard data with PASTEBOARD_ErrCode: " + itos(status));
-		}
-		OH_UdmfData_Destroy(udmfData);
+	std::unique_ptr<OH_Pasteboard, decltype(&OH_Pasteboard_Destroy)> pasteboard(OH_Pasteboard_Create(), OH_Pasteboard_Destroy);
+	ERR_FAIL_COND_V_MSG(!pasteboard, String(), "Could not allocate clipboard reader.");
+	if (!OH_Pasteboard_HasData(pasteboard.get())) {
+		return String();
 	}
-	OH_Pasteboard_Destroy(pasteboard);
-	return content;
+	int status = 0;
+	std::unique_ptr<OH_UdmfData, decltype(&OH_UdmfData_Destroy)> data(OH_Pasteboard_GetData(pasteboard.get(), &status), OH_UdmfData_Destroy);
+	ERR_FAIL_COND_V_MSG(status != 0 || !data, String(), "Could not paste clipboard text (pasteboard error " + itos(status) + "). Check READ_PASTEBOARD in the signing profile and application permissions.");
+	std::unique_ptr<OH_UdsPlainText, decltype(&OH_UdsPlainText_Destroy)> text(OH_UdsPlainText_Create(), OH_UdsPlainText_Destroy);
+	ERR_FAIL_COND_V_MSG(!text, String(), "Could not allocate clipboard text reader.");
+	// Primary getters search the full data set, including when the first record
+	// is an image or HTML. Text copied from browsers may have only HTML data.
+	if (OH_UdmfData_GetPrimaryPlainText(data.get(), text.get()) == 0) {
+		const char *content = OH_UdsPlainText_GetContent(text.get());
+		if (content) {
+			return String::utf8(content);
+		}
+	}
+	std::unique_ptr<OH_UdsHtml, decltype(&OH_UdsHtml_Destroy)> html(OH_UdsHtml_Create(), OH_UdsHtml_Destroy);
+	if (html && OH_UdmfData_GetPrimaryHtml(data.get(), html.get()) == 0) {
+		const char *content = OH_UdsHtml_GetPlainContent(html.get());
+		if (content) {
+			return String::utf8(content);
+		}
+	}
+	return String();
 }
 
 void DisplayServerOpenHarmony::screen_set_keep_on(bool p_enable) {
@@ -311,7 +321,13 @@ bool DisplayServerOpenHarmony::screen_is_kept_on() const {
 void DisplayServerOpenHarmony::_get_text_config(InputMethod_TextEditorProxy *p_text_editor_proxy, InputMethod_TextConfig *p_text_config) {
 	InputMethod_TextInputType input_type = IME_TEXT_INPUT_TYPE_TEXT;
 	InputMethod_EnterKeyType enter_key_type = IME_ENTER_KEY_DONE;
-	switch (get_singleton()->keyboard_type) {
+	DisplayServerOpenHarmony *display = get_singleton();
+	DisplayServerEnums::VirtualKeyboardType type;
+	{
+		MutexLock lock(display->ime_geometry_mutex);
+		type = display->keyboard_type;
+	}
+	switch (type) {
 		case DisplayServerEnums::KEYBOARD_TYPE_DEFAULT:
 			input_type = IME_TEXT_INPUT_TYPE_TEXT;
 			break;
@@ -343,6 +359,40 @@ void DisplayServerOpenHarmony::_get_text_config(InputMethod_TextEditorProxy *p_t
 	OH_TextConfig_SetInputType(p_text_config, input_type);
 	OH_TextConfig_SetPreviewTextSupport(p_text_config, false);
 	OH_TextConfig_SetEnterKeyType(p_text_config, enter_key_type);
+	// Bind to the actual ArkUI window, not Godot's MAIN_WINDOW_ID (zero).
+	InputMethod_ErrorCode code = OH_TextConfig_SetWindowId(p_text_config, OS_OpenHarmony::get_singleton()->get_window_id());
+	if (code != IME_ERR_OK) {
+		ERR_PRINT(vformat("Failed to configure input method window: %d.", code));
+	}
+	Point2 screen_position;
+	const bool have_screen_position = display->_get_ime_screen_position(screen_position);
+	if (have_screen_position) {
+		// GetCursorInfo returns TextConfig's borrowed, mutable cursor object.
+		InputMethod_CursorInfo *cursor = nullptr;
+		code = OH_TextConfig_GetCursorInfo(p_text_config, &cursor);
+		if (code == IME_ERR_OK && cursor) {
+			code = OH_CursorInfo_SetRect(cursor, screen_position.x, screen_position.y, 0, 0);
+		}
+		if (code != IME_ERR_OK || !cursor) {
+			ERR_PRINT(vformat("Failed to configure input method cursor: %d.", code));
+		}
+	}
+	if (have_screen_position) {
+		InputMethod_TextAvoidInfo *avoid = nullptr;
+		code = OH_TextConfig_GetTextAvoidInfo(p_text_config, &avoid);
+		if (code == IME_ERR_OK && avoid) {
+			// Core controls pass get_global_rect() to virtual_keyboard_show,
+			// without the embedded-window/stretch transform. Avoid the known
+			// physical caret anchor instead of misinterpreting that canvas rect.
+			code = OH_TextAvoidInfo_SetPositionY(avoid, screen_position.y);
+			if (code == IME_ERR_OK) {
+				code = OH_TextAvoidInfo_SetHeight(avoid, 0);
+			}
+		}
+		if (code != IME_ERR_OK || !avoid) {
+			ERR_PRINT(vformat("Failed to configure input method text area: %d.", code));
+		}
+	}
 }
 
 void DisplayServerOpenHarmony::_insert_text(InputMethod_TextEditorProxy *p_text_editor_proxy, const char16_t *p_text, size_t length) {
@@ -462,14 +512,22 @@ void DisplayServerOpenHarmony::_input_text_key(Key p_key, char32_t p_char, Key p
 }
 
 void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect, DisplayServerEnums::VirtualKeyboardType p_type, int p_max_length, int p_cursor_start, int p_cursor_end) {
+	{
+		MutexLock lock(ime_geometry_mutex);
+		ime_text_rect = p_screen_rect;
+	}
 	if (keyboard_status == IME_KEYBOARD_STATUS_SHOW && keyboard_type == p_type) {
+		_update_ime_cursor();
 		return;
 	}
 	if (keyboard_status != IME_KEYBOARD_STATUS_NONE) {
 		virtual_keyboard_hide();
 	}
 
-	keyboard_type = p_type;
+	{
+		MutexLock lock(ime_geometry_mutex);
+		keyboard_type = p_type;
+	}
 	text_editor_proxy = OH_TextEditorProxy_Create();
 	attach_options = OH_AttachOptions_Create(true);
 
@@ -490,7 +548,12 @@ void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_te
 	OH_TextEditorProxy_SetFinishTextPreviewFunc(text_editor_proxy, _finish_text_preview);
 
 	InputMethod_ErrorCode code = OH_InputMethodController_Attach(text_editor_proxy, attach_options, &input_method_proxy);
-	ERR_FAIL_COND_MSG(code != IME_ERR_OK, vformat("Failed to attach input method controller: %d.", code));
+	if (code != IME_ERR_OK) {
+		virtual_keyboard_hide();
+		ERR_FAIL_MSG(vformat("Failed to attach input method controller: %d.", code));
+	}
+	ime_screen_position_valid = false;
+	_update_ime_cursor();
 }
 
 void DisplayServerOpenHarmony::virtual_keyboard_hide() {
@@ -524,18 +587,63 @@ int DisplayServerOpenHarmony::virtual_keyboard_get_height() const {
 	return 0;
 }
 
+bool DisplayServerOpenHarmony::_get_ime_screen_position(Point2 &r_position) const {
+	Point2 local_position;
+	{
+		MutexLock lock(ime_geometry_mutex);
+		// LineEdit/TextEdit submit the transformed caret before attaching.
+		// A direct virtual_keyboard_show caller can use its supplied text area.
+		local_position = ime_position_valid ? Point2(ime_position) : ime_text_rect.position + Point2(0, ime_text_rect.size.y);
+	}
+	double x, y;
+	if (!ohos_wrapper_map_surface_point(OS_OpenHarmony::get_singleton()->get_window_id(), local_position.x, local_position.y, x, y)) {
+		return false;
+	}
+	r_position = Point2(x, y);
+	return true;
+}
+
+void DisplayServerOpenHarmony::_update_ime_cursor() {
+	if (!ime_active || !input_method_proxy) {
+		return;
+	}
+	Point2 screen_position;
+	if (!_get_ime_screen_position(screen_position) || (ime_screen_position_valid && screen_position == last_ime_screen_position)) {
+		return;
+	}
+	// Godot supplies the popup anchor at the bottom of the caret. A zero-sized
+	// cursor places candidates there without an extra guessed 30-pixel offset.
+	InputMethod_CursorInfo *info = OH_CursorInfo_Create(screen_position.x, screen_position.y, 0, 0);
+	if (!info) {
+		ERR_PRINT("Failed to allocate input method cursor information.");
+		return;
+	}
+	InputMethod_ErrorCode code = OH_InputMethodProxy_NotifyCursorUpdate(input_method_proxy, info);
+	OH_CursorInfo_Destroy(info);
+	if (code != IME_ERR_OK) {
+		ERR_PRINT(vformat("Failed to update input method cursor: %d.", code));
+		return;
+	}
+	last_ime_screen_position = screen_position;
+	ime_screen_position_valid = true;
+}
+
 void DisplayServerOpenHarmony::window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window) {
 	ime_active = p_active;
+	if (!p_active) {
+		MutexLock lock(ime_geometry_mutex);
+		ime_position_valid = false;
+		ime_screen_position_valid = false;
+	}
 }
 
 void DisplayServerOpenHarmony::window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window) {
-	if (ime_active && input_method_proxy) {
-		InputMethod_CursorInfo *info = OH_CursorInfo_Create(p_pos.x, p_pos.y, 0, 30);
-		if (info) {
-			OH_InputMethodProxy_NotifyCursorUpdate(input_method_proxy, info);
-			OH_CursorInfo_Destroy(info);
-		}
+	{
+		MutexLock lock(ime_geometry_mutex);
+		ime_position = p_pos;
+		ime_position_valid = true;
 	}
+	_update_ime_cursor();
 }
 
 Vector<DisplayServerEnums::WindowID> DisplayServerOpenHarmony::get_window_list() const {
@@ -589,10 +697,18 @@ void DisplayServerOpenHarmony::window_set_current_screen(int p_screen, DisplaySe
 }
 
 Point2i DisplayServerOpenHarmony::window_get_position(DisplayServerEnums::WindowID p_window) const {
+	WrapperWindowGeometry geometry;
+	if (ohos_wrapper_get_window_geometry(OS_OpenHarmony::get_singleton()->get_window_id(), geometry)) {
+		return Point2i(Math::round(geometry.surface_x), Math::round(geometry.surface_y));
+	}
 	return Point2i();
 }
 
 Point2i DisplayServerOpenHarmony::window_get_position_with_decorations(DisplayServerEnums::WindowID p_window) const {
+	WrapperWindowGeometry geometry;
+	if (ohos_wrapper_get_window_geometry(OS_OpenHarmony::get_singleton()->get_window_id(), geometry) && geometry.window_position_valid) {
+		return Point2i(geometry.window_x, geometry.window_y);
+	}
 	return Point2i();
 }
 
@@ -683,7 +799,17 @@ bool DisplayServerOpenHarmony::can_any_window_draw() const {
 }
 
 void DisplayServerOpenHarmony::process_events() {
+	// Window caches its screen position for absolute viewport transforms. Update
+	// it on the engine thread when ArkUI moves the surface without resizing it.
+	const Rect2i rect(window_get_position(), window_get_size());
+	if (window_resize_callback.is_valid() && (!reported_window_rect_valid || rect != reported_window_rect)) {
+		reported_window_rect = rect;
+		reported_window_rect_valid = true;
+		_window_callback(window_resize_callback, rect);
+	}
 	Input::get_singleton()->flush_buffered_events();
+	// Window moves/layout changes also move candidates when the caret is still.
+	_update_ime_cursor();
 }
 
 void DisplayServerOpenHarmony::_mouse_update_mode() {
@@ -715,7 +841,9 @@ void DisplayServerOpenHarmony::mouse_set_mode_override_enabled(bool p_enabled) {
 	_mouse_update_mode();
 }
 Point2i DisplayServerOpenHarmony::mouse_get_position() const {
-	return Input::get_singleton()->get_mouse_position();
+	// ArkUI input positions are surface-local; DisplayServer reports screen
+	// coordinates, which Viewport converts back using its absolute transform.
+	return window_get_position() + Input::get_singleton()->get_mouse_position();
 }
 BitField<MouseButtonMask> DisplayServerOpenHarmony::mouse_get_button_state() const {
 	return Input::get_singleton()->get_mouse_button_mask();

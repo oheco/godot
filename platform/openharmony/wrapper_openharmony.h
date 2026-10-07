@@ -41,12 +41,25 @@ enum WrapperScreenOrientation {
 };
 
 int ohos_wrapper_get_display_dpi();
-float ohos_wrapper_get_display_scaled_density();
+float ohos_wrapper_get_display_scale();
 float ohos_wrapper_get_display_refresh_rate();
 WrapperScreenOrientation ohos_wrapper_get_display_orientation();
 void ohos_wrapper_screen_set_keep_on(int32_t window_id, bool p_enable);
 bool ohos_wrapper_screen_is_kept_on(int32_t window_id);
 int ohos_wrapper_get_keyboard_avoid_area(int32_t window_id);
+
+struct WrapperWindowGeometry {
+	double surface_x = 0;
+	double surface_y = 0;
+	int32_t window_x = 0;
+	int32_t window_y = 0;
+	bool window_position_valid = false;
+};
+// Called on the ArkUI thread: surface coordinates are physical screen px.
+void ohos_wrapper_set_surface_position(int32_t window_id, double x, double y);
+// These reads never dispatch a synchronous task to the ArkUI thread.
+bool ohos_wrapper_get_window_geometry(int32_t window_id, WrapperWindowGeometry &geometry);
+bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y);
 
 int ohos_wrapper_set_mouse_mode(int32_t window_id, bool locked, bool follow, bool visible);
 int ohos_wrapper_set_cursor_shape(int32_t window_id, int shape);

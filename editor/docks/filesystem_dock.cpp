@@ -2263,6 +2263,9 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 		} break;
 
 		case FILE_MENU_OPEN_EXTERNAL: {
+#ifdef OPENHARMONY_ENABLED
+			EditorNode::get_singleton()->show_warning(TTR("External editors are not supported in this version on OpenHarmony."));
+#else
 			String fpath = current_path;
 			if (current_path == "Favorites") {
 				if (p_selected.is_empty()) {
@@ -2300,9 +2303,13 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 				paths.push_back(file);
 				OS::get_singleton()->open_with_program(external_program, paths);
 			}
+#endif
 		} break;
 
 		case FILE_MENU_OPEN_IN_TERMINAL: {
+#ifdef OPENHARMONY_ENABLED
+			EditorNode::get_singleton()->show_warning(TTR("Opening a terminal is not supported in this version on OpenHarmony."));
+#else
 			String fpath = current_path;
 			if (current_path == "Favorites") {
 				if (p_selected.is_empty()) {
@@ -2458,6 +2465,7 @@ void FileSystemDock::_file_option(int p_option, const Vector<String> &p_selected
 				}
 				ERR_PRINT_ED(vformat(TTR("Couldn't run external terminal program (error code %d): %s %s\nCheck `filesystem/external_programs/terminal_emulator` and `filesystem/external_programs/terminal_emulator_flags` in the Editor Settings."), err, chosen_terminal_emulator, args_string));
 			}
+#endif
 		} break;
 
 		case FILE_MENU_OPEN: {

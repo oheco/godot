@@ -1,6 +1,7 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 import plugin, { SimplifiedTouchEvent, SimplifiedMouseEvent, SimplifiedKeyEvent } from 'libentry.so';
 import { common } from '@kit.AbilityKit';
+import { window } from '@kit.ArkUI';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
@@ -30,11 +31,16 @@ struct Index {
   @State showLog: boolean = false;
   @State logText: string = '';
   @State crashed: boolean = false;
+  @State engineRunning: boolean = false;
+  @State editorHost: boolean = false;
+  @State showStatus: boolean = false;
   private instanceSupport: boolean = false;
   private disposed: boolean = false;
   private controller: GodotSurface = new GodotSurface();
   private touchInput: TouchInput = new TouchInput();
   private timer: number = -1;
+  private imeWindow: window.Window | undefined = undefined;
+  private imeGeometryChanged: () => void = (): void => this.updateImeSurfacePosition();
   private crashTime: number = 0;
   private spawnedPid: number = 0;
   private childRunning: boolean = false;
@@ -55,6 +61,10 @@ struct Index {
   }
   aboutToDisappear(): void {
     this.disposed = true;
+    if (this.imeWindow !== undefined) {
+      try { this.imeWindow.off('windowRectChange', this.imeGeometryChanged); } catch (ignored) {}
+      this.imeWindow = undefined;
+    }
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
     this.releaseInput();
     plugin.destroySurface();
@@ -75,6 +85,7 @@ struct Index {
     } catch (error) {
       record(`terminateSelf failed: ${describe(error as BusinessError)}`);
       this.ready = false;
+      this.showStatus = true;
       this.message = '引擎已退出，但关闭当前窗口失败，请查看日志。';
       this.logText = readFullDiagnostics();
       this.showLog = true;
@@ -90,6 +101,7 @@ struct Index {
       const paths = hostStorage(context, config);
       initDiagnostics(context, paths);
       const packagedGame: boolean = config.host.role === 'game';
+      this.editorHost = !packagedGame;
       this.expandSystemArea = config.window.expandIntoSystemArea;
       this.instanceSupport = instancesEnabled(config);
       if (this.instanceSupport) { this.crashTime = crashLogTime(); }
@@ -114,6 +126,13 @@ struct Index {
       plugin.configure(paths.filesDir, paths.cacheDir, runtime, config.managed.mode);
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
+      try {
+        this.imeWindow = await window.getLastWindow(context);
+        if (this.disposed) { return; }
+        this.imeWindow.on('windowRectChange', this.imeGeometryChanged);
+      } catch (error) {
+        record(`IME window geometry listener unavailable: ${describe(error as BusinessError)}`);
+      }
       const args = AppStorage.get<string[]>('godotArguments');
       if (args === undefined) { throw new Error('Host launch arguments are missing'); }
       setStep('host:start-engine');
@@ -135,14 +154,34 @@ struct Index {
       fail(cause);
       probeEnvironment(context);
       this.ready = false;
+      this.showStatus = true;
       this.message = `无法启动 Godot（点“显示日志”查看详情）：${cause.message}`;
+    }
+  }
+  private updateImeSurfacePosition(): void {
+    if (!this.ready || this.disposed || this.terminating) { return; }
+    try {
+      const ui = this.getUIContext();
+      const node = ui.getFrameNodeById('godot-surface');
+      if (node === null) { return; }
+      // FrameNode positions are vp; SurfaceRect offsets are already px.
+      // This includes window placement, ArkUI decoration and safe-area layout.
+      const position = node.getGlobalPositionOnDisplay();
+      const surface = this.controller.getXComponentSurfaceRect();
+      plugin.setSurfacePosition(ui.vp2px(position.x) + (surface.offsetX ?? 0),
+        ui.vp2px(position.y) + (surface.offsetY ?? 0));
+    } catch (error) {
+      record(`IME surface geometry unavailable: ${describe(error as BusinessError)}`);
     }
   }
   private updateEngineState(context: common.UIAbilityContext): void {
     if (this.terminating || this.disposed) { return; }
+    // Window-only moves may not change the component's layout area.
+    this.updateImeSurfacePosition();
     const state: number = plugin.state();
     if (state === 2 && !this.engineReadyReported) {
       this.engineReadyReported = true;
+      this.engineRunning = true;
       record('engine running');
       if (this.instanceSupport) {
         logInstanceState(context, 'engine-running');
@@ -154,6 +193,7 @@ struct Index {
     if (state < 0) {
       this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`;
       this.ready = false;
+      this.showStatus = true;
     }
     // Packaged games never inspect instance keys, launch markers or child PIDs.
     if (!this.instanceSupport) {
@@ -169,6 +209,7 @@ struct Index {
       record(`attached child crash detected pid=${attachedPid}`);
       this.crashed = true;
       this.ready = false;
+      this.showStatus = true;
       this.message = '子进程崩溃了';
       this.logText = readFullDiagnostics(attachedPid, this.crashTime);
       this.showLog = true;
@@ -180,6 +221,7 @@ struct Index {
       if (this.spawnedPid > 0 && !this.childRunning && !childHasExited(context, this.spawnedPid)) {
         this.childRunning = true;
         this.ready = false;
+        this.showStatus = true;
         this.message = '子进程仍在运行；本窗口保持打开以维持它的进程。';
         record(`engine exited; holding for attached pid ${this.spawnedPid}`);
       } else if (this.childRunning) {
@@ -278,7 +320,9 @@ struct Index {
     Stack() {
       if (this.ready) {
         XComponent({ id: 'godot', type: XComponentType.SURFACE, controller: this.controller })
+          .id('godot-surface')
           .width('100%').height('100%')
+          .onAreaChange(() => this.updateImeSurfacePosition())
           .expandSafeArea(this.expandSystemArea ? [SafeAreaType.SYSTEM] : [],
             this.expandSystemArea ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM, SafeAreaEdge.START, SafeAreaEdge.END] : [])
           .focusable(true).defaultFocus(true)
@@ -291,7 +335,8 @@ struct Index {
           .onTouch((event: TouchEvent) => this.touch(event))
           .onBlur(() => this.releaseInput())
           .onFocus(() => plugin.sendWindowEvent(2))
-      } else {
+      }
+      if (this.showStatus) {
         Column({ space: 16 }) {
           Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
           if (this.crashed) {
@@ -308,7 +353,14 @@ struct Index {
                 .copyOption(CopyOptions.LocalDevice).width('100%')
             }.layoutWeight(1).width('100%').padding(12).backgroundColor('#111111')
           }
-        }.width('100%').height('100%').padding(12)
+        }.width('100%').height('100%').padding(12).backgroundColor('#242424')
+      } else if (!this.engineRunning) {
+        // Keep the surface mounted while native initialization runs underneath.
+        // Startup is a splash; diagnostic controls appear only for a failure.
+        Column() {
+          Image(this.editorHost ? $r('app.media.godot_splash') : $r('app.media.foreground')).width(256).height(256).objectFit(ImageFit.Contain)
+            .accessibilityText('Godot')
+        }.width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor('#242424')
       }
     }.width('100%').height('100%').backgroundColor('#242424')
       .expandSafeArea(this.expandSystemArea ? [SafeAreaType.SYSTEM] : [],

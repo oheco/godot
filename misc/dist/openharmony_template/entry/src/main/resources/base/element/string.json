@@ -25,6 +25,10 @@
       "value": "Access Godot projects and the user-installed oo build tools, OpenHarmony SDK and .NET SDK."
     },
     {
+      "name": "reason_pasteboard",
+      "value": "Paste text copied from other applications into Godot projects and the script editor."
+    },
+    {
       "name": "MICROPHONE_reason",
       "value": "For recording audio"
     }

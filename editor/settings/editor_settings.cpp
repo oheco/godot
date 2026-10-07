@@ -667,7 +667,7 @@ void EditorSettings::_load_defaults(Ref<ConfigFile> p_extra_config) {
 	// Directories
 	EDITOR_SETTING(Variant::STRING, PROPERTY_HINT_GLOBAL_DIR, "filesystem/directories/autoscan_project_path", "", "")
 #ifdef OPENHARMONY_ENABLED
-	const String fs_dir_default_project_path = OS::get_singleton()->get_data_path().path_join("Projects");
+	const String fs_dir_default_project_path = OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DESKTOP);
 #else
 	const String fs_dir_default_project_path = OS::get_singleton()->has_environment("HOME") ? OS::get_singleton()->get_environment("HOME") : OS::get_singleton()->get_system_dir(OS::SYSTEM_DIR_DOCUMENTS);
 #endif
@@ -1980,6 +1980,9 @@ String EditorSettings::get_editor_layouts_config() const {
 }
 
 float EditorSettings::get_auto_display_scale() {
+#ifdef OPENHARMONY_ENABLED
+	return DisplayServer::get_singleton()->screen_get_scale(DisplayServerEnums::SCREEN_OF_MAIN_WINDOW);
+#endif
 #ifdef LINUXBSD_ENABLED
 	if (DisplayServer::get_singleton()->get_name() == "Wayland") {
 		float main_window_scale = DisplayServer::get_singleton()->screen_get_scale(DisplayServerEnums::SCREEN_OF_MAIN_WINDOW);

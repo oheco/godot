@@ -16,6 +16,8 @@ export const setResourceManager: (resources: resourceManager.ResourceManager) =>
 export const setWindowId: (id: number) => void;
 export const setSurfaceId: (id: bigint) => void;
 export const changeSurface: (id: bigint, width: number, height: number) => void;
+// Physical screen pixels, including ArkUI layout and surface offsets.
+export const setSurfacePosition: (x: number, y: number) => void;
 export const destroySurface: () => void;
 export const sendWindowEvent: (event: number) => void;
 // Native reads _cl_ and the packaged PCK when packagedGame is true.
@@ -26,4 +28,7 @@ export const inputKey: (event: SimplifiedKeyEvent) => void;
 export const inputMouse: (event: SimplifiedMouseEvent) => void;
 export const setLauncher: (callback: (requestId: number, args: string[]) => void) => void;
 export const spawnResult: (requestId: number, pid: number) => void;
+// kind: 0=URI, 1=folder, 2=terminal. Calls are queued without waiting for launch.
+export const setExternalOpener: (callback: (kind: number, target: string) => void) => void;
+export const openTerminal: (directoryUri: string) => Promise<void>;
 export const processId: () => number;

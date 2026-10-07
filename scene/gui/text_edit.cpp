@@ -3459,10 +3459,17 @@ void TextEdit::_update_ime_window_position() {
 		return;
 	}
 	DisplayServer::get_singleton()->window_set_ime_active(true, wid);
+#ifdef OPENHARMONY_ENABLED
+	// The host expects surface pixels. The window's screen transform already
+	// includes every embedded window's position; adding the popup origin here
+	// would apply that placement twice. Use the same canvas transform as drawing.
+	Point2 pos = get_global_transform_with_canvas().xform(get_caret_draw_pos());
+#else
 	Point2 pos = get_global_position() + get_caret_draw_pos();
 	if (get_window()->get_embedder()) {
 		pos += get_viewport()->get_popup_base_transform().get_origin();
 	}
+#endif
 	// Take into account the window's transform.
 	pos = get_window()->get_screen_transform().xform(pos);
 	// The window will move to the updated position the next time the IME is updated, not immediately.

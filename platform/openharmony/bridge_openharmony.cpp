@@ -118,8 +118,19 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev.instantiate();
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
-			ev->set_relative(event.has_relative ? Vector2(event.relative_x, event.relative_y) : Vector2(event.x - last_mouse_event.x, event.y - last_mouse_event.y));
-			ev->set_relative_screen_position(ev->get_relative());
+			Vector2 relative(event.x - last_mouse_event.x, event.y - last_mouse_event.y);
+			const Vector2 raw_relative(event.relative_x, event.relative_y);
+			// ArkUI can report available raw deltas as zero for an absolute move.
+			// Retain nonzero raw motion when a captured pointer stays stationary.
+			if (event.has_relative && raw_relative != Vector2()) {
+				relative = raw_relative;
+			}
+			ev->set_relative(relative);
+			ev->set_relative_screen_position(relative);
+			// Input tracks mouse velocity but does not fill the event. PopupMenu
+			// rejects stationary events, unlike ordinary Control hover handling.
+			ev->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
+			ev->set_screen_velocity(Input::get_singleton()->get_last_mouse_screen_velocity());
 			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
 			ev->set_alt_pressed(event.alt);
 			ev->set_ctrl_pressed(event.ctrl);

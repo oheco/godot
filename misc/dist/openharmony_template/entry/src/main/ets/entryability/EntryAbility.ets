@@ -6,6 +6,7 @@ import window from '@ohos.window';
 import plugin from 'libentry.so';
 import { engineArguments, HostConfig, hostStorage, instancesEnabled, loadHostConfig } from '../runtime/Config';
 import { describe, initDiagnostics, record, setDiagnosticsLevel } from '../runtime/Diagnostics';
+import { openExternal } from '../runtime/ExternalApps';
 import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportLaunchFailure, reportStarted, reportWindowReady } from '../runtime/Launch';
 
 export default class EntryAbility extends UIAbility {
@@ -16,6 +17,9 @@ export default class EntryAbility extends UIAbility {
       const config: HostConfig = loadHostConfig(this.context);
       initDiagnostics(this.context, hostStorage(this.context, config));
       this.context.getApplicationContext().setColorMode(ConfigurationConstant.ColorMode.COLOR_MODE_NOT_SET);
+      plugin.setExternalOpener((kind: number, target: string) => {
+        openExternal(this.context, kind, target);
+      });
       AppStorage.setOrCreate('godotHostConfig', config);
       AppStorage.setOrCreate('godotConfigError', '');
       setDiagnosticsLevel(config.diagnostics.level);

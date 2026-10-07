@@ -1,0 +1,10 @@
+config_version=5
+
+[application]
+config/name="OpenHarmony desktop acceptance"
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/desktop_probe/plugin.cfg")
+
+[rendering]
+renderer/rendering_method="mobile"

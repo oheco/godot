@@ -72,6 +72,9 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
         self.assertNotIn('ohos.permission.MOUNT_HDCDEBUG_PATH', permissions)
         self.assertEqual(permissions['ohos.permission.READ_WRITE_USER_FILE']['usedScene']['abilities'], ['EntryAbility'])
+        self.assertNotIn('ohos.permission.READ_PASTEBOARD', permissions)
+        strings = {item['name']: item['value'] for item in self.document('entry/src/main/resources/base/element/string.json')['string']}
+        self.assertNotIn('ohos.permission.READ_PASTEBOARD', strings['user_permissions'])
         self.assertTrue(project.RESTRICTED.isdisjoint(permissions))
 
     def test_no_managed_editor_is_supported(self):

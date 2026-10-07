@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include "core/os/mutex.h"
 #include "servers/display/display_server.h"
 
 #include <inputmethod/inputmethod_controller_capi.h>
@@ -52,6 +53,14 @@ class DisplayServerOpenHarmony : public DisplayServer {
 	ObjectID window_attached_instance_id;
 
 	bool ime_active = false;
+	mutable Mutex ime_geometry_mutex;
+	Point2i ime_position;
+	bool ime_position_valid = false;
+	Rect2 ime_text_rect;
+	Point2 last_ime_screen_position;
+	bool ime_screen_position_valid = false;
+	bool _get_ime_screen_position(Point2 &r_position) const;
+	void _update_ime_cursor();
 	DisplayServerEnums::VirtualKeyboardType keyboard_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT;
 	InputMethod_KeyboardStatus keyboard_status = IME_KEYBOARD_STATUS_NONE;
 	InputMethod_TextEditorProxy *text_editor_proxy = nullptr;
@@ -60,6 +69,8 @@ class DisplayServerOpenHarmony : public DisplayServer {
 
 	Callable window_event_callback;
 	Callable window_resize_callback;
+	Rect2i reported_window_rect;
+	bool reported_window_rect_valid = false;
 	Callable input_event_callback;
 	Callable input_text_callback;
 	DisplayServerEnums::MouseMode mouse_mode = DisplayServerEnums::MOUSE_MODE_VISIBLE;

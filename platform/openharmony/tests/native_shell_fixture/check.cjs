@@ -28,11 +28,11 @@ if (!process.argv[2]) {
   const run = mode => {
     const env = { ...process.env };
     if (mode === 'failure') env.GODOT_TEST_FAIL_START = '1';
-    const result = cp.spawnSync(process.execPath, [__filename, mode], { env, encoding: 'utf8' });
+    const result = cp.spawnSync(process.execPath, [__filename, mode], { env, encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, `${mode}: ${result.stdout}${result.stderr}`);
   };
   for (const order of orders) run(order);
-  for (const mode of ['sdk', 'missingSdkAssets', 'unknown', 'failure', 'earlyDestroy']) run(mode);
+  for (const mode of ['sdk', 'missingSdkAssets', 'unknown', 'failure', 'earlyDestroy', 'external', 'geometry']) run(mode);
   console.log(`PASS: ${orders.size} startup orders + sdk/missing-assets/unknown/error/early-destroy; strict types, permissions, lifetime and release order`);
   process.exit(0);
 }
@@ -48,6 +48,56 @@ process.env.OHECO_ROOT = path.join(root, 'no-sdk');
 process.env.GODOT_OHOS_DOTNET_ROOT = path.join(root, 'no-sdk');
 for (const key of ['GODOT_SHARP_ROOT', 'DOTNET_ROOT', 'DOTNET_ROOT_ARM64', 'NUGET_PACKAGES', 'GODOT_NUGET_SOURCE']) {
   delete process.env[key];
+}
+if (mode === 'geometry') {
+  assert.throws(() => addon.setSurfacePosition(0, 0), /missing window ID/);
+  addon.setWindowId(5);
+  for (const position of [[0, 0], [1200.25, 580.5], [-80.5, 35.25]]) {
+    process.env.GODOT_TEST_SURFACE_POSITION = position.join(',');
+    addon.setSurfacePosition(...position);
+  }
+  for (const position of [[NaN, 0], [0, Infinity], ['12', 1]]) {
+    assert.throws(() => addon.setSurfacePosition(...position), TypeError);
+  }
+  assert.throws(() => addon.setSurfacePosition(0), TypeError);
+  assert.throws(() => addon.setSurfacePosition(1e100, 0), /Invalid surface position/);
+  addon.destroySurface();
+  assert.throws(() => addon.setSurfacePosition(0, 0), /lifetime has ended/);
+  console.log('PASS: native surface geometry NAPI; fractional/negative px, strict types/range, UI-thread dispatch and lifetime');
+  return;
+}
+if (mode === 'external') {
+  (async () => {
+    const received = [];
+    let finish;
+    const queued = new Promise(resolve => { finish = resolve; });
+    const deadline = setTimeout(() => { throw new Error('external queue blocked'); }, 5000);
+    process.env.GODOT_TEST_EXTERNAL = '1';
+    process.env.GODOT_TEST_EXPECT_PERMISSIONS = '';
+    process.env.GODOT_TEST_PACKAGED = '1';
+    assert.throws(() => addon.setExternalOpener(7), TypeError);
+    addon.setExternalOpener((kind, target) => {
+      received.push([kind, target]);
+      if (received.length === 3) finish();
+    });
+    assert.throws(() => addon.setExternalOpener(() => {}), /already configured/);
+    addon.configure(files, cache, '', 'none');
+    addon.setup(['--path', 'test project'], [], true);
+    addon.setResourceManager({});
+    addon.setWindowId(5);
+    addon.setSurfaceId(23n);
+    addon.changeSurface(23n, 800, 600);
+    assert.equal(received.length, 0, 'launch callbacks must be asynchronous');
+    await queued;
+    assert.deepEqual(received, [0, 1, 2].map(kind => [kind, "/storage/Users/currentUser/test 中文 'folder'"]));
+    assert.throws(() => addon.openTerminal('not a URI'), /directory file URI/);
+    await addon.openTerminal('file://fixture');
+    await assert.rejects(addon.openTerminal('file://failure'), /fixture broker unavailable/);
+    clearTimeout(deadline);
+    addon.destroySurface();
+    assert.throws(() => addon.openTerminal('file://fixture'), /lifetime has ended/);
+  })().catch(error => { console.error(error); addon.destroySurface(); process.exitCode = 1; });
+  return;
 }
 if (mode === 'unknown') {
   assert.throws(() => addon.configure(files, cache, '', 'bogus'), /Unknown managed/);
@@ -81,7 +131,7 @@ if (mode === 'sdk') {
   assert.equal(process.env.GODOT_SHARP_ROOT, path.join(runtime, 'GodotSharp'));
   assert.equal(process.env.DOTNET_ROOT, undefined);
   assert.ok(fs.existsSync(path.join(files, 'Projects/NuGet.Config')));
-  assert.ok(fs.existsSync(path.join(files, 'Projects/CSharpSmoke-4.7.2-ohos.2/project.godot')));
+  assert.ok(fs.existsSync(path.join(files, 'Projects/CSharpSmoke-4.7.2-ohos.3/project.godot')));
   addon.destroySurface();
   process.exit(0);
 }

@@ -19,6 +19,55 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
+## Desktop integration in the 4.7.2-ohos.4 candidate
+
+- The ArkUI startup surface shows the application/Godot logo while runtime,
+  templates and the native engine initialize. Log controls appear for failures
+  and child-process status, rather than during normal startup.
+- Editor auto scaling uses the system's display `densityPixels` (physical pixels
+  per vp). It does not use font `scaledDensity`; manual Editor scale settings
+  retain their usual behaviour. Display-scale changes take effect on restart.
+- Editor filesystem dialogs and the initial new-project directory use
+  `/storage/Users/currentUser` when user-file access is granted. Games without
+  that permission start in their own private directory; resource/user-data
+  dialogs and explicitly chosen paths keep their existing behaviour.
+- Clipboard writes validate allocation and every UDMF stage. Reads use primary
+  plain text across the entire pasteboard data set, with HTML plain-content
+  fallback, and report permission/API failures without logging the copied text.
+- This revision does **not** automatically request `READ_PASTEBOARD`, and
+  installed clipboard acceptance is explicitly deferred. Cross-application
+  reads may consequently fail. For an opt-in deployment, add
+  `ohos.permission.READ_PASTEBOARD` to the project configuration only after
+  obtaining its **system_basic, restricted user-grant** signing-profile ACL.
+  A declaration or user dialog alone is insufficient. Clipboard writes do not
+  require this read permission.
+- File manager requests run asynchronously on the UIAbility thread and open
+  Huawei File Manager (`com.huawei.hmos.filemanager/MainAbility`) at the selected
+  directory or a file's parent. File selection highlighting is not guaranteed.
+- Opening a system terminal or an external file/script editor is disabled in
+  this revision. These menu actions display an unsupported-feature notification;
+  they do not run a terminal command, start an external IDE, or wait for a
+  process. Scripts continue to open in Godot's internal editor. File Manager
+  requests and browser links remain available. This follows the installed
+  device result: the broker could submit HiShell requests, but creation of a
+  terminal in the requested directory was not established. Broker support for
+  export/build and HDC operations is separate and remains available.
+
+The common host ABI is now **3**. This includes the external application bridge
+and the physical screen position of the actual XComponent surface used for IME
+cursor placement. Rebuild editor and both game template libraries and rerun
+`build-cli.py` before regenerating projects; ABI-1 and ABI-2 caches are rejected.
+The managed Godot SDK remains `4.7.2-ohos.3`, since the managed API is unchanged.
+
+Desktop input fixes in this candidate provide the velocity fields expected by
+PopupMenu's hover filter and map the caret through canvas and Window transforms
+once, then add the actual XComponent surface origin in physical screen pixels.
+IME updates cache only successfully submitted coordinates so a transient SDK
+failure does not suppress retries at the same caret. Real-control native tests
+cover root and nested embedded windows at ordinary and 2x stretch. Installed
+startup, popup IME, menu hover, File Manager and unsupported-feature acceptance
+is recorded separately in [desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>).
+
 ## Baseline and dependencies
 
 - Upstream: `godotengine/godot`, `4.7.2-stable`, commit
@@ -377,14 +426,21 @@ Checks for the **4.7.2-ohos.2** project:
   expects to find on the device, and it contains no signing material or absolute
   host path.
 
-Earlier rounds additionally passed the ArkTS/Hvigor build of the DevEco project
-and an unsigned HAP, offline Vulkan dependency regeneration, and runtime
-extraction into a path containing spaces. The template changed in this round, so
-those application-level checks were not repeated.
+The checks above describe the historical 4.7.2-ohos.2 baseline. For the current
+4.7.2-ohos.4 desktop candidate, native Editor/debug/release builds, offline
+managed assemblies, CompileArkTS and signed HAP installation were repeated.
+The installed user acceptance covers the official startup logo, popup IME
+alignment, main/context/submenu hover, File Manager and unsupported external
+app notifications. Native tests additionally cover caret geometry, mouse motion
+and retrying a failed IME cursor notification without falsely caching success;
+see [desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>)
+for artifact hashes and the distinction between captured and user-reported
+checks. Final clean-source release provenance and catalog installation are
+recorded separately from this installed candidate.
 
-Signed HAP installation, GUI rendering, input, process launch, sandboxed .NET
-execution and project portability: pending, to be performed in DevEco with your
-own account.
+End users still need their own signing account/profile. Process launch,
+sandboxed GUI .NET execution and project portability beyond the explicitly
+recorded fixtures are not established by the desktop input acceptance.
 
 Current implementation uses embedded Godot dialogs in a single native window.
 Native detached editor subwindows and operating-system file picker integration

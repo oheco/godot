@@ -33,16 +33,70 @@
 #include <window_manager/oh_display_manager.h>
 #include <window_manager/oh_window.h>
 
+#include <cmath>
+#include <mutex>
+
+namespace {
+std::mutex geometry_mutex;
+int32_t geometry_window_id = -1;
+WrapperWindowGeometry window_geometry;
+} // namespace
+
+void ohos_wrapper_set_surface_position(int32_t window_id, double x, double y) {
+	if (window_id < 0 || !std::isfinite(x) || !std::isfinite(y)) {
+		return;
+	}
+	WrapperWindowGeometry geometry;
+	geometry.surface_x = x;
+	geometry.surface_y = y;
+	// GetWindowProperties posts a synchronous ArkUI task. Keep it on its UI
+	// owner thread, never an engine/Binder thread that the UI may be joining.
+	WindowManager_WindowProperties properties = {};
+	if (OH_WindowManager_GetWindowProperties(window_id, &properties) == OK) {
+		geometry.window_x = properties.windowRect.posX;
+		geometry.window_y = properties.windowRect.posY;
+		geometry.window_position_valid = true;
+	}
+	std::lock_guard<std::mutex> lock(geometry_mutex);
+	geometry_window_id = window_id;
+	window_geometry = geometry;
+}
+
+bool ohos_wrapper_get_window_geometry(int32_t window_id, WrapperWindowGeometry &geometry) {
+	std::lock_guard<std::mutex> lock(geometry_mutex);
+	if (window_id < 0 || window_id != geometry_window_id) {
+		return false;
+	}
+	geometry = window_geometry;
+	return true;
+}
+
+bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y) {
+	WrapperWindowGeometry geometry;
+	if (!std::isfinite(x) || !std::isfinite(y) || !ohos_wrapper_get_window_geometry(window_id, geometry)) {
+		return false;
+	}
+	// Godot's Window screen transform already produces surface pixels,
+	// including stretch and embedded-window transforms. Do not apply density.
+	screen_x = geometry.surface_x + x;
+	screen_y = geometry.surface_y + y;
+	return true;
+}
+
 int ohos_wrapper_get_display_dpi() {
 	int32_t dpi = 0;
 	OH_NativeDisplayManager_GetDefaultDisplayDensityDpi(&dpi);
 	return dpi;
 }
 
-float ohos_wrapper_get_display_scaled_density() {
-	float scaled_density = 0;
-	OH_NativeDisplayManager_GetDefaultDisplayScaledDensity(&scaled_density);
-	return scaled_density;
+float ohos_wrapper_get_display_scale() {
+	// densityPixels is px/vp (the desktop display scale). scaledDensity also
+	// includes the user's font size and must not scale every editor control.
+	float density = 1.0f;
+	if (OH_NativeDisplayManager_GetDefaultDisplayDensityPixels(&density) != DISPLAY_MANAGER_OK || !std::isfinite(density) || density <= 0.0f) {
+		return 1.0f;
+	}
+	return density;
 }
 
 float ohos_wrapper_get_display_refresh_rate() {

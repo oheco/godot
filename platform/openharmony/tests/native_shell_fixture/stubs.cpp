@@ -2,15 +2,20 @@
 // Only native platform/engine boundaries are mocked. The test compiles the
 // actual NAPI callbacks and runtime_paths.cpp against the target SDK headers.
 #include "engine_host_openharmony.h"
+
 #include <native_window/external_window.h>
 
 #include <cassert>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 namespace {
 int state = 0;
 bool stopped = false;
+GodotOpenExternalCallback external_callback = nullptr;
+const auto ui_thread = std::this_thread::get_id();
 } // namespace
 
 extern "C" {
@@ -38,6 +43,16 @@ int godot_host_start(NativeResourceManager *resources, void *window, int32_t id,
 		state = -7;
 		return -7;
 	}
+	if (getenv("GODOT_TEST_EXTERNAL")) {
+		assert(external_callback);
+		// This worker must return while JS is still inside native startup.
+		std::thread worker([]() {
+			for (int kind = 0; kind < 3; ++kind) {
+				assert(external_callback(kind, "/storage/Users/currentUser/test 中文 'folder'") == 0);
+			}
+		});
+		worker.join();
+	}
 	state = 2;
 	return 0;
 }
@@ -49,6 +64,18 @@ void godot_host_stop() {
 }
 int godot_host_state() {
 	return state;
+}
+void godot_host_set_open_external_callback(GodotOpenExternalCallback callback) {
+	external_callback = callback;
+}
+int32_t godot_host_open_terminal(const char *uri, char *diagnostic, uint32_t capacity) {
+	assert(std::this_thread::get_id() != ui_thread);
+	assert(capacity > 0);
+	if (!strcmp(uri, "file://failure")) {
+		strncpy(diagnostic, "fixture broker unavailable", capacity - 1);
+		return -1;
+	}
+	return 0;
 }
 void godot_host_set_create_instance_callback(GodotCreateInstanceCallback) {}
 int32_t godot_host_create_instance(int, const char *const *) {
@@ -65,6 +92,14 @@ void godot_host_touch(const GodotTouchEvent *events, int count) {
 }
 void godot_host_mouse(const GodotMouseEvent *) {}
 void godot_host_key(const GodotKeyEvent *) {}
+void godot_host_set_surface_position(int32_t id, double x, double y) {
+	assert(id == 5 && std::this_thread::get_id() == ui_thread);
+	const char *expected = getenv("GODOT_TEST_SURFACE_POSITION");
+	assert(expected);
+	double expected_x, expected_y;
+	assert(std::sscanf(expected, "%lf,%lf", &expected_x, &expected_y) == 2);
+	assert(x == expected_x && y == expected_y);
+}
 void godot_host_resize(int32_t, int32_t) {}
 void godot_host_window_event(int32_t) {}
 }

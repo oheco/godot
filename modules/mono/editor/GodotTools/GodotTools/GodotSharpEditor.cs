@@ -183,6 +183,12 @@ namespace GodotTools
         [UsedImplicitly]
         public Error OpenInExternalEditor(Script script, int line, int col)
         {
+            if (OS.IsOpenHarmony)
+            {
+                ShowErrorDialog("External script editors are not supported in this version on OpenHarmony.".TTR(), "Warning".TTR());
+                return Error.Unavailable;
+            }
+
             var editorId = _editorSettings.GetSetting(Settings.ExternalEditor).As<ExternalEditorId>();
 
             switch (editorId)

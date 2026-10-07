@@ -242,9 +242,14 @@ void EditorLog::_meta_clicked(const String &p_meta) {
 			return;
 		}
 
+#ifdef OPENHARMONY_ENABLED
+		// The editor already explains that external editors are unsupported.
+		ScriptEditorPlugin::open_in_external_editor(path, line, -1, true);
+#else
 		if (!ScriptEditorPlugin::open_in_external_editor(path, line, -1, true)) {
 			OS::get_singleton()->shell_open(path);
 		}
+#endif
 	} else {
 		OS::get_singleton()->shell_open(p_meta);
 	}

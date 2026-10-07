@@ -81,6 +81,12 @@ namespace GodotTools.Ides
 
         public async Task<EditorPick?> LaunchIdeAsync(int millisecondsTimeout = 10000)
         {
+            if (Utils.OS.IsOpenHarmony)
+            {
+                GodotSharpEditor.Instance.ShowErrorDialog("External IDEs are not supported in this version on OpenHarmony.".TTR(), "Warning".TTR());
+                return null;
+            }
+
             var editorSettings = EditorInterface.Singleton.GetEditorSettings();
             var editorId = editorSettings.GetSetting(GodotSharpEditor.Settings.ExternalEditor).As<ExternalEditorId>();
             string editorIdentity = GetExternalEditorIdentity(editorId);
