@@ -1,9 +1,7 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #pragma once
 
-#include "core/io/dir_access.h"
-#include "core/io/file_access.h"
-#include "core/io/json.h"
+#include "sdk_config.h"
 #include "core/os/os.h"
 
 namespace OpenHarmonyToolchain {
@@ -20,69 +18,60 @@ inline String root() {
 #endif
 }
 
-inline String resolve_link(String p_path) {
-	Ref<DirAccess> directory = DirAccess::create(DirAccess::ACCESS_FILESYSTEM);
-	for (int i = 0; i < 16 && directory->is_link(p_path); i++) {
-		String target = directory->read_link(p_path);
-		if (target.is_empty()) {
-			return String();
-		}
-		p_path = (target.is_absolute_path() ? target : p_path.get_base_dir().path_join(target)).simplify_path();
-	}
-	return p_path;
+inline String resolve_link(const String &p_path) {
+	return OpenHarmonyProjectConfig::canonical_sdk_path(p_path);
 }
 
-inline String node(const String &p_override) {
-	return resolve_link(p_override.is_empty() ? root().path_join("bin/node") : p_override);
+inline String command_line_tools(const String &p_override = "") {
+	String selected = p_override;
+	if (selected.is_empty()) {
+		selected = OS::get_singleton()->get_environment("GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT");
+	}
+	if (selected.is_empty()) {
+		// oo's active launcher resides in <selected package>/.oo-launchers.
+		String launcher = resolve_link(root().path_join("bin/hvigorw"));
+		if (FileAccess::exists(launcher)) {
+			selected = launcher.get_base_dir().get_base_dir();
+		}
+	}
+	if (selected.is_empty()) {
+		return "";
+	}
+	selected = resolve_link(selected);
+	if (!FileAccess::exists(selected.path_join("hvigor/bin/hvigorw.js")) || !FileAccess::exists(selected.path_join("node/bin/node"))) {
+		return "";
+	}
+	return selected;
 }
 
-inline String hvigor(const String &p_override, const String &p_node) {
-	if (!p_override.is_empty()) {
-		return resolve_link(p_override);
-	}
-	return p_node.get_base_dir().get_base_dir().path_join("lib/node_modules/@oheco/hvigor/bin/hvigor.cjs");
+inline String node(const String &p_tools) {
+	return p_tools.is_empty() ? String() : p_tools.path_join("node/bin/node");
 }
 
-inline String sdk(const String &p_override, const String &p_version = "26.0.0") {
-	if (!p_override.is_empty()) {
-		return p_override;
-	}
-	for (const char *name : { "GODOT_OHOS_SDK_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME" }) {
-		String configured = OS::get_singleton()->get_environment(name);
-		if (!configured.is_empty()) {
-			return configured;
-		}
-	}
-	Ref<DirAccess> views = DirAccess::open(root().path_join("sdk"));
-	if (views.is_null()) {
-		return String();
-	}
-	String selected;
-	views->list_dir_begin();
-	for (String name = views->get_next(); !name.is_empty(); name = views->get_next()) {
-		if (!views->current_is_dir() || name.begins_with(".")) {
-			continue;
-		}
-		String view = views->get_current_dir().path_join(name);
-		Ref<FileAccess> file = FileAccess::open(view.path_join("view.json"), FileAccess::READ);
-		if (file.is_null()) {
-			continue;
-		}
-		Variant data = JSON::parse_string(file->get_as_text());
-		if (data.get_type() != Variant::DICTIONARY) {
-			continue;
-		}
-		Dictionary record = data;
-		if (record.get("sdk_version", "") == p_version && DirAccess::dir_exists_absolute(view.path_join("root").path_join(p_version)) &&
-				(selected.is_empty() || name.naturalnocasecmp_to(selected) > 0)) {
-			selected = name;
-		}
-	}
-	views->list_dir_end();
-	return selected.is_empty() ? String() : views->get_current_dir().path_join(selected).path_join("root");
+inline String hvigor(const String &p_tools) {
+	// hvigorw's documented shell launcher executes this official JS sibling.
+	return p_tools.is_empty() ? String() : p_tools.path_join("hvigor/bin/hvigorw.js");
 }
 
-inline String hdc(const String &p_override, const String &p_sdk) {
+inline String sdk(const String &p_override, const String &p_tools, const String &p_version = "26.0.0") {
+	String selected = p_override;
+	if (selected.is_empty()) {
+		selected = OS::get_singleton()->get_environment("GODOT_OHOS_SDK_ROOT");
+	}
+	if (selected.is_empty() && !p_tools.is_empty()) {
+		selected = p_tools.path_join("sdk");
+	}
+	if (selected.is_empty()) {
+		return "";
+	}
+	Dictionary selection;
+	if (OpenHarmonyProjectConfig::resolve_sdk(p_version, 26, selected, selection) != OK) {
+		return "";
+	}
+	return selection["sdkRoot"];
+}
+
+inline String hdc(const String &p_override, const String &p_sdk, const String &p_version = "26.0.0") {
 	if (!p_override.is_empty()) {
 		return resolve_link(p_override);
 	}
@@ -90,7 +79,12 @@ inline String hdc(const String &p_override, const String &p_sdk) {
 	if (FileAccess::exists(command)) {
 		return resolve_link(command);
 	}
-	return p_sdk.is_empty() ? String() : p_sdk.path_join("26.0.0/toolchains/hdc");
+	Dictionary selection;
+	if (p_sdk.is_empty() || OpenHarmonyProjectConfig::resolve_sdk(p_version, 26, p_sdk, selection) != OK) {
+		return "";
+	}
+	String foundation = selection["openharmonySdkRoot"];
+	return foundation.path_join("toolchains/hdc");
 }
 
 } // namespace OpenHarmonyToolchain

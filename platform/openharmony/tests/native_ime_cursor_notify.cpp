@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+static bool input_focus = true;
+extern "C" bool godot_host_is_input_focused() { return input_focus; }
+
 struct Point2 {
 	double x = 0, y = 0;
 	Point2() = default;
@@ -57,13 +60,18 @@ public:
 	InputMethod_InputMethodProxy *input_method_proxy = fake_proxy;
 	bool ime_screen_position_valid = false;
 	Point2 last_ime_screen_position = sentinel;
+	uint32_t last_ime_display_id = 0;
+	uint32_t screen_display_id = 0;
 	bool geometry_available = true;
 	Point2 screen_position = anchor;
 	mutable int mapping_calls = 0;
 
-	bool _get_ime_screen_position(Point2 &r_position) const {
+	bool _get_ime_screen_position(Point2 &r_position, uint32_t *r_display_id = nullptr) const {
 		++mapping_calls;
 		r_position = screen_position;
+		if (r_display_id) {
+			*r_display_id = screen_display_id;
+		}
 		return geometry_available;
 	}
 	void _update_ime_cursor();
@@ -172,6 +180,7 @@ void repeated_failures() {
 }
 
 void set_guard(DisplayServerOpenHarmony &p_display, int p_guard, bool p_enabled) {
+	input_focus = p_guard != 4 || !p_enabled;
 	p_display.ime_active = p_guard != 0 || !p_enabled;
 	p_display.input_method_proxy = p_guard == 1 && p_enabled ? nullptr : fake_proxy;
 	p_display.geometry_available = p_guard != 2 || !p_enabled;
@@ -179,8 +188,8 @@ void set_guard(DisplayServerOpenHarmony &p_display, int p_guard, bool p_enabled)
 }
 
 void early_returns() {
-	const char *names[] = { "inactive", "null proxy", "no geometry", "allocation failure" };
-	for (int guard = 0; guard < 4; ++guard) {
+	const char *names[] = { "inactive", "null proxy", "no geometry", "allocation failure", "inactive host focus" };
+	for (int guard = 0; guard < 5; ++guard) {
 		const int before = failures;
 		begin({ IME_ERR_OK, IME_ERR_OK });
 		DisplayServerOpenHarmony display;
@@ -188,7 +197,7 @@ void early_returns() {
 		update(display);
 		cache_is(display, false, sentinel);
 		check(calls.notify == 0 && calls.created == 0, "guard never notifies or commits false success");
-		check(display.mapping_calls == (guard < 2 ? 0 : 1), "inactive/null proxy bypass geometry mapping");
+		check(display.mapping_calls == (guard < 2 || guard == 4 ? 0 : 1), "inactive/null proxy/host focus bypass geometry mapping");
 		check(calls.create_attempts == (guard == 3 ? 1 : 0), "only allocation failure attempts creation");
 		set_guard(display, guard, false);
 		update(display);
@@ -232,6 +241,24 @@ void changed_anchor_retry() {
 	cache_is(display, true, anchor);
 	report("changed anchor failure/retry and return", before);
 }
+void same_anchor_new_display() {
+	const int before = failures;
+	begin({ IME_ERR_OK, IME_ERR_IMCLIENT, IME_ERR_OK, IME_ERR_OK });
+	DisplayServerOpenHarmony display;
+	update(display);
+	check(calls.notify == 1 && display.last_ime_display_id == 0, "primary cursor commits display identity");
+	display.screen_display_id = 1;
+	update(display);
+	check(calls.notify == 2 && display.last_ime_display_id == 0, "same anchor on a new display notifies; failure keeps previous successful display");
+	update(display);
+	check(calls.notify == 3 && display.last_ime_display_id == 1, "new-display failure retries and commits identity only on success");
+	update(display);
+	check(calls.notify == 3, "same anchor/display deduplicates after success");
+	display.screen_display_id = 0;
+	update(display);
+	check(calls.notify == 4 && display.last_ime_display_id == 0, "return to primary with identical anchor sends another update");
+	report("same anchor across displays, failed notification and return", before);
+}
 } // namespace
 
 int main() {
@@ -239,6 +266,7 @@ int main() {
 	repeated_failures();
 	early_returns();
 	changed_anchor_retry();
+	same_anchor_new_display();
 	printf("%s native production _update_ime_cursor: %d assertion failures; real SDK CursorInfo; Notify only mocked\n",
 			failures ? "FAIL" : "PASS", failures);
 	return failures ? 1 : 0;

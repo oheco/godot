@@ -78,7 +78,7 @@ internal static class HelperTests
 
     private static readonly string[] SigningVariables =
     {
-        "PATH", "OHECO_ROOT", "GODOT_OHOS_SDK_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME", "OpenHarmonySigningTool", "CppCompilerAndLinker",
+        "PATH", "OHECO_ROOT", "GODOT_OHOS_SDK_ROOT", "GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME", "OpenHarmonySigningTool", "CppCompilerAndLinker",
     };
 
     private static void WithIsolatedSigningEnvironment(Action action)
@@ -113,6 +113,7 @@ internal static class HelperTests
         WithIsolatedSigningEnvironment(() =>
         {
             string sdk = Path.GetFullPath(Path.Combine(fixture, "SDK view with spaces"));
+            FakeStandaloneSdk(sdk);
             FakeSignTool(sdk, "9.0.0", "toolchains", "lib");
             string selected = FakeSignTool(sdk, "26.0.0", "toolchains", "lib");
             FakeSignTool(sdk, "not-a-version", "toolchains", "lib");
@@ -121,12 +122,13 @@ internal static class HelperTests
             string ooSigner = FakeSignTool(oo, "bin");
             string pathSigner = FakeSignTool(fixture, "PATH tools with spaces");
             string envSdk = Path.GetFullPath(Path.Combine(fixture, "environment SDK view"));
-            string envSigner = FakeSignTool(envSdk, "25.0.0", "toolchains", "lib");
+            FakeStandaloneSdk(envSdk);
+            string envSigner = FakeSignTool(envSdk, "26.0.0", "toolchains", "lib");
             Environment.SetEnvironmentVariable("OHECO_ROOT", oo);
             Environment.SetEnvironmentVariable("PATH", Path.GetDirectoryName(pathSigner));
             Environment.SetEnvironmentVariable("GODOT_OHOS_SDK_ROOT", envSdk);
             Check(OpenHarmonyExport.FindSignTool(sdk) == selected,
-                "configured SDK with spaces wins over environment SDK, oo and PATH; highest usable numeric version");
+                "configured complete API 26 SDK with spaces wins over environment SDK, oo and PATH");
             Check(Path.IsPathFullyQualified(OpenHarmonyExport.FindSignTool(sdk)!), "SDK signer is absolute");
 
             string missingSdk = Path.Combine(fixture, "missing SDK view");
@@ -138,8 +140,8 @@ internal static class HelperTests
                 "explicit relative SDK root is rejected");
             Throws<FileNotFoundException>(() => OpenHarmonyExport.FindSignTool(emptySdk),
                 "explicit SDK root without signer does not fall through");
-            Throws<FileNotFoundException>(() => OpenHarmonyExport.FindSignTool(Path.Combine(sdk, "26.0.0")),
-                "inner API directory is not an SDK view root");
+            Check(OpenHarmonyExport.FindSignTool(Path.Combine(sdk, "26.0.0")) == selected,
+                "complete direct full API directory is accepted as a standalone SDK selection");
 
             Check(OpenHarmonyExport.FindSignTool() == envSigner, "environment SDK wins over oo and PATH");
             foreach (string variable in new[] { "GODOT_OHOS_SDK_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME" })
@@ -194,11 +196,211 @@ internal static class HelperTests
         return Path.GetFullPath(Path.Combine(directory, "clang"));
     }
 
+    private static readonly string[] SdkComponents = { "native", "ets", "js", "toolchains", "previewer" };
+
+    private static void FakeMetadata(string path, string component, string version = "26.0.0.35", string release = "Beta")
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            apiVersion = 26, platformVersion = "26.0.0", path = component, version, releaseType = release,
+        }));
+    }
+
+    private static string FakeStandaloneSdk(string home)
+    {
+        string foundation = Path.Combine(home, "26.0.0");
+        foreach (string component in SdkComponents)
+            FakeMetadata(Path.Combine(foundation, component, "oh-uni-package.json"), component);
+        FakeNativeTools(Path.Combine(foundation, "native", "llvm", "bin"));
+        FakeSignTool(foundation, "toolchains", "lib");
+        return foundation;
+    }
+
+    private static string FakeHarmonySdk(string home)
+    {
+        string bundle = Path.Combine(home, "default");
+        foreach (string component in SdkComponents)
+            FakeMetadata(Path.Combine(bundle, "openharmony", component, "oh-uni-package.json"), component);
+        foreach (string component in new[] { "native", "ets", "toolchains" })
+            FakeMetadata(Path.Combine(bundle, "hms", component, "uni-package.json"), component);
+        File.WriteAllText(Path.Combine(bundle, "sdk-pkg.json"), System.Text.Json.JsonSerializer.Serialize(new
+        {
+            data = new { apiVersion = "26", platformVersion = "26.0.0", version = "26.0.0.35", releaseType = "Beta" },
+        }));
+        string foundation = Path.Combine(bundle, "openharmony");
+        FakeNativeTools(Path.Combine(foundation, "native", "llvm", "bin"));
+        FakeSignTool(foundation, "toolchains", "lib");
+        return foundation;
+    }
+
+    private static void ChangeMetadata(string path, string key, object? value, bool bundle = false)
+    {
+        var document = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!;
+        (bundle ? document["data"]! : document)[key] = System.Text.Json.JsonSerializer.SerializeToNode(value);
+        File.WriteAllText(path, document.ToJsonString());
+    }
+
+    private static string FakeCommandLineTools(string root)
+    {
+        Directory.CreateDirectory(Path.Combine(root, "node", "bin"));
+        Directory.CreateDirectory(Path.Combine(root, "hvigor", "bin"));
+        Directory.CreateDirectory(Path.Combine(root, ".oo-launchers"));
+        File.WriteAllText(Path.Combine(root, "node", "bin", "node"), "resolve-only node; never execute");
+        File.WriteAllText(Path.Combine(root, "hvigor", "bin", "hvigorw.js"), "resolve-only official CLI; never execute");
+        File.WriteAllText(Path.Combine(root, ".oo-launchers", "hvigorw"), "resolve-only oo launcher; never execute");
+        FakeHarmonySdk(Path.Combine(root, "sdk"));
+        return Path.GetFullPath(root);
+    }
+
+    private static void CheckOfficialSdkResolution(string fixture)
+    {
+        WithIsolatedSigningEnvironment(() =>
+        {
+            string oo = Path.Combine(fixture, "official oo root with spaces");
+            string tools = FakeCommandLineTools(Path.Combine(oo, "packages", "command-line-tools", "selected package with spaces"));
+            Directory.CreateDirectory(Path.Combine(oo, "bin"));
+            // Resolve a relative chain and a parent-directory link, as oo's
+            // active command can link through an intermediate launcher.
+            File.CreateSymbolicLink(Path.Combine(oo, "bin", "active-hvigor"), Path.Combine("..", "packages", "command-line-tools", "selected package with spaces", ".oo-launchers", "hvigorw"));
+            File.CreateSymbolicLink(Path.Combine(oo, "bin", "hvigorw"), "active-hvigor");
+            string ooAlias = Path.Combine(fixture, "oo parent link");
+            Directory.CreateSymbolicLink(ooAlias, Path.GetFileName(oo));
+            Environment.SetEnvironmentVariable("OHECO_ROOT", ooAlias);
+            Environment.SetEnvironmentVariable("PATH", "/system/bin");
+            string bundledFoundation = Path.Combine(tools, "sdk", "default", "openharmony");
+            string bundledSigner = Path.Combine(bundledFoundation, "toolchains", "lib", "binary-sign-tool");
+            string bundledCompiler = Path.Combine(bundledFoundation, "native", "llvm", "bin", "clang");
+            FakeSignTool(oo, "bin");
+            FakeNativeTools(Path.Combine(oo, "packages", "ohos-sdk-native", "99.0.0", "llvm", "bin"));
+            Check(OpenHarmonyExport.FindCommandLineToolsRoot() == tools, "active oo launcher symlink selects its package, including linked parent and spaces");
+            Check(OpenHarmonyExport.FindSignTool() == bundledSigner && OpenHarmonyExport.FindNativeCompiler() == bundledCompiler,
+                "official active toolchain SDK supplies both native tools before legacy oo tools with system PATH");
+            string harmonyHome = Path.Combine(tools, "sdk");
+            foreach (string selected in new[] { harmonyHome, Path.Combine(harmonyHome, "default") })
+            {
+                var selection = OpenHarmonyExport.ResolveSdk(selected)!;
+                Check(selection.RuntimeOS == "HarmonyOS" && selection.SdkRoot == harmonyHome && selection.FoundationRoot == bundledFoundation,
+                    "Harmony SDK home/default normalize to the same metadata-backed SDK selection: " + Path.GetFileName(selected));
+                Check(OpenHarmonyExport.FindSignTool(selected) == bundledSigner && OpenHarmonyExport.FindNativeCompiler(selected) == bundledCompiler,
+                    "Harmony native compiler and signer derive from the selected base foundation: " + Path.GetFileName(selected));
+            }
+            Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(bundledFoundation), "flat default/openharmony is rejected as selected SDK root");
+
+            string standaloneHome = Path.Combine(fixture, "physical SDK parent", "standalone SDK home");
+            string standalone = FakeStandaloneSdk(standaloneHome);
+            string parentAlias = Path.Combine(fixture, "SDK parent alias");
+            Directory.CreateSymbolicLink(parentAlias, "physical SDK parent");
+            string standaloneAlias = Path.Combine(parentAlias, "standalone SDK home", "26.0.0");
+            string standaloneSigner = Path.Combine(standalone, "toolchains", "lib", "binary-sign-tool");
+            string standaloneCompiler = Path.Combine(standalone, "native", "llvm", "bin", "clang");
+            foreach (string selected in new[] { standaloneHome, standalone, standaloneAlias + Path.DirectorySeparatorChar })
+            {
+                var selection = OpenHarmonyExport.ResolveSdk(selected)!;
+                Check(selection.RuntimeOS == "OpenHarmony" && selection.SdkRoot == standaloneHome && selection.FoundationRoot == standalone,
+                    "standalone home/direct/linked API directory normalize to complete API 26.0.0 selection: " + Path.GetFileName(selected.TrimEnd(Path.DirectorySeparatorChar)));
+                Check(OpenHarmonyExport.FindSignTool(selected, tools) == standaloneSigner && OpenHarmonyExport.FindNativeCompiler(selected, tools) == standaloneCompiler,
+                    "explicit standalone SDK wins over bundled Harmony SDK: " + Path.GetFileName(selected.TrimEnd(Path.DirectorySeparatorChar)));
+            }
+            Environment.SetEnvironmentVariable("GODOT_OHOS_SDK_ROOT", standaloneHome);
+            Check(OpenHarmonyExport.FindSignTool(null, tools) == standaloneSigner && OpenHarmonyExport.FindNativeCompiler(null, tools) == standaloneCompiler,
+                "GODOT_OHOS_SDK_ROOT overrides configured toolchain bundle for both tools");
+            Environment.SetEnvironmentVariable("GODOT_OHOS_SDK_ROOT", Path.Combine(fixture, "nonexistent explicit SDK"));
+            Throws<DirectoryNotFoundException>(() => OpenHarmonyExport.FindSignTool(null, tools), "invalid SDK environment never falls back to working official or legacy signer");
+            Throws<DirectoryNotFoundException>(() => OpenHarmonyExport.FindNativeCompiler(null, tools), "invalid SDK environment never falls back to working official or legacy compiler");
+            Check(OpenHarmonyExport.FindSignTool(standaloneHome, tools) == standaloneSigner, "configured SDK overrides invalid SDK environment");
+            Environment.SetEnvironmentVariable("GODOT_OHOS_SDK_ROOT", null);
+            Environment.SetEnvironmentVariable("OHOS_SDK_HOME", standaloneHome);
+            Check(OpenHarmonyExport.FindSignTool() == bundledSigner && OpenHarmonyExport.FindNativeCompiler() == bundledCompiler,
+                "official active bundle wins over legacy SDK-home environment alias");
+            Environment.SetEnvironmentVariable("OHOS_SDK_HOME", null);
+
+            string otherTools = FakeCommandLineTools(Path.Combine(fixture, "configured command line tools"));
+            Environment.SetEnvironmentVariable("GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT", otherTools);
+            Check(OpenHarmonyExport.FindCommandLineToolsRoot() == otherTools && OpenHarmonyExport.FindCommandLineToolsRoot(tools) == tools,
+                "command-line-tools setting overrides environment which overrides active package");
+            string toolsAlias = Path.Combine(fixture, "tools alias");
+            Directory.CreateSymbolicLink(toolsAlias, Path.GetFileName(otherTools));
+            Check(OpenHarmonyExport.FindSignTool(null, toolsAlias) == Path.Combine(otherTools, "sdk", "default", "openharmony", "toolchains", "lib", "binary-sign-tool"),
+                "configured tools symlink selects canonical bundled SDK paths");
+            string invalidTools = Path.Combine(fixture, "incomplete command line tools");
+            Directory.CreateDirectory(invalidTools);
+            Throws<FileNotFoundException>(() => OpenHarmonyExport.FindSignTool(null, invalidTools), "invalid configured command-line-tools root does not use active package or PATH");
+            Throws<DirectoryNotFoundException>(() => OpenHarmonyExport.FindCommandLineToolsRoot("relative tools"), "relative command-line-tools root rejected");
+            Environment.SetEnvironmentVariable("GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT", invalidTools);
+            Throws<FileNotFoundException>(() => OpenHarmonyExport.FindNativeCompiler(), "invalid toolchain environment does not use active package or legacy compiler");
+            Environment.SetEnvironmentVariable("GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT", null);
+
+            foreach (bool harmony in new[] { false, true })
+            {
+                foreach (string field in new[] { "apiVersion", "platformVersion", "path", "version", "releaseType" })
+                {
+                    string home = Path.Combine(fixture, "bad metadata " + harmony + " " + field);
+                    string foundation = harmony ? FakeHarmonySdk(home) : FakeStandaloneSdk(home);
+                    string metadata = Path.Combine(foundation, "ets", "oh-uni-package.json");
+                    object wrong = field == "apiVersion" ? (object)true : "mismatched identity";
+                    ChangeMetadata(metadata, field, wrong);
+                    Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(home), "reject mismatched component metadata with working fallback: " + harmony + " " + field);
+                    Throws<InvalidDataException>(() => OpenHarmonyExport.FindNativeCompiler(home), "compiler enforces same component metadata: " + harmony + " " + field);
+                }
+                foreach (string component in SdkComponents)
+                {
+                    string home = Path.Combine(fixture, "missing metadata " + harmony + " " + component);
+                    string foundation = harmony ? FakeHarmonySdk(home) : FakeStandaloneSdk(home);
+                    File.Delete(Path.Combine(foundation, component, "oh-uni-package.json"));
+                    Throws<FileNotFoundException>(() => OpenHarmonyExport.FindSignTool(home), "require all five base components: " + harmony + " " + component);
+                }
+            }
+            foreach (string component in new[] { "native", "ets", "toolchains" })
+            {
+                string home = Path.Combine(fixture, "incomplete HMS " + component);
+                FakeHarmonySdk(home);
+                File.Delete(Path.Combine(home, "default", "hms", component, "uni-package.json"));
+                Throws<FileNotFoundException>(() => OpenHarmonyExport.FindNativeCompiler(home), "require all three Harmony HMS components: " + component);
+            }
+            foreach (string field in new[] { "apiVersion", "platformVersion", "version", "releaseType" })
+            {
+                string home = Path.Combine(fixture, "bad Harmony descriptor " + field);
+                FakeHarmonySdk(home);
+                ChangeMetadata(Path.Combine(home, "default", "sdk-pkg.json"), field, field == "apiVersion" ? (object)25 : "mismatched descriptor", bundle: true);
+                Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(home), "Harmony bundle identity must match base and HMS: " + field);
+            }
+            string hmsMismatch = Path.Combine(fixture, "mismatched HMS identity");
+            FakeHarmonySdk(hmsMismatch);
+            ChangeMetadata(Path.Combine(hmsMismatch, "default", "hms", "ets", "uni-package.json"), "releaseType", "Release");
+            Throws<InvalidDataException>(() => OpenHarmonyExport.FindNativeCompiler(hmsMismatch), "HMS and base must share release identity");
+            string malformed = Path.Combine(fixture, "malformed SDK metadata");
+            string malformedFoundation = FakeStandaloneSdk(malformed);
+            foreach (string text in new[] { "{", "[]", "null" })
+            {
+                File.WriteAllText(Path.Combine(malformedFoundation, "native", "oh-uni-package.json"), text);
+                Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(malformed), "reject malformed or non-object JSON metadata: " + text);
+            }
+            string noDescriptor = Path.Combine(fixture, "missing Harmony descriptor");
+            FakeHarmonySdk(noDescriptor);
+            File.Delete(Path.Combine(noDescriptor, "default", "sdk-pkg.json"));
+            Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(noDescriptor), "incomplete Harmony home without descriptor rejected");
+            string noToolHome = Path.Combine(fixture, "valid SDK missing native tool");
+            string noToolFoundation = FakeStandaloneSdk(noToolHome);
+            File.Delete(Path.Combine(noToolFoundation, "native", "llvm", "bin", "clang"));
+            Throws<FileNotFoundException>(() => OpenHarmonyExport.FindNativeCompiler(noToolHome), "validated SDK missing clang never uses installed compiler");
+            File.Delete(Path.Combine(noToolFoundation, "toolchains", "lib", "binary-sign-tool"));
+            Throws<FileNotFoundException>(() => OpenHarmonyExport.FindSignTool(noToolHome), "validated SDK missing signer never uses installed signer");
+            string loop = Path.Combine(fixture, "symlink loop");
+            Directory.CreateSymbolicLink(loop, "symlink loop");
+            Throws<InvalidDataException>(() => OpenHarmonyExport.FindSignTool(loop), "cyclic SDK symlink fails with bounded resolution");
+            Check(Environment.GetEnvironmentVariable("PATH") == "/system/bin" && Environment.GetEnvironmentVariable("OHECO_ROOT") == ooAlias &&
+                Environment.GetEnvironmentVariable("GODOT_OHOS_SDK_ROOT") == null,
+                "SDK and toolchain discovery leave parent environment unchanged");
+        });
+    }
+
     private static void CheckNativeCompilerResolution(string fixture)
     {
         WithIsolatedSigningEnvironment(() =>
         {
             string sdk = Path.GetFullPath(Path.Combine(fixture, "native SDK view with spaces"));
+            FakeStandaloneSdk(sdk);
             FakeNativeTools(Path.Combine(sdk, "9.0.0", "native", "llvm", "bin"));
             string selected = FakeNativeTools(Path.Combine(sdk, "26.0.0", "native", "llvm", "bin"));
             string oo = Path.GetFullPath(Path.Combine(fixture, "native oo root"));
@@ -245,6 +447,7 @@ internal static class HelperTests
         Directory.CreateDirectory(fixture);
         CheckSigningResolution(fixture);
         CheckNativeCompilerResolution(fixture);
+        CheckOfficialSdkResolution(fixture);
         OpenHarmonyExport.ValidateSharedLibrary(Elf(true), true);
         Check(true, "accept a defined global function in the ELF dynamic symbol table");
         Throws<NotSupportedException>(() => OpenHarmonyExport.ValidateSharedLibrary(wrongArch, true), "AOT game rejects wrong architecture");

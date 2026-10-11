@@ -15,10 +15,13 @@ def main():
     args = parser.parse_args()
     if sys.platform != 'ohos':
         raise SystemExit('Run on native OpenHarmony')
-    compiler = shutil.which('clang++')
+    native_sdk = args.native_sdk.resolve(strict=True)
+    # Match the requested SDK rather than a PATH compiler that may auto-sign
+    # during linking and make the fixture's explicit signing fail.
+    compiler = native_sdk / 'llvm/bin/clang++'
     signer = shutil.which('binary-sign-tool')
-    if not compiler or not signer:
-        raise SystemExit('Native clang++ and binary-sign-tool must be in PATH')
+    if not compiler.is_file() or not signer:
+        raise SystemExit('The selected native SDK must provide llvm/bin/clang++; binary-sign-tool must be in PATH')
     root = Path(os.environ['TMPDIR']).resolve(strict=True)
     platform = Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory(prefix='godot-ime-geometry-', dir=root) as temporary:
@@ -29,8 +32,8 @@ def main():
             unsigned = directory / 'ime-geometry.unsigned'
             executable = directory / 'ime-geometry'
             commands = [
-                [compiler, '--target=aarch64-linux-ohos',
-                 '--sysroot=' + str(args.native_sdk.resolve() / 'sysroot'),
+                [str(compiler), '--target=aarch64-linux-ohos',
+                 '--sysroot=' + str(native_sdk / 'sysroot'),
                  '-std=c++17', '-pthread', '-ffunction-sections', '-fdata-sections',
                  '-I' + str(platform), str(platform / 'tests/native_ime_geometry.cpp'),
                  str(platform / 'wrapper_openharmony.cpp'), '-Wl,--gc-sections',

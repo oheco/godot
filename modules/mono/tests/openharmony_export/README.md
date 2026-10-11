@@ -76,7 +76,9 @@ its independently published native libraries beside the signed template CLI.
 
 For full native project export, provide `--hap-template-debug` and/or
 `--hap-template-release` with mono-enabled template ZIPs. Add `--build-bundles`
-to build unsigned HAPs with the existing native exporter/oheco Hvigor adapter.
+to build unsigned HAPs with the native exporter and official Command Line Tools
+Hvigor wrapper. Select that installation with the current
+`--command-line-tools-root` option in the unsigned-project helper.
 These checks verify same-package native libraries, small PCK, no personal signing
 configuration, and removal of the two JIT/independent-library kernel permissions.
 A real resolved `GodotSharpEditor.dll` reference must fail before AOT compilation

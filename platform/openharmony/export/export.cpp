@@ -42,12 +42,12 @@ void register_openharmony_exporter_types() {
 }
 
 void register_openharmony_exporter() {
-	// Empty paths resolve the oo-installed tools and fixed SDK views at runtime.
-	for (const char *name : { "sdk_root", "node_path", "hvigor_entry", "hdc_path" }) {
+	// The selected official tools own Node/Hvigor; an empty SDK uses their bundle.
+	for (const char *name : { "command_line_tools_root", "sdk_root", "hdc_path" }) {
 		String setting = String("export/openharmony/") + name;
 		EDITOR_DEF_BASIC(setting, "");
 		EditorSettings::get_singleton()->add_property_hint(PropertyInfo(Variant::STRING, setting,
-				String(name) == "sdk_root" ? PROPERTY_HINT_GLOBAL_DIR : PROPERTY_HINT_GLOBAL_FILE));
+				String(name) == "hdc_path" ? PROPERTY_HINT_GLOBAL_FILE : PROPERTY_HINT_GLOBAL_DIR));
 	}
 
 #ifdef OPENHARMONY_ENABLED

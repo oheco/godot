@@ -75,6 +75,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--library', type=Path, required=True, help='Final ARM64 libgodot.so; do not strip after signing')
     parser.add_argument('--config', type=Path, help='JSON overrides of the editor profile; never modifies template sources')
+    parser.add_argument('--sdk-root', type=Path, help='Selected complete HarmonyOS or versioned OpenHarmony SDK; runtimeOS is detected from metadata')
+    parser.add_argument('--command-line-tools-root', type=Path, help='Official toolchain root; uses its bundled SDK unless --sdk-root is provided')
     parser.add_argument('--godotsharp', type=Path, help='Required with managed.mode=sdk')
     parser.add_argument('--dotnet-sdk', type=Path, help='Required with managed.mode=sdk: native SDK build input, not shipped')
     parser.add_argument('--nuget-feed', type=Path, help='Required with managed.mode=sdk: verified pinned NuGet archives')
@@ -99,7 +101,12 @@ def main():
         raise SystemExit('Refusing to overwrite an existing project or archive; pass --update to refresh a project in place')
     source = Path(__file__).resolve().parents[2]
     template = source / 'misc/dist/openharmony_template'
-    config = configuration('editor', read_document(args.config) if args.config else None)
+    overrides = read_document(args.config) if args.config else {}
+    if args.sdk_root:
+        overrides.setdefault('build', {})['sdkRoot'] = str(args.sdk_root)
+    if args.command_line_tools_root:
+        overrides.setdefault('build', {})['commandLineToolsRoot'] = str(args.command_line_tools_root)
+    config = configuration('editor', overrides)
     if config['host']['role'] != 'editor':
         raise SystemExit('This generator requires the editor host profile')
     managed = config['managed']['mode'] == 'sdk'
@@ -296,7 +303,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
-    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.4',
+    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.5',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
                   'runtime': runtime_manifest, 'export_templates': template_manifest,
                   'dotnet_resolution': "oheco package installation; not shipped" if managed else None,

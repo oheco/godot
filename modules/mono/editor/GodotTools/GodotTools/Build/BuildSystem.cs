@@ -23,8 +23,10 @@ namespace GodotTools.Build
             var settings = EditorInterface.Singleton.GetEditorSettings();
             string? sdkRoot = settings.HasSetting("export/openharmony/sdk_root")
                 ? settings.GetSetting("export/openharmony/sdk_root").AsString() : null;
-            return OpenHarmonyExport.FindSignTool(sdkRoot) ?? throw new FileNotFoundException(
-                "Cannot locate OpenHarmony binary-sign-tool. Install ohos-sdk-toolchains with oo, or select its SDK view in Export > OpenHarmony > SDK Root.");
+            string? toolsRoot = settings.HasSetting("export/openharmony/command_line_tools_root")
+                ? settings.GetSetting("export/openharmony/command_line_tools_root").AsString() : null;
+            return OpenHarmonyExport.FindSignTool(sdkRoot, toolsRoot) ?? throw new FileNotFoundException(
+                "Cannot locate OpenHarmony binary-sign-tool. Install command-line-tools with oo, or select a complete API 26 SDK in Export > OpenHarmony > SDK Root.");
         }
 
         internal static string ResolveOpenHarmonyNativeCompiler()
@@ -32,8 +34,10 @@ namespace GodotTools.Build
             var settings = EditorInterface.Singleton.GetEditorSettings();
             string? sdkRoot = settings.HasSetting("export/openharmony/sdk_root")
                 ? settings.GetSetting("export/openharmony/sdk_root").AsString() : null;
-            return OpenHarmonyExport.FindNativeCompiler(sdkRoot) ?? throw new FileNotFoundException(
-                "Cannot locate OpenHarmony NativeAOT clang. Install ohos-sdk-native with oo, or select its SDK view in Export > OpenHarmony > SDK Root.");
+            string? toolsRoot = settings.HasSetting("export/openharmony/command_line_tools_root")
+                ? settings.GetSetting("export/openharmony/command_line_tools_root").AsString() : null;
+            return OpenHarmonyExport.FindNativeCompiler(sdkRoot, toolsRoot) ?? throw new FileNotFoundException(
+                "Cannot locate OpenHarmony NativeAOT clang. Install command-line-tools with oo, or select a complete API 26 SDK in Export > OpenHarmony > SDK Root.");
         }
 
         private static Process LaunchBuild(BuildInfo buildInfo, Action<string?>? stdOutHandler,

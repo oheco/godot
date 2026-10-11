@@ -68,6 +68,22 @@ function load(file, dependencies, globals = {}, transform = (source) => source) 
 
 const config = load('runtime/Config.ets', { '@kit.ArkTS': { util } });
 const nativeArguments = load('runtime/NativeArguments.ets', {});
+const localizedStrings = load('runtime/LocalizedStrings.ets', { './Diagnostics': diagnostics });
+const packagedStrings = JSON.parse(fs.readFileSync(path.join(sourceRoot, '../resources/base/element/string.json'), 'utf8')).string;
+const stringResourceIds = new Map(packagedStrings.map((entry, index) => ['app.string.' + entry.name, index + 1]));
+function stringResource(name) {
+  assert.ok(stringResourceIds.has(name), `Unknown resource ${name}`);
+  return { id: stringResourceIds.get(name), type: 10003, params: [name], bundleName: '', moduleName: '' };
+}
+function stringResourceManager(overrides = {}) {
+  return { getStringSync: (id, ...args) => {
+    assert.equal(typeof id, 'number', 'API26 localized lookup uses a numeric resource ID');
+    const entry = packagedStrings[id - 1];
+    assert.ok(entry, `Unknown string resource ID ${id}`);
+    let argument = 0;
+    return (overrides[entry.name] ?? entry.value).replace(/%[sd]/g, () => String(args[argument++]));
+  } };
+}
 const touchInput = load('runtime/TouchInput.ets', {}, {
   SourceType: { Unknown: 0, Mouse: 1, TouchScreen: 2 },
   TouchType: { Down: 0, Up: 1, Move: 2, Cancel: 3 },
@@ -271,15 +287,20 @@ async function testExternalApps() {
   const calls = [], toasts = [], logs = [];
   let launchFailure = false;
   const context = {
+    resourceManager: stringResourceManager({
+      external_terminal_unsupported: '当前版本暂不支持打开系统终端。',
+      external_editor_unsupported: '当前版本暂不支持使用外部编辑器打开文件。',
+    }),
     startAbility: async want => { calls.push(['ability', plain(want)]); if (launchFailure) throw new Error('platform denied'); },
     openLink: async (uri, options) => calls.push(['link', uri, plain(options)]),
   };
   const external = load('runtime/ExternalApps.ets', {
     '@kit.CoreFileKit': { fileUri: { getUriFromPath: value => 'file://fixture' + encodeURI(value) } },
-    '@ohos.window': { default: { getLastWindow: async () => ({ getUIContext: () => ({ getPromptAction: () => ({ showToast: value => toasts.push(value) }) }) }) } },
+    '@kit.ArkUI': { window: { getLastWindow: async () => ({ getUIContext: () => ({ getPromptAction: () => ({ showToast: value => toasts.push(value) }) }) }) } },
+    './LocalizedStrings': localizedStrings,
     'libentry.so': { default: { openTerminal: async uri => { calls.push(['terminal-worker', uri]); if (launchFailure) throw new Error('broker missing'); } } },
     './Diagnostics': { describe: String, record: value => logs.push(value) },
-  });
+  }, { $r: stringResource });
   const directory = "/storage/Users/currentUser/a 中文 'directory'";
   const uri = 'file://fixture' + encodeURI(directory);
   await external.openExternal(context, 1, directory);
@@ -351,6 +372,10 @@ async function testIndex() {
   for (const mode of ['game', 'editor-none', 'editor-sdk']) {
     const profile = mode === 'game' ? gameProfile() : editorProfile(mode === 'editor-sdk' ? 'sdk' : 'none');
     const calls = [];
+    const geometrySnapshots = [];
+    const displayOrigins = new Map([[0, [0, 0]], [1, [2560, 0]], [2, [-1920, -1080]]]);
+    let sdkDisplayId = 0;
+    let sdkWindowRect = { left: -100, top: 350, width: 2000, height: 1500 };
     let currentState = 1;
     const plugin = {
       configure: (...args) => calls.push(['configure', ...args]), setResourceManager: () => {}, setWindowId: () => {},
@@ -360,7 +385,14 @@ async function testIndex() {
         calls.push(['setup', ...args]);
       }, state: () => currentState,
       processId: () => 11, destroySurface: () => {},
-      setSurfacePosition: (x, y) => calls.push(['surface-position', x, y]),
+      setSurfacePosition: (x, y) => {
+        calls.push(['surface-position', x, y]);
+        // Model the native UI-owner SDK query, not event payloads or JS caches.
+        // The real SDK snapshot/map is independently covered by native_ime_geometry.
+        const properties = hostWindow.getWindowProperties();
+        geometrySnapshots.push({ global: [x, y], displayId: properties.displayId,
+          origin: displayOrigins.get(properties.displayId), rect: properties.windowRect });
+      },
       inputTouch: () => {}, sendWindowEvent: () => {},
     };
     const paths = mode === 'game' ? applicationPaths : modulePaths;
@@ -369,7 +401,7 @@ async function testIndex() {
     const granted = ['ohos.permission.INTERNET', ...userPermissions];
     const context = {
       ...hostContext(),
-      resourceManager: { getStringByNameSync: () => [...userPermissions, ...userPermissions, ' '].join(',') },
+      resourceManager: { ...stringResourceManager(), getStringByNameSync: () => [...userPermissions, ...userPermissions, ' '].join(',') },
       terminateSelf: async () => calls.push(['terminateSelf']),
     };
     const { hostDiagnostics } = diagnosticFixture(plugin);
@@ -400,10 +432,23 @@ async function testIndex() {
       godotHostConfig: profile, godotConfigError: '',
       godotArguments: new Proxy(config.engineArguments(profile, {}), {}), godotWindowId: 7,
     };
-    let geometryListener;
+    const geometryEvents = ['windowRectChange', 'displayIdChange', 'systemDensityChange'];
+    const geometryListeners = new Map();
+    const releasedGeometryEvents = [];
     const hostWindow = {
-      on: (name, listener) => { assert.equal(name, 'windowRectChange'); geometryListener = listener; },
-      off: (name, listener) => { assert.equal(name, 'windowRectChange'); assert.equal(listener, geometryListener); geometryListener = null; },
+      getWindowProperties: () => ({ displayId: sdkDisplayId, windowRect: { ...sdkWindowRect } }),
+      on: (name, listener) => {
+        assert.ok(geometryEvents.includes(name), `Unexpected window event ${name}`);
+        assert.equal(geometryListeners.has(name), false, `Duplicate ${name} subscription`);
+        geometryListeners.set(name, listener);
+        listener({ ignoredStalePayload: true });
+        assert.equal(geometrySnapshots.length, 0, 'not-ready pages never publish during registration');
+      },
+      off: (name, listener) => {
+        assert.equal(listener, geometryListeners.get(name), `${name} cleanup uses the registered handler`);
+        geometryListeners.delete(name);
+        releasedGeometryEvents.push(name);
+      },
     };
     const dependencies = {
       '@kit.AbilityKit': {},
@@ -411,6 +456,7 @@ async function testIndex() {
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
       '../runtime/Config': config,
       '../runtime/NativeArguments': nativeArguments,
+      '../runtime/LocalizedStrings': localizedStrings,
       '../runtime/TouchInput': touchInput,
       '../runtime/Permissions': permissions,
       '../runtime/Runtime': {
@@ -433,14 +479,19 @@ async function testIndex() {
     };
     const surfaceRect = { surfaceWidth: 800, surfaceHeight: 600, offsetX: 13.25, offsetY: -4.5 };
     let framePosition = { x: 125.5, y: 50.25 };
+    let density = 2.5;
+    let framePresent = true;
     const { Index } = load('pages/Index.ets', dependencies, {
       XComponentController: class { getXComponentSurfaceRect() { return surfaceRect; } },
-      AppStorage: { get: (key) => storage[key] }, setInterval: () => 1, clearInterval: () => {},
+      AppStorage: { get: (key) => storage[key] }, $r: stringResource, setInterval: () => 1, clearInterval: () => {},
     }, transform);
     const page = new Index();
     page.getUIContext = () => ({
-      getHostContext: () => context, vp2px: (value) => value * 2.5,
-      getFrameNodeById: (id) => { assert.equal(id, 'godot-surface'); return { getGlobalPositionOnDisplay: () => framePosition }; },
+      getHostContext: () => context, vp2px: (value) => value * density,
+      getFrameNodeById: (id) => {
+        assert.equal(id, 'godot-surface');
+        return framePresent ? { getGlobalPositionOnDisplay: () => framePosition } : null;
+      },
     });
     await page.prepare();
     assert.equal(page.ready, true, `${mode}: native setup failed: ${page.message}`);
@@ -461,11 +512,69 @@ async function testIndex() {
     assert.ok(hostDiagnostics.readDiagnostics().includes(`cacheDir=${paths.cacheDir}`), mode);
     assert.equal(page.showStatus, false);
     assert.equal(page.engineRunning, false);
+    assert.deepEqual([...geometryListeners.keys()].sort(), [...geometryEvents].sort());
+    assert.equal(new Set(geometryListeners.values()).size, 1, 'rect/display/density use the same refresh handler');
+    const fireGeometry = (event) => geometryListeners.get(event)({ staleDisplayId: 999, staleRect: { left: 9999 }, staleDensity: 99 });
+    const assertGeometry = (global, displayId, message) => {
+      assert.deepEqual(calls.at(-1), ['surface-position', ...global], message);
+      assert.deepEqual(geometrySnapshots.at(-1), { global, displayId,
+        origin: displayOrigins.get(displayId), rect: sdkWindowRect }, message);
+    };
     page.updateImeSurfacePosition();
-    assert.deepEqual(calls.at(-1), ['surface-position', 327, 121.125], 'convert only node vp, retain surface px offsets');
+    assertGeometry([327, 121.125], 0, 'convert only global node vp, retain surface px offsets');
     framePosition = { x: 250.25, y: 100.75 };
-    geometryListener();
-    assert.deepEqual(calls.at(-1), ['surface-position', 638.875, 247.375], 'window-only move refreshes actual screen origin');
+    fireGeometry('windowRectChange');
+    assertGeometry([638.875, 247.375], 0, 'window-only move refreshes the global surface origin');
+
+    // Events can arrive in either order; each callback fetches the current SDK
+    // display snapshot and actual FrameNode position rather than event arguments.
+    sdkDisplayId = 1;
+    sdkWindowRect = { ...sdkWindowRect, left: 2460 };
+    framePosition = { x: 1149.5, y: 50.25 };
+    for (const event of ['windowRectChange', 'displayIdChange']) {
+      const previous = geometrySnapshots.length;
+      fireGeometry(event);
+      assert.equal(geometrySnapshots.length, previous + 1, `${event} refreshes in rect-first ordering`);
+      assertGeometry([2887, 121.125], 1, 'right display keeps its independent global desktop coordinates');
+    }
+    sdkDisplayId = 2;
+    sdkWindowRect = { ...sdkWindowRect, left: -2020, top: -730 };
+    framePosition = { x: -642.5, y: -381.75 };
+    for (const event of ['displayIdChange', 'windowRectChange']) {
+      const previous = geometrySnapshots.length;
+      fireGeometry(event);
+      assert.equal(geometrySnapshots.length, previous + 1, `${event} refreshes in id-first ordering`);
+      assertGeometry([-1593, -958.875], 2, 'above/left display preserves negative global coordinates');
+    }
+
+    // A changed display ID must publish even if both rectangles are unchanged.
+    sdkDisplayId = 1;
+    const beforeDisplayOnly = geometrySnapshots.length;
+    fireGeometry('displayIdChange');
+    assert.equal(geometrySnapshots.length, beforeDisplayOnly + 1, 'same-rect display change is not deduplicated');
+    assertGeometry([-1593, -958.875], 1, 'IME display metadata refresh does not rebase global surface coordinates');
+
+    // Reflow may change vp and density while physical px stay fixed; offsets
+    // remain px. Later reflow updates are read afresh by density and rect events.
+    density = 1.25;
+    framePosition = { x: framePosition.x * 2, y: framePosition.y * 2 };
+    fireGeometry('systemDensityChange');
+    assertGeometry([-1593, -958.875], 1, 'density reflow preserves physical global coordinates');
+    framePosition = { x: 10.5, y: 20.25 };
+    for (const event of ['systemDensityChange', 'windowRectChange']) {
+      const previous = geometrySnapshots.length;
+      fireGeometry(event);
+      assert.equal(geometrySnapshots.length, previous + 1, 'density/rect ordering always refreshes geometry');
+      assertGeometry([26.375, 20.8125], 1, 'new reflow position applies current density once, without scaling px offsets');
+    }
+    const beforeGuardedEvents = geometrySnapshots.length;
+    framePresent = false;
+    for (const event of geometryEvents) { fireGeometry(event); }
+    framePresent = true;
+    page.terminating = true;
+    for (const event of geometryEvents) { fireGeometry(event); }
+    page.terminating = false;
+    assert.equal(geometrySnapshots.length, beforeGuardedEvents, 'missing frames and terminating hosts do not publish');
     page.updateEngineState(context);
     assert.equal(page.engineRunning, false, 'loading must keep the splash');
     currentState = 2;
@@ -478,13 +587,17 @@ async function testIndex() {
     if (mode === 'game') {
       assert.ok(!calls.some((call) => ['child-query', 'instance-state', 'exit-marker'].includes(call[0])));
     }
+    const lateGeometryCallbacks = [...geometryListeners.values()];
     page.aboutToDisappear();
-    assert.equal(geometryListener, null, 'window geometry listener is released');
+    assert.equal(geometryListeners.size, 0, 'all geometry listeners are released');
+    assert.deepEqual(releasedGeometryEvents.sort(), [...geometryEvents].sort(), 'cleanup covers rect, display ID and density');
     const count = calls.length;
+    page.terminating = false; // Isolate the disposed guard from the terminate guard.
     page.updateImeSurfacePosition();
-    assert.equal(calls.length, count, 'destroyed pages never publish surface geometry');
+    for (const listener of lateGeometryCallbacks) { listener(); }
+    assert.equal(calls.length, count, 'destroyed pages and queued callbacks never publish surface geometry');
   }
-  console.log('PASS Index logic: game application/editor module NAPI and logs; all roles request declared permissions once; SDK-only runtime; no game child logic');
+  console.log('PASS Index logic: game/editor NAPI, logs and permission grants; rect/display/density subscription and cleanup, both event orders, same-rect display changes, density reflow and late callback guards; SDK-only runtime; no game child logic');
 }
 
 async function testLauncher() {

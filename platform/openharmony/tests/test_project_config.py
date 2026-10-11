@@ -14,6 +14,7 @@ from unittest import mock
 PLATFORM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLATFORM))
 import project_config as project
+from sdk_fixture import make_sdk
 
 
 class ProjectConfigurationTest(unittest.TestCase):
@@ -39,19 +40,101 @@ class ProjectConfigurationTest(unittest.TestCase):
         product = self.document('build-profile.json5')['app']['products'][0]
         self.assertEqual(product['compileSdkVersion'], '26.0.0')
         self.assertEqual(product['targetSdkVersion'], '26.0.0')
-        self.assertEqual(product['compatibleSdkVersion'], 23)
+        self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
         self.assertEqual(product['runtimeOS'], 'OpenHarmony')
         self.assertEqual(self.document('entry/src/main/module.json5')['module']['deviceTypes'], ['default'])
 
-    def test_explicit_harmony_configuration_is_not_confused_with_sdk_view(self):
-        config = project.configuration(overrides={'build': {'sdkVersion': '6.1.0(23)'}})
-        project.configure_project(self.root, config)
-        product = self.document('build-profile.json5')['app']['products'][0]
-        self.assertEqual(product['runtimeOS'], 'HarmonyOS')
-        self.assertEqual(product['compatibleSdkVersion'], '6.1.0(23)')
-        for compatible in (22, 27):
+    def test_legacy_sdk_syntax_is_rejected_without_modifying_project(self):
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        for profile in ('editor', 'game'):
+            for sdk in ('7.0.0(26)', '26.0.0(26)'):
+                with self.subTest(profile=profile, sdk=sdk), self.assertRaisesRegex(ValueError, 'SDK version'):
+                    project.configure_project(self.root, project.configuration(profile, {'build': {'sdkVersion': sdk}}))
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        for compatible in (25, 27):
             with self.assertRaises(ValueError):
                 project.configuration(overrides={'build': {'compatibleApi': compatible}})
+
+    def test_api_26_floor_applies_to_editor_and_game(self):
+        for profile in ('editor', 'game'):
+            for sdk in ('23.0.0', '24.0.0', '25.0.0', '6.1.0(23)'):
+                with self.subTest(profile=profile, sdk=sdk), self.assertRaisesRegex(ValueError, 'API 26'):
+                    project.configuration(profile, {'build': {'sdkVersion': sdk}})
+            for compatible in (23, 24, 25):
+                with self.subTest(profile=profile, compatible=compatible), self.assertRaisesRegex(ValueError, 'between 26'):
+                    project.configuration(profile, {'build': {'compatibleApi': compatible}})
+            config = project.configuration(profile, {'build': {'sdkVersion': '27.0.0', 'compatibleApi': 27}})
+            project.configure_project(self.root, config)
+            product = self.document('build-profile.json5')['app']['products'][0]
+            self.assertEqual(product['compileSdkVersion'], '27.0.0')
+            self.assertEqual(product['compatibleSdkVersion'], '27.0.0')
+            self.assertEqual(product['runtimeOS'], 'OpenHarmony')
+
+    def test_selected_sdk_metadata_decides_mode_for_both_profiles(self):
+        for family in ('OpenHarmony', 'HarmonyOS'):
+            sdk = make_sdk(self.root / ('fixture-' + family), family)
+            for profile in ('game', 'editor'):
+                with self.subTest(family=family, profile=profile):
+                    config = project.configuration(profile, {'build': {'sdkRoot': str(sdk)}})
+                    project.configure_project(self.root, config)
+                    product = self.document('build-profile.json5')['app']['products'][0]
+                    self.assertEqual(product['runtimeOS'], family)
+                    for field in ('compileSdkVersion', 'targetSdkVersion', 'compatibleSdkVersion'):
+                        self.assertEqual(product[field], '26.0.0')
+                    devices = ['2in1'] if profile == 'editor' else ['phone' if family == 'HarmonyOS' else 'default']
+                    self.assertEqual(self.document('entry/src/main/module.json5')['module']['deviceTypes'], devices)
+            alias = sdk / ('default' if family == 'HarmonyOS' else '26.0.0')
+            selected = project.resolve_sdk('26.0.0', 26, str(alias))
+            self.assertEqual(selected['sdkRoot'], str(sdk))
+            self.assertEqual(selected['runtimeOS'], family)
+
+    def test_sdk_alias_numeric_api_and_null_identity(self):
+        sdk = make_sdk(self.root / 'typed-sdk', 'HarmonyOS')
+        for path in sdk.rglob('*.json'):
+            document = project.read_document(path)
+            info = document['data'] if 'data' in document else document
+            info['apiVersion'] = 26
+            project.write_document(path, document)
+        alias = self.root / 'sdk-directory-alias'
+        alias.symlink_to(sdk / 'default', target_is_directory=True)
+        self.assertEqual(project.resolve_sdk('26.0.0', 26, str(alias))['sdkRoot'], str(sdk))
+        for path in sdk.rglob('*.json'):
+            document = project.read_document(path)
+            info = document['data'] if 'data' in document else document
+            info['version'], info['releaseType'] = None, None
+            project.write_document(path, document)
+        with self.assertRaises(ValueError):
+            project.resolve_sdk('26.0.0', 26, str(alias))
+
+    def test_toolchain_default_sdk_and_external_sdk_precedence(self):
+        tools = self.root / 'command-line-tools'
+        make_sdk(tools / 'sdk', 'HarmonyOS')
+        for name in ('hvigor/bin/hvigorw', 'node/bin/node'):
+            path = tools / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('SYNTHETIC NON-EXECUTABLE TOOL PLACEHOLDER')
+        mapping_path = tools / 'hvigor/hvigor-ohos-plugin/node_modules/@ohos/hos-sdkmanager-common/build/res/hos-config.json'
+        project.write_document(mapping_path, {'osVersionMapper': {'26.0.0': '26.0.0'}})
+        default = project.resolve_sdk('26.0.0', 26, command_line_tools_root=str(tools))
+        self.assertEqual(default['runtimeOS'], 'HarmonyOS')
+        external = make_sdk(self.root / 'external-sdk', 'OpenHarmony')
+        selected = project.resolve_sdk('26.0.0', 26, str(external), str(tools))
+        self.assertEqual(selected['runtimeOS'], 'OpenHarmony')
+        self.assertEqual(selected['sdkRoot'], str(external))
+        with self.assertRaises(ValueError):
+            project.resolve_sdk('26.0.0', 26, str(self.root / 'missing-sdk'), str(tools))
+
+    def test_partial_or_wrong_sdk_fails_before_modifying_project(self):
+        sdk = make_sdk(self.root / 'partial-sdk', 'HarmonyOS')
+        path = sdk / 'default/hms/native/uni-package.json'
+        metadata = project.read_document(path)
+        metadata['apiVersion'] = '25'
+        project.write_document(path, metadata)
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        for root in (sdk, self.root / 'nonexistent-sdk', sdk / 'default/openharmony'):
+            with self.subTest(root=root), self.assertRaises(ValueError):
+                project.configure_project(self.root, project.configuration('editor', {'build': {'sdkRoot': str(root)}}))
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
 
     def test_editor_only_changes_configuration(self):
         sources = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*')
@@ -72,9 +155,13 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
         self.assertNotIn('ohos.permission.MOUNT_HDCDEBUG_PATH', permissions)
         self.assertEqual(permissions['ohos.permission.READ_WRITE_USER_FILE']['usedScene']['abilities'], ['EntryAbility'])
-        self.assertNotIn('ohos.permission.READ_PASTEBOARD', permissions)
+        self.assertEqual(permissions['ohos.permission.READ_PASTEBOARD'], {
+            'name': 'ohos.permission.READ_PASTEBOARD', 'reason': '$string:reason_pasteboard',
+            'usedScene': {'abilities': ['EntryAbility'], 'when': 'inuse'},
+        })
         strings = {item['name']: item['value'] for item in self.document('entry/src/main/resources/base/element/string.json')['string']}
-        self.assertNotIn('ohos.permission.READ_PASTEBOARD', strings['user_permissions'])
+        self.assertIn('ohos.permission.READ_PASTEBOARD', strings['user_permissions'].split(','))
+        self.assertTrue(strings['reason_pasteboard'])
         self.assertTrue(project.RESTRICTED.isdisjoint(permissions))
 
     def test_no_managed_editor_is_supported(self):
@@ -94,6 +181,7 @@ class ProjectConfigurationTest(unittest.TestCase):
         product = build['app']['products'][0]
         product['signingConfig'] = 'personal'
         product['compatibleSdkVersion'] = '5.1.0(18)'
+        product['runtimeOS'] = 'HarmonyOS'
         product['customBuildField'] = {'keep': True}
         path.write_text('// local DevEco settings\n' + json.dumps(build)[:-1] + ',\n}\n')
         entry = self.document('entry/build-profile.json5')
@@ -106,7 +194,8 @@ class ProjectConfigurationTest(unittest.TestCase):
         self.assertEqual(after['signingConfigs'], signing)
         self.assertEqual(after['products'][0]['signingConfig'], 'personal')
         self.assertEqual(after['products'][0]['customBuildField'], {'keep': True})
-        self.assertEqual(after['products'][0]['compatibleSdkVersion'], 23)
+        self.assertEqual(after['products'][0]['compatibleSdkVersion'], '26.0.0')
+        self.assertEqual(after['products'][0]['runtimeOS'], 'OpenHarmony')
         entry = self.document('entry/build-profile.json5')['buildOption']
         self.assertEqual(entry['externalNativeOptions']['arguments'], '-DUSER_OPTION=ON')
         self.assertFalse(entry['nativeLib']['debugSymbol']['strip'])

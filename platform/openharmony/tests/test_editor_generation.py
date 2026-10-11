@@ -13,6 +13,7 @@ import zipfile
 PLATFORM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLATFORM))
 from project_config import HEADERS, HOST_PATH, HOST_ABI_VERSION, read_document, write_document
+from sdk_fixture import make_sdk
 
 
 class EditorGenerationTest(unittest.TestCase):
@@ -42,6 +43,11 @@ class EditorGenerationTest(unittest.TestCase):
     def test_native_only_editor_and_update_migrate_old_layout(self):
         self.generate()
         self.assertEqual(read_document(self.output / HOST_PATH)['managed']['mode'], 'none')
+        product = read_document(self.output / 'build-profile.json5')['app']['products'][0]
+        self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
+        self.assertEqual(product['runtimeOS'], 'OpenHarmony')
+        permissions = {item['name']: item for item in read_document(self.output / 'entry/src/main/module.json5')['module']['requestPermissions']}
+        self.assertEqual(permissions['ohos.permission.READ_PASTEBOARD']['reason'], '$string:reason_pasteboard')
         self.assertFalse((self.output / 'entry/src/main/resources/rawfile/runtime.zip').exists())
         self.assertEqual((self.output / 'entry/libs/arm64-v8a/libgodot.so').read_bytes(), self.library.read_bytes())
         for name in HEADERS:
@@ -58,6 +64,8 @@ class EditorGenerationTest(unittest.TestCase):
         profile = read_document(profile_path)
         profile['app']['signingConfigs'] = [{'name': 'personal', 'material': {'password': 'test//fixture'}}]
         profile['app']['products'][0]['signingConfig'] = 'personal'
+        profile['app']['products'][0]['runtimeOS'] = 'HarmonyOS'
+        profile['app']['products'][0]['compatibleSdkVersion'] = '7.0.0(26)'
         write_document(profile_path, profile)
         local = self.output / 'local.properties'
         local.write_text('sdk.dir=/keep/this/local/path\n')
@@ -70,10 +78,21 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertFalse((raw / 'runtime-manifest.json').exists())
         self.assertEqual(read_document(profile_path)['app']['signingConfigs'], profile['app']['signingConfigs'])
         self.assertEqual(read_document(profile_path)['app']['products'][0]['signingConfig'], 'personal')
+        self.assertEqual(read_document(profile_path)['app']['products'][0]['runtimeOS'], 'OpenHarmony')
+        self.assertEqual(read_document(profile_path)['app']['products'][0]['compatibleSdkVersion'], '26.0.0')
         self.assertEqual(local.read_text(), 'sdk.dir=/keep/this/local/path\n')
         self.assertEqual(lock.read_text(), '{"localResolvedLock":true}\n')
         self.assertTrue((self.output / 'entry/src/main/ets/entryability/EntryAbility.ets').exists())
         self.generate(success=False)
+
+    def test_editor_sdk_selection_uses_harmonyos_metadata(self):
+        sdk = make_sdk(self.root / 'sdk with spaces', 'HarmonyOS')
+        write_document(self.config, {'managed': {'mode': 'none'}, 'build': {'sdkRoot': str(sdk / 'default')}})
+        self.generate()
+        product = read_document(self.output / 'build-profile.json5')['app']['products'][0]
+        self.assertEqual(product['runtimeOS'], 'HarmonyOS')
+        self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
+        self.assertEqual(read_document(self.output / 'entry/src/main/module.json5')['module']['deviceTypes'], ['2in1'])
 
     def template_zip(self, kind, mono=True):
         path = self.root / (kind + '.zip')

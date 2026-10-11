@@ -1,34 +1,11 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #pragma once
 
-#include "core/io/file_access.h"
-#include "core/io/json.h"
+#include "sdk_config.h"
 
 #include <initializer_list>
 
 namespace OpenHarmonyProjectConfig {
-
-inline int sdk_api(const String &p_version) {
-	const int open = p_version.find("(");
-	if (open >= 0 && !p_version.ends_with(")")) {
-		return 0;
-	}
-	const Vector<String> version = (open < 0 ? p_version : p_version.substr(0, open)).split(".");
-	if (version.size() != 3) {
-		return 0;
-	}
-	for (const String &part : version) {
-		if (!part.is_valid_int() || part.to_int() < 0) {
-			return 0;
-		}
-	}
-	const String api = open < 0 ? version[0] : p_version.substr(open + 1, p_version.length() - open - 2);
-	return api.is_valid_int() ? api.to_int() : 0;
-}
-
-inline bool valid_sdk(const String &p_version) {
-	return sdk_api(p_version) >= 23;
-}
 
 inline Error read_document(const String &p_path, Dictionary &r_document) {
 	Error error;
@@ -175,8 +152,10 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	ERR_FAIL_COND_V_MSG(!valid_documents(documents), ERR_INVALID_DATA,
 			"Invalid shared game host schema. Rebuild or repair the OpenHarmony template.");
 	const String sdk = p_options["sdk"];
-	const int compatible_api = p_options.get("compatible_api", 23);
-	ERR_FAIL_COND_V(!valid_sdk(sdk) || compatible_api < 23 || compatible_api > sdk_api(sdk), ERR_INVALID_PARAMETER);
+	const int compatible_api = p_options.get("compatible_api", 26);
+	Dictionary sdk_selection;
+	Error sdk_error = resolve_sdk(sdk, compatible_api, p_options.get("sdk_root", ""), sdk_selection);
+	ERR_FAIL_COND_V(sdk_error != OK, sdk_error);
 	const int64_t version_code = p_options["version_code"];
 	ERR_FAIL_COND_V(version_code < 1 || version_code > 2147483647 || String(p_options["version_name"]).is_empty(), ERR_INVALID_PARAMETER);
 	Dictionary app = documents[0]["app"];
@@ -193,10 +172,9 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	ERR_FAIL_COND_V(products.is_empty(), ERR_INVALID_DATA);
 	for (int i = 0; i < products.size(); i++) {
 		Dictionary product = products[i];
-		product["compileSdkVersion"] = sdk;
-		product["targetSdkVersion"] = sdk;
-		product["compatibleSdkVersion"] = sdk.contains("(") ? Variant(sdk) : Variant(compatible_api);
-		product["runtimeOS"] = sdk.contains("(") ? "HarmonyOS" : "OpenHarmony";
+		for (const char *field : { "compileSdkVersion", "targetSdkVersion", "compatibleSdkVersion", "runtimeOS" }) {
+			product[field] = sdk_selection[field];
+		}
 	}
 	Dictionary build = documents[4]["buildOption"];
 	Dictionary native = build.get("externalNativeOptions", Dictionary());
@@ -205,7 +183,7 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	native["abiFilters"] = architectures;
 	build["externalNativeOptions"] = native;
 	Dictionary module = documents[5]["module"];
-	module["deviceTypes"] = Array{ "default" };
+	module["deviceTypes"] = Array{ sdk_selection["runtimeOS"] == "HarmonyOS" ? "phone" : "default" };
 	Array abilities = module.get("abilities", Array());
 	ERR_FAIL_COND_V(abilities.is_empty(), ERR_INVALID_DATA);
 	Dictionary ability = abilities[0];

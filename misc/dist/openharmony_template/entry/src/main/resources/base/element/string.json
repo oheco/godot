@@ -31,6 +31,32 @@
     {
       "name": "MICROPHONE_reason",
       "value": "For recording audio"
-    }
+    },
+    {
+      "name": "external_terminal_unsupported",
+      "value": "This version does not support opening the system terminal."
+    },
+    {
+      "name": "external_editor_unsupported",
+      "value": "This version does not support opening files in an external editor."
+    },
+    {
+      "name": "external_terminal_open_failed",
+      "value": "Failed to open the system terminal. See the Godot log for details."
+    },
+    {
+      "name": "external_app_open_failed",
+      "value": "Failed to open the external application. See the Godot log for details."
+    },
+    { "name": "host_preparing", "value": "Preparing Godot…" },
+    { "name": "host_start_failed", "value": "Unable to start Godot. Select \"Show Logs\" for details: %s" },
+    { "name": "host_engine_failed", "value": "Godot failed to start (%d). Select \"Show Logs\" for details." },
+    { "name": "host_child_crashed", "value": "The child process crashed." },
+    { "name": "host_child_running", "value": "The child process is still running. This window stays open to keep it alive." },
+    { "name": "host_previous_crash", "value": "The previous engine launch crashed. Select \"Show Logs\" to view the backtrace." },
+    { "name": "host_show_logs", "value": "Show Logs" },
+    { "name": "host_close_failed", "value": "The engine has exited, but this window could not be closed. See the log for details." },
+    { "name": "host_starting_game", "value": "Starting the game…" },
+    { "name": "host_preparing_editor", "value": "Preparing Godot Editor…" }
   ]
 }

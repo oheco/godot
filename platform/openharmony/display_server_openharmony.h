@@ -58,13 +58,25 @@ class DisplayServerOpenHarmony : public DisplayServer {
 	bool ime_position_valid = false;
 	Rect2 ime_text_rect;
 	Point2 last_ime_screen_position;
+	uint32_t last_ime_display_id = 0;
 	bool ime_screen_position_valid = false;
-	bool _get_ime_screen_position(Point2 &r_position) const;
+	uint32_t ime_display_id = 0;
+	bool ime_display_id_valid = false;
+	bool _get_ime_screen_position(Point2 &r_position, uint32_t *r_display_id = nullptr) const;
+	void _update_ime_display();
 	void _update_ime_cursor();
 	DisplayServerEnums::VirtualKeyboardType keyboard_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT;
+	// The latest control request survives a simple window focus handoff; an
+	// explicit virtual_keyboard_hide cancels it. Both fields are engine-owned.
+	bool virtual_keyboard_requested = false;
+	DisplayServerEnums::VirtualKeyboardType requested_keyboard_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT;
+	// Status callbacks may arrive on an IPC thread. Protect visibility and the
+	// current callback identity, never holding this mutex across SDK calls.
+	mutable Mutex ime_status_mutex;
 	InputMethod_KeyboardStatus keyboard_status = IME_KEYBOARD_STATUS_NONE;
 	InputMethod_TextEditorProxy *text_editor_proxy = nullptr;
 	InputMethod_AttachOptions *attach_options = nullptr;
+	// Owned on the engine thread; a live proxy denotes attachment, not visibility.
 	InputMethod_InputMethodProxy *input_method_proxy = nullptr;
 
 	Callable window_event_callback;
@@ -147,6 +159,8 @@ public:
 
 	virtual void virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect = Rect2(), DisplayServerEnums::VirtualKeyboardType p_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT, int p_max_length = -1, int p_cursor_start = -1, int p_cursor_end = -1) override;
 	virtual void virtual_keyboard_hide() override;
+	// Called only for effective focus transitions on the engine thread.
+	void update_ime_focus(bool p_focused);
 	virtual int virtual_keyboard_get_height() const override;
 
 	virtual void window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;

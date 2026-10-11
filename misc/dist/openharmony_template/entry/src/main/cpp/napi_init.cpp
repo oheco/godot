@@ -579,7 +579,7 @@ napi_value window_event(napi_env env, napi_callback_info info) {
 	if (!values(env, info, 1, args) || !integer_value(env, args[0], event)) {
 		return nullptr;
 	}
-	if (event < 1 || event > 7) {
+	if (event < 1 || event > 9) {
 		type_error(env, "Window event is out of range");
 		return nullptr;
 	}

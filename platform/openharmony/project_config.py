@@ -120,16 +120,93 @@ def merge_known(base, overrides, prefix=''):
 
 
 def sdk_api(version):
-    harmony = re.fullmatch(r'\d+\.\d+\.\d+\((\d+)\)', version)
-    openharmony = re.fullmatch(r'(\d+)\.\d+\.\d+', version)
-    match = harmony or openharmony
-    if not match or int(match[1]) < 23:
-        raise ValueError('The shared host requires API 23 or newer (oo SDK default 26.0.0)')
+    match = re.fullmatch(r'([0-9]+)\.[0-9]+\.[0-9]+', version)
+    if not match or int(match[1]) < 26:
+        raise ValueError('Use a HarmonyOS/OpenHarmony SDK version such as 26.0.0 (API 26 or newer)')
     return int(match[1])
 
 
 def validate_sdk(version):
     sdk_api(version)
+
+
+SDK_COMPONENTS = ('native', 'ets', 'js', 'toolchains', 'previewer')
+
+
+def sdk_metadata_api_matches(value, expected):
+    return value == str(expected) if isinstance(value, str) else isinstance(value, (int, float)) and not isinstance(value, bool) and value == expected
+
+
+def resolve_sdk(version, compatible_api=26, sdk_root='', command_line_tools_root=''):
+    api = sdk_api(version)
+    if not isinstance(compatible_api, int) or isinstance(compatible_api, bool) or not 26 <= compatible_api <= api:
+        raise ValueError('build.compatibleApi must be between 26 and the compile API')
+    if not isinstance(sdk_root, str) or not isinstance(command_line_tools_root, str):
+        raise ValueError('SDK and command-line-tools roots must be directory path strings')
+    if command_line_tools_root:
+        tools = Path(command_line_tools_root).resolve()
+        if not (tools / 'hvigor/bin/hvigorw').is_file() or not (tools / 'node/bin/node').is_file():
+            raise ValueError('Invalid command-line-tools root: expected hvigor/bin/hvigorw and node/bin/node')
+        if not sdk_root:
+            sdk_root = str(tools / 'sdk')
+    selection = {'compileSdkVersion': version, 'targetSdkVersion': version,
+                 'compatibleSdkVersion': f'{compatible_api}.0.0', 'runtimeOS': 'OpenHarmony',
+                 'sdkRoot': '', 'openharmonySdkRoot': ''}
+    # A source-only template remains portable. Once a SDK is selected, its real
+    # metadata determines the mode; both SDK families use dotted API26 versions.
+    if not sdk_root:
+        return selection
+    root = Path(sdk_root).resolve()
+    if not root.is_dir():
+        raise ValueError('Selected SDK root is not an existing directory')
+    bundle = root / 'default' if (root / 'default/sdk-pkg.json').is_file() else root
+    descriptor = bundle / 'sdk-pkg.json'
+
+    def components(directory, filename, names=SDK_COMPONENTS, identity=None):
+        for component in names:
+            metadata_path = directory / component / filename
+            if not metadata_path.is_file():
+                raise ValueError(f'Selected SDK is missing {component} metadata: {metadata_path}')
+            metadata = read_document(metadata_path)
+            package = (metadata.get('version'), metadata.get('releaseType'))
+            if identity is None:
+                identity = package
+            if not sdk_metadata_api_matches(metadata.get('apiVersion'), api) or metadata.get('platformVersion') != version or metadata.get('path') != component or not all(isinstance(value, str) and value for value in package) or package != identity:
+                raise ValueError(f'Selected SDK has inconsistent API/version metadata: {metadata_path}')
+
+    if descriptor.is_file():
+        if bundle.name != 'default':
+            raise ValueError('HarmonyOS SDK must use the SDK home with a default/sdk-pkg.json bundle')
+        data = read_document(descriptor).get('data', {})
+        if not isinstance(data, dict) or not sdk_metadata_api_matches(data.get('apiVersion'), api) or data.get('platformVersion') != version:
+            raise ValueError('HarmonyOS SDK bundle does not match the selected API/version')
+        identity = (data.get('version'), data.get('releaseType'))
+        components(bundle / 'openharmony', 'oh-uni-package.json', identity=identity)
+        components(bundle / 'hms', 'uni-package.json', ('native', 'ets', 'toolchains'), identity=identity)
+        if command_line_tools_root:
+            mapping_path = tools / 'hvigor/hvigor-ohos-plugin/node_modules/@ohos/hos-sdkmanager-common/build/res/hos-config.json'
+            if not mapping_path.is_file():
+                raise ValueError('Selected toolchain has no HarmonyOS SDK version mapping')
+            mapping = read_document(mapping_path).get('osVersionMapper', {})
+            if not isinstance(mapping, dict) or any(not isinstance(value, str) for value in mapping.values()):
+                raise ValueError('Selected toolchain has an invalid HarmonyOS SDK version mapping')
+            supported = [item.strip() for values in mapping.values() for item in values.split(',')
+                         if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', item.strip())]
+            if not supported or version != max(supported, key=lambda item: tuple(map(int, item.split('.')))) or f'{compatible_api}.0.0' not in supported:
+                raise ValueError('Selected HarmonyOS SDK is incompatible with the toolchain version mapping')
+        selection.update(runtimeOS='HarmonyOS', sdkRoot=str(bundle.parent), openharmonySdkRoot=str(bundle / 'openharmony'))
+    else:
+        if (root / 'hms').exists() or (root / 'default/hms').exists():
+            raise ValueError('Incomplete HarmonyOS SDK: missing default/sdk-pkg.json')
+        if (root / 'native/oh-uni-package.json').is_file():
+            if root.name != version:
+                raise ValueError('OpenHarmony SDK requires a versioned root: <SDK home>/<full API>/<component>')
+            foundation, root = root, root.parent
+        else:
+            foundation = root / version
+        components(foundation, 'oh-uni-package.json')
+        selection.update(sdkRoot=str(root), openharmonySdkRoot=str(foundation))
+    return selection
 
 
 def configuration(profile='game', overrides=None):
@@ -139,7 +216,8 @@ def configuration(profile='game', overrides=None):
                         'vendor': 'example', 'versionCode': 1000000, 'versionName': '1.0.0',
                         'deviceTypes': ['default'], 'orientation': 'portrait',
                         'icons': {'foreground': '', 'background': ''}},
-        'build': {'sdkVersion': SDK_VERSION, 'compatibleApi': 23, 'architectures': ['arm64-v8a']},
+        'build': {'sdkVersion': SDK_VERSION, 'compatibleApi': 26, 'architectures': ['arm64-v8a'],
+                  'sdkRoot': '', 'commandLineToolsRoot': ''},
         'engine': {'target': 'template_release'},
         'permissions': [],
     })
@@ -196,9 +274,8 @@ def validate_configuration(config):
         raise ValueError('The editor instance/SDK profile is supported on 2in1 only')
     if not config['build']['architectures'] or any(a not in ('arm64-v8a', 'x86_64') for a in config['build']['architectures']):
         raise ValueError('Unsupported build.architectures')
-    api = sdk_api(config['build']['sdkVersion'])
-    if not 23 <= config['build']['compatibleApi'] <= api:
-        raise ValueError('build.compatibleApi must be between 23 and the compile API')
+    resolve_sdk(config['build']['sdkVersion'], config['build']['compatibleApi'],
+                config['build'].get('sdkRoot', ''), config['build'].get('commandLineToolsRoot', ''))
     for permission in config['permissions']:
         if not isinstance(permission, str) or not permission.startswith('ohos.permission.'):
             raise ValueError('permissions must contain OpenHarmony permission names')
@@ -289,12 +366,11 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
         app['multiAppMode'] = {'multiAppModeType': 'multiInstance', 'maxCount': config['instances']['maxCount']}
     else:
         app.pop('multiAppMode', None)
+    sdk = resolve_sdk(config['build']['sdkVersion'], config['build']['compatibleApi'],
+                      config['build'].get('sdkRoot', ''), config['build'].get('commandLineToolsRoot', ''))
     for product in documents['build-profile.json5']['app']['products']:
-        sdk = config['build']['sdkVersion']
-        product['compileSdkVersion'] = sdk
-        product['targetSdkVersion'] = sdk
-        product['compatibleSdkVersion'] = sdk if '(' in sdk else config['build']['compatibleApi']
-        product['runtimeOS'] = 'HarmonyOS' if '(' in sdk else 'OpenHarmony'
+        for field in ('compileSdkVersion', 'targetSdkVersion', 'compatibleSdkVersion', 'runtimeOS'):
+            product[field] = sdk[field]
     entry = documents['entry/build-profile.json5']
     build = entry.setdefault('buildOption', {})
     native = build.setdefault('externalNativeOptions', {})
@@ -304,7 +380,8 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
         option.setdefault('nativeLib', {}).setdefault('debugSymbol', {})['strip'] = False
     module = documents['entry/src/main/module.json5']['module']
     module['mainElement'] = 'EntryAbility'
-    module['deviceTypes'] = app_input['deviceTypes']
+    devices = {'default': 'phone'} if sdk['runtimeOS'] == 'HarmonyOS' else {'phone': 'default'}
+    module['deviceTypes'] = [devices.get(device, device) for device in app_input['deviceTypes']]
     ability = module['abilities'][0]
     ability['name'] = 'EntryAbility'
     ability['srcEntry'] = './ets/entryability/EntryAbility.ets'
@@ -322,7 +399,8 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
     if role == 'editor':
         # Native-only editors also use oo Node/Hvigor/SDK and user projects.
         permissions.update(('ohos.permission.INTERNET', 'ohos.permission.LOCK_WINDOW_CURSOR',
-                            'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
+                            'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.READ_PASTEBOARD',
+                            'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
     permissions.update(restricted)
     user_reasons = {'ohos.permission.MICROPHONE': 'MICROPHONE_reason',
                     'ohos.permission.READ_WRITE_USER_FILE': 'reason_user_file',

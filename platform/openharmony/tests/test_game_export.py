@@ -17,6 +17,8 @@ import textwrap
 import zipfile
 
 from pck_audit import pack_index
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from project_config import resolve_sdk
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -24,13 +26,24 @@ def main():
     parser.add_argument('--template', type=Path, required=True)
     parser.add_argument('--runtime-godot', type=Path, help='Optional signed template CLI from build-cli.py; test hardened adjacent-PCK discovery')
     parser.add_argument('--output', type=Path, required=True, help='New persistent directory for evidence/project')
-    parser.add_argument('--build-bundles', action='store_true', help='Also run real oo Hvigor unsigned HAP/APP builds')
+    parser.add_argument('--build-bundles', action='store_true', help='Also run official Hvigor unsigned HAP/APP builds')
+    parser.add_argument('--command-line-tools-root', type=Path, help='Actual official tools installation; defaults to the active oo package')
+    parser.add_argument('--sdk-root', type=Path, help='Actual SDK selection; defaults to the selected tools bundled SDK')
     parser.add_argument('--release-template', type=Path, help='Complete template_release ZIP for bundle validation')
     args = parser.parse_args()
     if sys.platform != 'ohos':
         raise SystemExit('Run on native OpenHarmony')
     args.godot = args.godot.resolve(strict=True)
     args.template = args.template.resolve(strict=True)
+    package_root = Path(os.environ.get('OHECO_ROOT') or '/storage/Users/currentUser/.oheco')
+    tools = args.command_line_tools_root or os.environ.get('GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT')
+    if tools:
+        tools = Path(tools).resolve(strict=True)
+    else:
+        launcher = (package_root / 'bin/hvigorw').resolve(strict=True)
+        tools = next(parent for parent in launcher.parents if (parent / 'hvigor/bin/hvigorw.js').is_file())
+    selected_sdk = args.sdk_root or os.environ.get('GODOT_OHOS_SDK_ROOT') or tools / 'sdk'
+    sdk = resolve_sdk('26.0.0', 26, str(Path(selected_sdk).resolve(strict=True)))
     args.output.mkdir(parents=True, exist_ok=False)
     output = args.output.resolve()
     with tempfile.TemporaryDirectory(prefix='godot-export-test-', dir=os.environ['TMPDIR']) as temporary:
@@ -88,6 +101,8 @@ def main():
     ''') % (json.dumps(str(args.template)), json.dumps(str(args.template)))
         (project / 'export_presets.cfg').write_text(preset)
         env = dict(os.environ)
+        env['GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT'] = str(tools)
+        env['GODOT_OHOS_SDK_ROOT'] = sdk['sdkRoot']
         for key in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'GODOT_OHOS_DATA_DIR', 'GODOT_OHOS_CACHE_DIR'):
             directory = root / key.lower()
             directory.mkdir()
@@ -118,10 +133,11 @@ def main():
         assert strings['app_name'] == display_name
         product = read('build-profile.json5')['app']['products'][0]
         assert product['compileSdkVersion'] == '26.0.0' and product['targetSdkVersion'] == '26.0.0', product
-        assert product['compatibleSdkVersion'] == 23 and product['runtimeOS'] == 'OpenHarmony', product
+        assert product['compatibleSdkVersion'] == '26.0.0' and product['runtimeOS'] == sdk['runtimeOS'], product
+        (output / 'actual-sdk-selection.json').write_text(json.dumps(sdk, indent=2) + '\n')
         module = read('entry/src/main/module.json5')['module']
         assert module['mainElement'] == 'EntryAbility'
-        assert module['deviceTypes'] == ['default']
+        assert module['deviceTypes'] == (['phone'] if sdk['runtimeOS'] == 'HarmonyOS' else ['default']), module
         assert module['abilities'][0]['orientation'] == 'portrait'
         permissions = {p['name']: p for p in module['requestPermissions']}
         assert set(permissions) == {'ohos.permission.INTERNET', 'ohos.permission.MICROPHONE'}

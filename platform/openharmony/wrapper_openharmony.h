@@ -54,12 +54,17 @@ struct WrapperWindowGeometry {
 	int32_t window_x = 0;
 	int32_t window_y = 0;
 	bool window_position_valid = false;
+	uint32_t display_id = 0;
+	int32_t display_x = 0;
+	int32_t display_y = 0;
+	bool display_position_valid = false;
 };
-// Called on the ArkUI thread: surface coordinates are physical screen px.
+// Called on the ArkUI thread: surface coordinates are global desktop px.
+// Window/display metadata is published as one coherent snapshot for IME mapping.
 void ohos_wrapper_set_surface_position(int32_t window_id, double x, double y);
 // These reads never dispatch a synchronous task to the ArkUI thread.
 bool ohos_wrapper_get_window_geometry(int32_t window_id, WrapperWindowGeometry &geometry);
-bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y);
+bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y, uint32_t *display_id = nullptr);
 
 int ohos_wrapper_set_mouse_mode(int32_t window_id, bool locked, bool follow, bool visible);
 int ohos_wrapper_set_cursor_shape(int32_t window_id, int shape);

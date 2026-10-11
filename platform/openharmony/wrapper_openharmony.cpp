@@ -56,6 +56,8 @@ void ohos_wrapper_set_surface_position(int32_t window_id, double x, double y) {
 		geometry.window_x = properties.windowRect.posX;
 		geometry.window_y = properties.windowRect.posY;
 		geometry.window_position_valid = true;
+		geometry.display_id = properties.displayId;
+		geometry.display_position_valid = OH_NativeDisplayManager_GetDisplayPosition(properties.displayId, &geometry.display_x, &geometry.display_y) == DISPLAY_MANAGER_OK;
 	}
 	std::lock_guard<std::mutex> lock(geometry_mutex);
 	geometry_window_id = window_id;
@@ -71,15 +73,20 @@ bool ohos_wrapper_get_window_geometry(int32_t window_id, WrapperWindowGeometry &
 	return true;
 }
 
-bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y) {
+bool ohos_wrapper_map_surface_point(int32_t window_id, double x, double y, double &screen_x, double &screen_y, uint32_t *display_id) {
 	WrapperWindowGeometry geometry;
-	if (!std::isfinite(x) || !std::isfinite(y) || !ohos_wrapper_get_window_geometry(window_id, geometry)) {
+	if (!std::isfinite(x) || !std::isfinite(y) || !ohos_wrapper_get_window_geometry(window_id, geometry) || !geometry.display_position_valid) {
 		return false;
 	}
 	// Godot's Window screen transform already produces surface pixels,
 	// including stretch and embedded-window transforms. Do not apply density.
-	screen_x = geometry.surface_x + x;
-	screen_y = geometry.surface_y + y;
+	// IME uses the current physical screen; other window/mouse APIs continue
+	// using the untouched global desktop surface position in this snapshot.
+	screen_x = geometry.surface_x - geometry.display_x + x;
+	screen_y = geometry.surface_y - geometry.display_y + y;
+	if (display_id) {
+		*display_id = geometry.display_id;
+	}
 	return true;
 }
 

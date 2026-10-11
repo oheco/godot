@@ -217,17 +217,197 @@ namespace GodotTools.Export
             }
         }
 
-        internal static string? FindNativeCompiler(string? configuredSdkRoot = null)
+        internal const string SelectedSdkVersion = "26.0.0";
+        private static readonly string[] SdkComponents = { "native", "ets", "js", "toolchains", "previewer" };
+
+        internal sealed class SdkSelection
         {
-            if (!string.IsNullOrEmpty(configuredSdkRoot))
-                return NativeCompilerInSdk(configuredSdkRoot);
-            foreach (string variable in new[] { "GODOT_OHOS_SDK_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME" })
+            internal string SdkRoot { get; }
+            internal string FoundationRoot { get; }
+            internal string RuntimeOS { get; }
+
+            internal SdkSelection(string sdkRoot, string foundationRoot, string runtimeOS)
             {
-                string? sdk = Environment.GetEnvironmentVariable(variable);
-                if (!string.IsNullOrEmpty(sdk))
-                    return NativeCompilerInSdk(sdk);
+                SdkRoot = sdkRoot;
+                FoundationRoot = foundationRoot;
+                RuntimeOS = runtimeOS;
             }
-            string root = Environment.GetEnvironmentVariable("OHECO_ROOT") ?? "/storage/Users/currentUser/.oheco";
+        }
+
+        private static string OhecoRoot => Environment.GetEnvironmentVariable("OHECO_ROOT") is string root && root.Length > 0
+            ? root : "/storage/Users/currentUser/.oheco";
+
+        // Resolve every path component, including relative links and links in
+        // parent directories. Resolving only the final FileInfo misses oo roots
+        // linked elsewhere and cannot identify the active launcher's package.
+        private static string CanonicalPath(string path)
+        {
+            if (!Path.IsPathFullyQualified(path))
+                throw new DirectoryNotFoundException("OpenHarmony SDK and command-line-tools roots must be absolute paths.");
+            string root = Path.GetPathRoot(path)!;
+            string prefix = root;
+            var parts = new Queue<string>(path.Substring(root.Length).Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries));
+            int links = 0;
+            while (parts.Count > 0)
+            {
+                string part = parts.Dequeue();
+                if (part == ".")
+                    continue;
+                if (part == "..")
+                {
+                    prefix = Path.GetDirectoryName(prefix) ?? root;
+                    continue;
+                }
+                string candidate = Path.Combine(prefix, part);
+                string? target = new FileInfo(candidate).LinkTarget;
+                if (target == null)
+                {
+                    prefix = candidate;
+                    continue;
+                }
+                if (++links > 32)
+                    throw new InvalidDataException("Cannot resolve OpenHarmony path: too many symbolic links.");
+                if (Path.IsPathFullyQualified(target))
+                {
+                    root = Path.GetPathRoot(target)!;
+                    prefix = root;
+                    target = target.Substring(root.Length);
+                }
+                parts = new Queue<string>(target.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries).Concat(parts));
+            }
+            return Path.GetFullPath(prefix);
+        }
+
+        internal static string? FindCommandLineToolsRoot(string? configuredCommandLineToolsRoot = null)
+        {
+            string? selected = string.IsNullOrEmpty(configuredCommandLineToolsRoot)
+                ? Environment.GetEnvironmentVariable("GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT") : configuredCommandLineToolsRoot;
+            if (string.IsNullOrEmpty(selected))
+            {
+                string launcher = CanonicalPath(Path.Combine(OhecoRoot, "bin", "hvigorw"));
+                if (!File.Exists(launcher))
+                    return null;
+                selected = Path.GetDirectoryName(Path.GetDirectoryName(launcher))!;
+            }
+            string tools = CanonicalPath(selected);
+            if (!Directory.Exists(tools))
+                throw new DirectoryNotFoundException("The selected OpenHarmony command-line-tools root does not exist.");
+            if (!File.Exists(Path.Combine(tools, "node", "bin", "node")) ||
+                !File.Exists(Path.Combine(tools, "hvigor", "bin", "hvigorw.js")))
+                throw new FileNotFoundException("OpenHarmony command-line-tools root must contain node/bin/node and hvigor/bin/hvigorw.js.");
+            return tools;
+        }
+
+        internal static SdkSelection? ResolveSdk(string? configuredSdkRoot = null, string? configuredCommandLineToolsRoot = null)
+        {
+            string? sdk = string.IsNullOrEmpty(configuredSdkRoot)
+                ? Environment.GetEnvironmentVariable("GODOT_OHOS_SDK_ROOT") : configuredSdkRoot;
+            if (string.IsNullOrEmpty(sdk))
+            {
+                string? tools = FindCommandLineToolsRoot(configuredCommandLineToolsRoot);
+                if (tools != null)
+                    sdk = Path.Combine(tools, "sdk");
+            }
+            // Compatibility for older SDK views is used only when no official
+            // toolchain or explicit SDK has been selected.
+            if (string.IsNullOrEmpty(sdk))
+            {
+                foreach (string variable in new[] { "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME" })
+                {
+                    sdk = Environment.GetEnvironmentVariable(variable);
+                    if (!string.IsNullOrEmpty(sdk))
+                        break;
+                }
+            }
+            return string.IsNullOrEmpty(sdk) ? null : ResolveSdkDirectory(sdk);
+        }
+
+        private static SdkSelection ResolveSdkDirectory(string selected)
+        {
+            string root = CanonicalPath(selected);
+            if (!Directory.Exists(root))
+                throw new DirectoryNotFoundException("The selected OpenHarmony SDK root must be an existing absolute directory.");
+            string bundle = File.Exists(Path.Combine(root, "default", "sdk-pkg.json")) ? Path.Combine(root, "default") : root;
+            string descriptor = Path.Combine(bundle, "sdk-pkg.json");
+            if (File.Exists(descriptor))
+            {
+                using var document = ReadSdkMetadata(descriptor);
+                var metadata = document.RootElement;
+                if (Path.GetFileName(bundle) != "default" || !metadata.TryGetProperty("data", out var data) ||
+                    data.ValueKind != System.Text.Json.JsonValueKind.Object)
+                    throw new InvalidDataException("HarmonyOS SDK requires a valid default/sdk-pkg.json bundle.");
+                var identity = SdkIdentity(data, null, descriptor);
+                ValidateSdkComponents(Path.Combine(bundle, "openharmony"), "oh-uni-package.json", SdkComponents, identity);
+                ValidateSdkComponents(Path.Combine(bundle, "hms"), "uni-package.json", new[] { "native", "ets", "toolchains" }, identity);
+                return new SdkSelection(Path.GetDirectoryName(bundle)!, Path.Combine(bundle, "openharmony"), "HarmonyOS");
+            }
+            if (Directory.Exists(Path.Combine(root, "hms")) || Directory.Exists(Path.Combine(root, "default", "hms")))
+                throw new InvalidDataException("Incomplete HarmonyOS SDK: missing default/sdk-pkg.json.");
+            bool direct = File.Exists(Path.Combine(root, "native", "oh-uni-package.json"));
+            if (direct && Path.GetFileName(root) != SelectedSdkVersion)
+                throw new InvalidDataException("OpenHarmony SDK requires a versioned root: <SDK home>/<full API>/<component>.");
+            string foundation = direct ? root : Path.Combine(root, SelectedSdkVersion);
+            ValidateSdkComponents(foundation, "oh-uni-package.json", SdkComponents);
+            return new SdkSelection(direct ? Path.GetDirectoryName(root)! : root, foundation, "OpenHarmony");
+        }
+
+        private static System.Text.Json.JsonDocument ReadSdkMetadata(string path)
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException("Selected SDK is missing component metadata: " + path, path);
+            try
+            {
+                var document = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+                if (document.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    return document;
+                document.Dispose();
+            }
+            catch (System.Text.Json.JsonException error)
+            {
+                throw new InvalidDataException("Invalid SDK metadata: " + path, error);
+            }
+            throw new InvalidDataException("SDK metadata must be a JSON object: " + path);
+        }
+
+        private static (string Version, string ReleaseType) SdkIdentity(System.Text.Json.JsonElement metadata, string? component, string path)
+        {
+            bool apiMatches = metadata.TryGetProperty("apiVersion", out var api) &&
+                ((api.ValueKind == System.Text.Json.JsonValueKind.String && api.GetString() == "26") ||
+                 (api.ValueKind == System.Text.Json.JsonValueKind.Number && api.TryGetDouble(out double number) && number == 26));
+            string? Value(string name) => metadata.TryGetProperty(name, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.String ? value.GetString() : null;
+            string? version = Value("version"), release = Value("releaseType");
+            if (!apiMatches || Value("platformVersion") != SelectedSdkVersion ||
+                (component != null && Value("path") != component) || string.IsNullOrEmpty(version) || string.IsNullOrEmpty(release))
+                throw new InvalidDataException("Selected SDK has inconsistent API/version/package metadata: " + path);
+            return (version, release);
+        }
+
+        private static void ValidateSdkComponents(string foundation, string filename, IEnumerable<string> components,
+            (string Version, string ReleaseType)? identity = null)
+        {
+            foreach (string component in components)
+            {
+                string path = Path.Combine(foundation, component, filename);
+                using var document = ReadSdkMetadata(path);
+                var package = SdkIdentity(document.RootElement, component, path);
+                identity ??= package;
+                if (package != identity.Value)
+                    throw new InvalidDataException("Selected SDK components have inconsistent package version/release identities: " + path);
+            }
+        }
+
+        private static string SdkTool(SdkSelection sdk, params string[] path)
+        {
+            string tool = CanonicalPath(Path.Combine(new[] { sdk.FoundationRoot }.Concat(path).ToArray()));
+            return File.Exists(tool) ? tool : throw new FileNotFoundException("Selected SDK is missing native tool: " + tool, tool);
+        }
+
+        internal static string? FindNativeCompiler(string? configuredSdkRoot = null, string? configuredCommandLineToolsRoot = null)
+        {
+            var sdk = ResolveSdk(configuredSdkRoot, configuredCommandLineToolsRoot);
+            if (sdk != null)
+                return SdkTool(sdk, "native", "llvm", "bin", "clang");
+            string root = OhecoRoot;
             string packages = Path.Combine(root, "packages", "ohos-sdk-native");
             string? compiler = Directory.Exists(packages) ? FindVersionedTool(packages, Path.Combine("llvm", "bin", "clang")) : null;
             if (compiler != null)
@@ -239,17 +419,9 @@ namespace GodotTools.Export
                     continue;
                 string candidate = Path.Combine(directory, "clang");
                 if (File.Exists(candidate))
-                    return Path.GetFullPath(candidate);
+                    return CanonicalPath(Path.GetFullPath(candidate));
             }
             return null;
-        }
-
-        private static string NativeCompilerInSdk(string root)
-        {
-            if (!Path.IsPathFullyQualified(root) || !Directory.Exists(root))
-                throw new DirectoryNotFoundException("OpenHarmony SDK Root must be an existing absolute SDK view root (oo sdk path), not a component directory.");
-            return FindVersionedTool(root, Path.Combine("native", "llvm", "bin", "clang")) ??
-                throw new FileNotFoundException("OpenHarmony SDK Root contains no native/llvm/bin/clang. Install the matching ohos-sdk-native component and select its SDK view.");
         }
 
         private static string? FindVersionedTool(string root, string relativePath)
@@ -282,53 +454,25 @@ namespace GodotTools.Export
             startInfo.Environment["PATH"] = directory + Path.PathSeparator + existing;
         }
 
-        internal static string? FindSignTool(string? configuredSdkRoot = null)
+        internal static string? FindSignTool(string? configuredSdkRoot = null, string? configuredCommandLineToolsRoot = null)
         {
-            // SDK Root is shared with the native exporter. Resolve the native
-            // ELF signer before starting MSBuild; a desktop-launched HAP does
-            // not inherit the user's terminal PATH.
-            if (!string.IsNullOrEmpty(configuredSdkRoot))
-                return SignToolInSdk(configuredSdkRoot);
-            foreach (string variable in new[] { "GODOT_OHOS_SDK_ROOT", "OHOS_SDK_HOME", "OHOS_BASE_SDK_HOME" })
-            {
-                string? sdk = Environment.GetEnvironmentVariable(variable);
-                if (!string.IsNullOrEmpty(sdk))
-                    return SignToolInSdk(sdk);
-            }
-            // Match the shared host's default; HOME can be application-private.
-            string root = Environment.GetEnvironmentVariable("OHECO_ROOT") ?? "/storage/Users/currentUser/.oheco";
-            string installed = Path.Combine(root, "bin", "binary-sign-tool");
+            // SDK Root is shared with the native exporter. Resolve before
+            // MSBuild starts, even when the editor has only a system PATH.
+            var sdk = ResolveSdk(configuredSdkRoot, configuredCommandLineToolsRoot);
+            if (sdk != null)
+                return SdkTool(sdk, "toolchains", "lib", "binary-sign-tool");
+            string installed = Path.Combine(OhecoRoot, "bin", "binary-sign-tool");
             if (File.Exists(installed))
-                return Path.GetFullPath(installed);
+                return CanonicalPath(Path.GetFullPath(installed));
             foreach (string directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
             {
                 if (string.IsNullOrEmpty(directory))
                     continue;
                 string candidate = Path.Combine(directory, "binary-sign-tool");
                 if (File.Exists(candidate))
-                    return Path.GetFullPath(candidate);
+                    return CanonicalPath(Path.GetFullPath(candidate));
             }
             return null;
-        }
-
-        private static string SignToolInSdk(string root)
-        {
-            if (!Path.IsPathFullyQualified(root) || !Directory.Exists(root))
-                throw new DirectoryNotFoundException("OpenHarmony SDK Root must be an existing absolute SDK view root (oo sdk path), not a component directory.");
-            string? tool = null;
-            Version? selected = null;
-            foreach (string directory in Directory.EnumerateDirectories(root))
-            {
-                if (!Version.TryParse(Path.GetFileName(directory), out var version))
-                    continue;
-                string candidate = Path.Combine(directory, "toolchains", "lib", "binary-sign-tool");
-                if (File.Exists(candidate) && (selected == null || version > selected))
-                {
-                    selected = version;
-                    tool = candidate;
-                }
-            }
-            return tool != null ? Path.GetFullPath(tool) : throw new FileNotFoundException("OpenHarmony SDK Root contains no toolchains/lib/binary-sign-tool. Install the matching ohos-sdk-toolchains and create the SDK view with oo; do not select the inner API or native component directory.");
         }
 
         internal static void ConfigureSigningEnvironment(ProcessStartInfo startInfo, string signer)

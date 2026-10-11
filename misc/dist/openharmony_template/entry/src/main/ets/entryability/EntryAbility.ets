@@ -55,8 +55,29 @@ export default class EntryAbility extends UIAbility {
 
   onWindowStageCreate(stage: window.WindowStage): void {
     record('ability onWindowStageCreate');
-    AppStorage.setOrCreate('godotWindowId', stage.getMainWindowSync().getWindowProperties().id);
-    stage.on('windowStageEvent', (event: window.WindowStageEventType) => plugin.sendWindowEvent(event));
+    const mainWindow = stage.getMainWindowSync();
+    AppStorage.setOrCreate('godotWindowId', mainWindow.getWindowProperties().id);
+    stage.on('windowStageEvent', (event: window.WindowStageEventType) => {
+      // Codes 2/3 belong exclusively to XComponent surface focus. Window
+      // activation is independent, and SHOWN/HIDDEN retain visibility codes.
+      switch (event) {
+        case window.WindowStageEventType.SHOWN: plugin.sendWindowEvent(1); break;
+        case window.WindowStageEventType.ACTIVE: plugin.sendWindowEvent(8); break;
+        case window.WindowStageEventType.INACTIVE: plugin.sendWindowEvent(9); break;
+        case window.WindowStageEventType.HIDDEN: plugin.sendWindowEvent(4); break;
+        case window.WindowStageEventType.RESUMED: plugin.sendWindowEvent(5); break;
+        case window.WindowStageEventType.PAUSED: plugin.sendWindowEvent(6); break;
+      }
+    });
+    // Query on ArkUI's thread before the surface can start the native engine.
+    // Every new template replaces the legacy initial window-active fallback.
+    let windowFocused: boolean = false;
+    try {
+      windowFocused = mainWindow.isFocused();
+    } catch (error) {
+      record(`initial window focus unavailable: ${describe(error as BusinessError)}`);
+    }
+    plugin.sendWindowEvent(windowFocused ? 8 : 9);
     stage.loadContent('pages/Index', (error: BusinessError) => {
       const key: string = AppStorage.get<string>('godotLaunchKey') ?? '';
       const independent: boolean = AppStorage.get<boolean>('godotIndependentInstance') ?? false;

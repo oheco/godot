@@ -1,7 +1,8 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 // Host-model regression tests, NOT HAP/device or native NAPI acceptance tests.
 // Transpile the real TouchInput and Index methods with an explicitly supplied
-// SDK compiler. Only ArkUI build/decorators are removed; OS/NAPI APIs are mocks.
+// SDK compiler. ArkUI build/decorators are removed, retaining the real axis
+// callback as a test method; OS/NAPI APIs are mocks.
 // No network access or dependencies are downloaded. Transpilation artifacts live
 // under TMPDIR and are removed even when an assertion fails.
 //
@@ -35,9 +36,10 @@ const repo = path.resolve(__dirname, '../../..');
 const sourceRoot = path.join(repo, 'misc/dist/openharmony_template/entry/src/main/ets');
 const plain = (value) => JSON.parse(JSON.stringify(value));
 const FLOAT32_MAX = 3.4028234663852886e38;
-// SDK ets/component/common.d.ts SourceType; ets/component/enums.d.ts
+// SDK ets/component/common.d.ts SourceType/SourceTool; ets/component/enums.d.ts
 // TouchType, MouseButton, MouseAction. These are SDK values, not Godot buttons.
 const SourceType = Object.freeze({ Unknown: 0, Mouse: 1, TouchScreen: 2, KEY: 4, JOYSTICK: 5 });
+const SourceTool = Object.freeze({ Unknown: 0, Finger: 1, Pen: 2, MOUSE: 3, TOUCHPAD: 4, JOYSTICK: 5 });
 const TouchType = Object.freeze({ Down: 0, Up: 1, Move: 2, Cancel: 3,
   HOVER_ENTER: 9, HOVER_MOVE: 10, HOVER_EXIT: 11, HOVER_CANCEL: 12 });
 const MouseButton = Object.freeze({ Left: 0, Right: 1, Middle: 2, Back: 3, Forward: 4, None: 5 });
@@ -84,7 +86,7 @@ function load(file, dependencies, globals, temporary, transform = (source) => so
   const artifact = path.join(temporary, file.replaceAll('/', '_').replace(/\.ets$/, '.js'));
   fs.writeFileSync(artifact, result.outputText);
   const sandbox = {
-    exports: {}, console, SourceType, TouchType, MouseAction, MouseButton,
+    exports: {}, console, SourceType, SourceTool, TouchType, MouseAction, MouseButton,
     require: (id) => {
       assert.ok(Object.hasOwn(dependencies, id), `Unexpected runtime dependency ${id} in ${file}`);
       return dependencies[id];
@@ -313,6 +315,75 @@ function testPlainSnapshots(TouchInput) {
   console.log('PASS DTO ownership: nested observed proxies detached; plain fresh arrays/objects; consumer mutations and independent instances cannot corrupt state');
 }
 
+function testIndexWheel(Index, calls) {
+  // Model touchpad axis events with source=Mouse so only the SDK SourceTool
+  // discriminator, TOUCHPAD=4 (distinct from MOUSE=3), selects touchpad units.
+  const cases = [
+    { name: 'touchpad step 1, diagonal up/right', tool: SourceTool.TOUCHPAD, scrollStep: 1,
+      vertical: -12, horizontal: 3, expected: [[4, 0.1], [7, 0.025]] },
+    { name: 'touchpad step 0, diagonal down/left', tool: SourceTool.TOUCHPAD, scrollStep: 0,
+      vertical: 12, horizontal: -3, expected: [[5, 0.1], [6, 0.025]] },
+    { name: 'touchpad absent step, tiny vertical delta', tool: SourceTool.TOUCHPAD,
+      vertical: -0.3, horizontal: 0, expected: [[4, 0.0025]] },
+    { name: 'touchpad absent step, tiny horizontal delta', tool: SourceTool.TOUCHPAD,
+      vertical: 0, horizontal: -0.6, expected: [[6, 0.005]] },
+    { name: 'touchpad step 120, horizontal only', tool: SourceTool.TOUCHPAD, scrollStep: 120,
+      vertical: 0, horizontal: 0.6, expected: [[7, 0.005]] },
+    { name: 'touchpad arbitrary mouse step, no speed clamp', tool: SourceTool.TOUCHPAD, scrollStep: 65535,
+      vertical: 240, horizontal: -360, expected: [[5, 2], [6, 3]] },
+    { name: 'touchpad stationary axes', tool: SourceTool.TOUCHPAD, scrollStep: 1,
+      vertical: 0, horizontal: 0, expected: [] },
+    { name: 'mouse regular notches', tool: SourceTool.MOUSE, scrollStep: 120,
+      vertical: -120, horizontal: 120, expected: [[4, 1], [7, 1]] },
+    { name: 'mouse configured step, fractional/multiple notches', tool: SourceTool.MOUSE, scrollStep: 60,
+      vertical: 30, horizontal: -90, expected: [[5, 0.5], [6, 1.5]] },
+    { name: 'mouse step 1 still means one notch', tool: SourceTool.MOUSE, scrollStep: 1,
+      vertical: -1, horizontal: 1, expected: [[4, 1], [7, 1]] },
+    { name: 'mouse absent step keeps fallback', tool: SourceTool.MOUSE,
+      vertical: 120, horizontal: -120, expected: [[5, 1], [6, 1]] },
+    { name: 'mouse zero step keeps fallback', tool: SourceTool.MOUSE, scrollStep: 0,
+      vertical: -120, horizontal: 120, expected: [[4, 1], [7, 1]] },
+    { name: 'unknown tool keeps existing wheel policy', tool: SourceTool.Unknown, scrollStep: 60,
+      vertical: 30, horizontal: 0, expected: [[5, 0.5]] },
+  ];
+  const page = new Index();
+  for (const scale of [1, 2.5]) {
+    page.getUIContext = () => ({ vp2px: (value) => value * scale });
+    for (const modifiers of [[], ['Alt', 'Ctrl', 'Shift']]) {
+      // Use the real key handler's Meta snapshot and ensure wheel pulses leave
+      // both pressed-key state and held mouse-button mask intact.
+      const meta = modifiers.length > 0;
+      page.handleKey({ keyCode: 2076, type: meta ? 0 : 1, metaKey: meta ? 1 : 0 });
+      page.mouseMask = meta ? 3 : 0;
+      for (const sample of cases) {
+        calls.length = 0;
+        const axis = {
+          source: SourceType.Mouse, sourceTool: sample.tool, x: 2, y: -4,
+          getVerticalAxisValue: () => sample.vertical,
+          getHorizontalAxisValue: () => sample.horizontal,
+          getModifierKeyState: (keys) => {
+            assert.ok(keys.every((name) => ['Alt', 'Ctrl', 'Shift'].includes(name)), 'SDK requires canonical modifier names');
+            return keys.every((name) => modifiers.includes(name));
+          },
+        };
+        if (Object.hasOwn(sample, 'scrollStep')) { axis.scrollStep = sample.scrollStep; }
+        page.dispatchAxis(axis);
+        const expected = sample.expected.flatMap(([button, factor]) => [0, 1].map((type) => ['mouse', {
+          type, button, mask: meta ? 3 : 0, x: 2 * scale, y: -4 * scale,
+          alt: meta, ctrl: meta, shift: meta, meta, doubleClick: false, factor,
+          hasRelative: false, relativeX: 0, relativeY: 0,
+        }]));
+        assert.deepEqual(calls, expected, `${sample.name}; vp2px scale=${scale}; modifiers=${modifiers}`);
+        assert.equal(page.mouseMask, meta ? 3 : 0, 'Wheel pulses must preserve held buttons');
+        assert.equal(page.metaPressed, meta, 'Wheel pulses must preserve Meta state');
+        assert.equal(page.pressedKeys.has(2076), meta, 'Wheel pulses must preserve physical key state');
+      }
+    }
+  }
+  calls.length = 0;
+  console.log('PASS real Index axis/wheel regression: SDK touchpad discriminator; step 1/0/absent; fractional deltas, both signs/axes and diagonal pulses; factor independent of DPI; modifiers/mask; mouse notches unchanged; no clamp');
+}
+
 function testIndexIntegration(touchModule, temporary) {
   const calls = [];
   const plugin = {
@@ -322,6 +393,7 @@ function testIndexIntegration(touchModule, temporary) {
       calls.push(['touch', plain(touches)]);
     },
     inputMouse: (mouse) => calls.push(['mouse', plain(mouse)]),
+    inputKey: (key) => calls.push(['key', plain(key)]),
     sendWindowEvent: (code) => calls.push(['window', code]),
     destroySurface: () => calls.push(['destroy']),
   };
@@ -334,15 +406,27 @@ function testIndexIntegration(touchModule, temporary) {
     assert.match(build, /\.onBlur\(\(\)\s*=>\s*this\.releaseInput\(\)\)/,
       'The real ArkUI onBlur must delegate to the tested releaseInput method');
     assert.match(build, /\.onMouse\(\(event:\s*MouseEvent\)\s*=>\s*this\.mouse\(event\)\)/);
-    return (source.slice(0, buildAt) + '}\n')
+    const axis = build.match(/\.onAxisEvent\(\(event:\s*AxisEvent\)\s*=>\s*\{([\s\S]*?)\n\s*\}\)/);
+    assert.ok(axis, 'Retain the real onAxisEvent callback to verify both axes');
+    return (source.slice(0, buildAt) + `  dispatchAxis(event: AxisEvent): void {${axis[1]}\n  }\n}\n`)
       .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
   };
+  // Real SDK key codes, deliberately distinct from Godot's mapped key codes.
+  const KeyCode = Object.freeze({ KEYCODE_A: 2017, KEYCODE_X: 2040,
+    KEYCODE_DPAD_UP: 2012, KEYCODE_DPAD_DOWN: 2013, KEYCODE_DPAD_LEFT: 2014, KEYCODE_DPAD_RIGHT: 2015,
+    KEYCODE_SHIFT_LEFT: 2047, KEYCODE_CTRL_LEFT: 2072, KEYCODE_CTRL_RIGHT: 2073,
+    KEYCODE_META_LEFT: 2076, KEYCODE_META_RIGHT: 2077 });
+  const keyModule = load('pages/KeyMap.ets', { '@kit.InputKit': { KeyCode } }, {}, temporary);
   const { Index } = load('pages/Index.ets', {
-    'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
+    'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode }, './KeyMap': keyModule,
+    '@kit.ArkUI': {}, '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {},
     '../runtime/TouchInput': touchModule,
     '../runtime/Config': {}, '../runtime/NativeArguments': {}, '../runtime/Permissions': {},
     '../runtime/Runtime': {}, '../runtime/Templates': {}, '../runtime/Diagnostics': {}, '../runtime/Launch': {},
-  }, { XComponentController: class {}, clearInterval: () => calls.push(['clearInterval']) }, temporary, transform);
+    '../runtime/LocalizedStrings': {},
+  }, { XComponentController: class {}, KeyType: { Down: 0, Up: 1 },
+    clearInterval: () => calls.push(['clearInterval']) }, temporary, transform);
+  testIndexWheel(Index, calls);
   const page = new Index();
   page.getUIContext = () => ({ vp2px: pixels });
 
@@ -438,6 +522,68 @@ function testIndexIntegration(touchModule, temporary) {
   assert.deepEqual(calls, [], 'Terminating page must ignore new input');
   expectTouches(terminatingPage.touchInput.cancelAll(), []);
   console.log('PASS real Index methods: mouse+synthetic-touch sequence routed once; physical touch pixels/slots; blur clears state and cancels before focus-out; disappear cancels before destroy; late input ignored');
+
+  const keyboardPage = new Index();
+  const focusRequests = [];
+  keyboardPage.getUIContext = () => ({ vp2px: pixels,
+    getFocusController: () => ({ requestFocus: (id) => focusRequests.push(id) }) });
+  keyboardPage.requestSurfaceFocus();
+  assert.deepEqual(focusRequests, [], 'No focus request before asynchronous surface readiness');
+  keyboardPage.ready = true;
+  keyboardPage.requestSurfaceFocus();
+  assert.deepEqual(focusRequests, ['godot-surface']);
+  keyboardPage.mouse(mouse(MouseAction.Press, 1, 2));
+  assert.deepEqual(focusRequests, ['godot-surface', 'godot-surface'], 'Pointer press reacquires physical keyboard focus');
+  keyboardPage.showStatus = true;
+  keyboardPage.requestSurfaceFocus();
+  assert.equal(focusRequests.length, 2, 'Diagnostic UI keeps its own focus');
+  keyboardPage.showStatus = false;
+  calls.length = 0;
+  const key = (keyCode, type, modifiers = [], unicode = undefined, metaKey = 0) => ({
+    keyCode, type, unicode, metaKey,
+    getModifierKeyState: (keys) => {
+      assert.ok(keys.every((name) => ['Ctrl', 'Alt', 'Shift'].includes(name)), 'SDK requires canonical modifier names');
+      return keys.every((name) => modifiers.includes(name));
+    },
+  });
+  for (const [keyCode, godotCode] of [[2014, 0x0f], [2012, 0x10], [2015, 0x11], [2013, 0x12]]) {
+    assert.equal(keyboardPage.handleKey(key(keyCode, 0)), true);
+    assert.equal(keyboardPage.handleKey(key(keyCode, 1)), true);
+    const pair = calls.splice(0).map((call) => call[1]);
+    assert.deepEqual(pair.map(({ code, unicode, pressed, echo }) => ({ code, unicode, pressed, echo })), [
+      { code: (1 << 22) | godotCode, unicode: 0, pressed: true, echo: false },
+      { code: (1 << 22) | godotCode, unicode: 0, pressed: false, echo: false },
+    ]);
+  }
+  keyboardPage.handleKey(key(2072, 0, ['Ctrl']));
+  keyboardPage.handleKey(key(2040, 0, ['Ctrl'], 120));
+  keyboardPage.handleKey(key(2040, 0, ['Ctrl'], 120));
+  keyboardPage.handleKey(key(2072, 1)); // Release Ctrl before X.
+  keyboardPage.handleKey(key(2040, 1, [], 120));
+  const cutKeys = calls.splice(0).map((call) => call[1]);
+  assert.equal(cutKeys[1].code, 0x58, 'Ctrl+X keeps the physical letter key');
+  assert.equal(cutKeys[1].ctrl, true);
+  assert.equal(cutKeys[2].echo, true);
+  assert.equal(cutKeys[3].ctrl, false);
+  assert.equal(cutKeys[4].pressed, false);
+  assert.equal(keyboardPage.pressedKeys.size, 0);
+  keyboardPage.handleKey(key(2015, 0, ['Ctrl', 'Shift'], undefined, 1));
+  const chord = calls.pop()[1];
+  assert.equal(chord.ctrl, true);
+  assert.equal(chord.shift, true);
+  assert.equal(chord.meta, true, 'Meta snapshot works even without an observed Meta key-down');
+  keyboardPage.handleKey(key(2015, 1));
+  assert.equal(calls.pop()[1].meta, false, 'Meta snapshot clears a missed Meta release');
+  assert.equal(keyboardPage.handleKey(key(999999, 0)), false);
+  keyboardPage.releaseInput();
+  calls.length = 0;
+  keyboardPage.handleKey(key(2012, 0));
+  assert.equal(calls.pop()[1].echo, false, 'Blur clears repeat state');
+  keyboardPage.disposed = true;
+  assert.equal(keyboardPage.handleKey(key(2012, 1)), false);
+  keyboardPage.requestSurfaceFocus();
+  assert.equal(focusRequests.length, 2, 'Disposed surface does not steal focus');
+  console.log('PASS keyboard/focus regression: SDK arrows, Ctrl+X, Ctrl+Shift navigation, repeat/balanced release, Meta snapshot, blur and lifecycle guards');
 }
 
 if (!process.env.TMPDIR) { throw new Error('TMPDIR is required for transpilation artifacts'); }

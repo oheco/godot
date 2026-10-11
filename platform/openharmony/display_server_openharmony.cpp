@@ -30,6 +30,8 @@
 
 #include "display_server_openharmony.h"
 
+#include "engine_host_openharmony.h"
+
 #include "os_openharmony.h"
 #include "rendering_context_driver_vulkan_openharmony.h"
 #include "wrapper_openharmony.h"
@@ -430,7 +432,14 @@ void DisplayServerOpenHarmony::_delete_backward(InputMethod_TextEditorProxy *p_t
 }
 
 void DisplayServerOpenHarmony::_send_keyboard_status(InputMethod_TextEditorProxy *p_text_editor_proxy, InputMethod_KeyboardStatus status) {
-	get_singleton()->keyboard_status = status;
+	DisplayServerOpenHarmony *display = get_singleton();
+	if (!display) {
+		return;
+	}
+	MutexLock lock(display->ime_status_mutex);
+	if (p_text_editor_proxy && p_text_editor_proxy == display->text_editor_proxy) {
+		display->keyboard_status = status;
+	}
 }
 
 void DisplayServerOpenHarmony::_send_enter_key(InputMethod_TextEditorProxy *p_text_editor_proxy, InputMethod_EnterKeyType enter_key_type) {
@@ -512,24 +521,69 @@ void DisplayServerOpenHarmony::_input_text_key(Key p_key, char32_t p_char, Key p
 }
 
 void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect, DisplayServerEnums::VirtualKeyboardType p_type, int p_max_length, int p_cursor_start, int p_cursor_end) {
+	virtual_keyboard_requested = true;
+	requested_keyboard_type = p_type;
+	DisplayServerEnums::VirtualKeyboardType current_type;
 	{
 		MutexLock lock(ime_geometry_mutex);
 		ime_text_rect = p_screen_rect;
+		current_type = keyboard_type;
 	}
-	if (keyboard_status == IME_KEYBOARD_STATUS_SHOW && keyboard_type == p_type) {
+	// ArkUI activation and surface focus can arrive after the first click.
+	// Keep the latest request and service it on a real focus transition.
+	if (!godot_host_is_input_focused()) {
+		update_ime_focus(false);
+		return;
+	}
+	Point2 current_screen_position;
+	uint32_t current_display_id = 0;
+	const bool have_display = _get_ime_screen_position(current_screen_position, &current_display_id);
+	const bool display_changed = have_display && (!ime_display_id_valid || current_display_id != ime_display_id);
+	// Attach can succeed without a SHOW callback (including hardware keyboards).
+	// Reuse it independent of visibility, while a valid display transition
+	// refreshes the service binding even when the keyboard type is unchanged.
+	if (input_method_proxy && current_type == p_type && !display_changed) {
+		InputMethod_KeyboardStatus status;
+		{
+			MutexLock lock(ime_status_mutex);
+			status = keyboard_status;
+		}
+		if (status != IME_KEYBOARD_STATUS_SHOW) {
+			InputMethod_ErrorCode code = OH_InputMethodProxy_ShowKeyboard(input_method_proxy);
+			if (code != IME_ERR_OK) {
+				ERR_PRINT(vformat("Failed to show keyboard: %d.", code));
+			}
+		}
 		_update_ime_cursor();
 		return;
 	}
-	if (keyboard_status != IME_KEYBOARD_STATUS_NONE) {
-		virtual_keyboard_hide();
-	}
 
+	// Allocate the replacement while the old editor still lives, keeping their
+	// callback identities distinct during reconfiguration. Allocation failure
+	// leaves an existing attachment intact.
+	InputMethod_TextEditorProxy *new_text_editor_proxy = OH_TextEditorProxy_Create();
+	InputMethod_AttachOptions *new_attach_options = OH_AttachOptions_Create(true);
+	if (!new_text_editor_proxy || !new_attach_options) {
+		if (new_attach_options) {
+			OH_AttachOptions_Destroy(new_attach_options);
+		}
+		if (new_text_editor_proxy) {
+			OH_TextEditorProxy_Destroy(new_text_editor_proxy);
+		}
+		ERR_FAIL_MSG("Failed to allocate input method client.");
+	}
+	virtual_keyboard_hide();
+	virtual_keyboard_requested = true;
+	requested_keyboard_type = p_type;
 	{
 		MutexLock lock(ime_geometry_mutex);
 		keyboard_type = p_type;
 	}
-	text_editor_proxy = OH_TextEditorProxy_Create();
-	attach_options = OH_AttachOptions_Create(true);
+	{
+		MutexLock lock(ime_status_mutex);
+		text_editor_proxy = new_text_editor_proxy;
+	}
+	attach_options = new_attach_options;
 
 	OH_TextEditorProxy_SetGetTextConfigFunc(text_editor_proxy, _get_text_config);
 	OH_TextEditorProxy_SetInsertTextFunc(text_editor_proxy, _insert_text);
@@ -547,47 +601,87 @@ void DisplayServerOpenHarmony::virtual_keyboard_show(const String &p_existing_te
 	OH_TextEditorProxy_SetSetPreviewTextFunc(text_editor_proxy, _set_preview_text);
 	OH_TextEditorProxy_SetFinishTextPreviewFunc(text_editor_proxy, _finish_text_preview);
 
-	InputMethod_ErrorCode code = OH_InputMethodController_Attach(text_editor_proxy, attach_options, &input_method_proxy);
-	if (code != IME_ERR_OK) {
+	// Publish attachment ownership only after success. A failed Attach does not
+	// grant a usable output proxy, even if the SDK wrote its output parameter.
+	InputMethod_InputMethodProxy *new_input_method_proxy = nullptr;
+	InputMethod_ErrorCode code = OH_InputMethodController_Attach(text_editor_proxy, attach_options, &new_input_method_proxy);
+	if (code != IME_ERR_OK || !new_input_method_proxy) {
 		virtual_keyboard_hide();
-		ERR_FAIL_MSG(vformat("Failed to attach input method controller: %d.", code));
+		ERR_FAIL_MSG(vformat("Failed to attach input method controller: %d.", code != IME_ERR_OK ? code : IME_ERR_NULL_POINTER));
 	}
+	input_method_proxy = new_input_method_proxy;
+	ime_display_id = current_display_id;
+	ime_display_id_valid = have_display;
 	ime_screen_position_valid = false;
 	_update_ime_cursor();
 }
 
 void DisplayServerOpenHarmony::virtual_keyboard_hide() {
-	if (keyboard_status == IME_KEYBOARD_STATUS_SHOW) {
-		if (OH_InputMethodProxy_HideKeyboard(input_method_proxy) != IME_ERR_OK) {
-			ERR_PRINT("Failed to hide keyboard.");
-		}
-	}
-	if (input_method_proxy) {
-		if (OH_InputMethodController_Detach(input_method_proxy) != IME_ERR_OK) {
-			ERR_PRINT("Failed to detach input method controller.");
-		}
-		input_method_proxy = nullptr;
-	}
-	if (attach_options) {
-		OH_AttachOptions_Destroy(attach_options);
-		attach_options = nullptr;
-	}
-	if (text_editor_proxy) {
-		OH_TextEditorProxy_Destroy(text_editor_proxy);
+	virtual_keyboard_requested = false;
+	ime_display_id_valid = false;
+	ime_screen_position_valid = false;
+	InputMethod_TextEditorProxy *old_text_editor_proxy;
+	{
+		MutexLock lock(ime_status_mutex);
+		// Invalidate callback identity before reentrant Hide/Detach notifications.
+		old_text_editor_proxy = text_editor_proxy;
 		text_editor_proxy = nullptr;
+		keyboard_status = IME_KEYBOARD_STATUS_NONE;
 	}
-	keyboard_status = IME_KEYBOARD_STATUS_NONE;
+	InputMethod_InputMethodProxy *old_input_method_proxy = input_method_proxy;
+	input_method_proxy = nullptr;
+	InputMethod_AttachOptions *old_attach_options = attach_options;
+	attach_options = nullptr;
+	if (old_input_method_proxy) {
+		// This path releases the client, not only its soft keyboard. Detach
+		// stops input and hides its panel; a preceding Hide requires a focused
+		// client and can fail during a normal window-focus handoff.
+		InputMethod_ErrorCode code = OH_InputMethodController_Detach(old_input_method_proxy);
+		if (code != IME_ERR_OK) {
+			ERR_PRINT(vformat("Failed to detach input method controller: %d.", code));
+		}
+	}
+	// SDK ownership lasts through the next Attach/Detach call, regardless of
+	// soft-keyboard visibility. Release the editor only after calling Detach.
+	if (old_attach_options) {
+		OH_AttachOptions_Destroy(old_attach_options);
+	}
+	if (old_text_editor_proxy) {
+		OH_TextEditorProxy_Destroy(old_text_editor_proxy);
+	}
+}
+
+void DisplayServerOpenHarmony::update_ime_focus(bool p_focused) {
+	if (!p_focused) {
+		const bool requested = virtual_keyboard_requested;
+		virtual_keyboard_hide();
+		virtual_keyboard_requested = requested;
+		return;
+	}
+	if (virtual_keyboard_requested) {
+		Rect2 screen_rect;
+		{
+			MutexLock lock(ime_geometry_mutex);
+			screen_rect = ime_text_rect;
+		}
+		virtual_keyboard_show(String(), screen_rect, requested_keyboard_type, -1, -1, -1);
+	}
 }
 
 int DisplayServerOpenHarmony::virtual_keyboard_get_height() const {
-	if (keyboard_status == IME_KEYBOARD_STATUS_SHOW) {
+	InputMethod_KeyboardStatus status;
+	{
+		MutexLock lock(ime_status_mutex);
+		status = keyboard_status;
+	}
+	if (status == IME_KEYBOARD_STATUS_SHOW) {
 		int height = ohos_wrapper_get_keyboard_avoid_area(OS_OpenHarmony::get_singleton()->get_window_id());
 		return height;
 	}
 	return 0;
 }
 
-bool DisplayServerOpenHarmony::_get_ime_screen_position(Point2 &r_position) const {
+bool DisplayServerOpenHarmony::_get_ime_screen_position(Point2 &r_position, uint32_t *r_display_id) const {
 	Point2 local_position;
 	{
 		MutexLock lock(ime_geometry_mutex);
@@ -596,19 +690,39 @@ bool DisplayServerOpenHarmony::_get_ime_screen_position(Point2 &r_position) cons
 		local_position = ime_position_valid ? Point2(ime_position) : ime_text_rect.position + Point2(0, ime_text_rect.size.y);
 	}
 	double x, y;
-	if (!ohos_wrapper_map_surface_point(OS_OpenHarmony::get_singleton()->get_window_id(), local_position.x, local_position.y, x, y)) {
+	if (!ohos_wrapper_map_surface_point(OS_OpenHarmony::get_singleton()->get_window_id(), local_position.x, local_position.y, x, y, r_display_id)) {
 		return false;
 	}
 	r_position = Point2(x, y);
 	return true;
 }
 
-void DisplayServerOpenHarmony::_update_ime_cursor() {
-	if (!ime_active || !input_method_proxy) {
+void DisplayServerOpenHarmony::_update_ime_display() {
+	if (!input_method_proxy || !virtual_keyboard_requested || !godot_host_is_input_focused()) {
 		return;
 	}
 	Point2 screen_position;
-	if (!_get_ime_screen_position(screen_position) || (ime_screen_position_valid && screen_position == last_ime_screen_position)) {
+	uint32_t display_id = 0;
+	if (!_get_ime_screen_position(screen_position, &display_id) || (ime_display_id_valid && display_id == ime_display_id)) {
+		return;
+	}
+	Rect2 screen_rect;
+	{
+		MutexLock lock(ime_geometry_mutex);
+		screen_rect = ime_text_rect;
+	}
+	// Reconfigure on the engine thread, after the UI publishes valid metadata.
+	// The show path preserves the latest request and balances the old client.
+	virtual_keyboard_show(String(), screen_rect, requested_keyboard_type, -1, -1, -1);
+}
+
+void DisplayServerOpenHarmony::_update_ime_cursor() {
+	if (!ime_active || !input_method_proxy || !godot_host_is_input_focused()) {
+		return;
+	}
+	Point2 screen_position;
+	uint32_t display_id = 0;
+	if (!_get_ime_screen_position(screen_position, &display_id) || (ime_screen_position_valid && screen_position == last_ime_screen_position && display_id == last_ime_display_id)) {
 		return;
 	}
 	// Godot supplies the popup anchor at the bottom of the caret. A zero-sized
@@ -625,6 +739,7 @@ void DisplayServerOpenHarmony::_update_ime_cursor() {
 		return;
 	}
 	last_ime_screen_position = screen_position;
+	last_ime_display_id = display_id;
 	ime_screen_position_valid = true;
 }
 
@@ -809,6 +924,7 @@ void DisplayServerOpenHarmony::process_events() {
 	}
 	Input::get_singleton()->flush_buffered_events();
 	// Window moves/layout changes also move candidates when the caret is still.
+	_update_ime_display();
 	_update_ime_cursor();
 }
 

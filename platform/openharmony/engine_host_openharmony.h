@@ -41,5 +41,16 @@ void godot_host_key(const GodotKeyEvent *event);
 void godot_host_resize(int32_t width, int32_t height);
 // UI-thread snapshot of the actual XComponent surface origin in screen px.
 void godot_host_set_surface_position(int32_t window_id, double x, double y);
+// Host event codes: 1 SHOWN, 2/3 surface focus in/out, 4 HIDDEN,
+// 5/6 foreground/background, 7 close request, 8/9 actual window ACTIVE/INACTIVE.
+// ArkUI sends its initial mainWindow.isFocused() as 8/9 before loadContent.
+// Snapshots are retained before start; effective focus is window && surface.
 void godot_host_window_event(int32_t event);
+// Thread-safe latest window snapshot for the native IME Attach gate. Independent
+// of surface focus; HIDDEN/background/stop also return false. Legacy templates
+// have an initial true fallback until an actual window snapshot arrives.
+bool godot_host_is_window_active();
+// Latest actual window activation AND acknowledged surface focus. IME clients
+// retain requests while false and attach only when this snapshot is eligible.
+bool godot_host_is_input_focused();
 }

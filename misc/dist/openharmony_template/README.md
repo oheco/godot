@@ -3,8 +3,26 @@
 This is the **only** DevEco source project for exported games and the Godot
 Editor. Both use the same Ability, ArkTS page, input mapping, N-API contract and
 engine thread. Defaults use the oo OpenHarmony SDK **26.0.0**, minimum compatible
-API **23**, ARM64 and Vulkan. Games use deviceTypes **`default`**. Supply your own
-signing material when needed; no credentials are shipped and Java is not required.
+API **26**, ARM64 and Vulkan. A selected complete HarmonyOS SDK bundle uses
+`runtimeOS: HarmonyOS`; a standalone versioned OpenHarmony SDK uses
+`runtimeOS: OpenHarmony`. Both use dotted API26 SDK strings such as `26.0.0` for
+compile, target and compatible fields. Games use deviceTypes **`phone`** in
+HarmonyOS mode and **`default`** in OpenHarmony mode; Editor profiles retain
+**`2in1`**. Source-only templates use an OpenHarmony baseline until a SDK is
+selected. Supply your own signing material when needed; no credentials are
+shipped and Java is not required.
+
+The generator accepts `build.sdkRoot` and `build.commandLineToolsRoot`. An explicit
+SDK root takes precedence; otherwise a supplied official toolchain root selects
+its bundled SDK. `--sdk-root` and `--command-line-tools-root` expose these inputs
+in the Editor project generator. The SDK selection validates component metadata,
+normalizes `sdk/default` to its parent SDK home and an OpenHarmony full-API
+directory to its parent SDK home, and rejects incomplete or conflicting sets.
+Flat base components inside a HarmonyOS bundle are not a standalone OpenHarmony
+SDK root. Full builds invoke the selected official tools' Node and hvigorw.js
+wrapper with a prepared persistent pnpm cache. Signing uses unchanged DevEco
+encrypted material values, including the keystore's adjacent material directory.
+The runner restores the original project profile after every build.
 
 ## Configuration, not a second shell
 
@@ -75,6 +93,9 @@ application. Generate it from the Godot source checkout before building in DevEc
 Access to user projects and oo Node/Hvigor/SDK needs `ohos.permission.READ_WRITE_USER_FILE` (user grant) and
 `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. These restricted permissions need
 matching ACL entries in the signing profile and are limited to 2-in-1 apps.
+The Editor also declares `ohos.permission.READ_PASTEBOARD`, with a usage reason
+for pasting text from other applications, and requests it through the shared
+user-grant flow. Its signing profile must include the approved pasteboard ACL.
 Declaring an unapproved permission can prevent installation; setting a host flag
 does not grant it. The shared host passes actual permission status to Godot.
 

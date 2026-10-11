@@ -137,10 +137,65 @@ def audit_bundle(path, project_record):
     return {'path': str(path), 'signed': False, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), **audit}
 
 
+def prepare_helper(source, private):
+    helper = private / 'helper'
+    helper.mkdir()
+    shutil.copyfile(source / 'modules/mono/editor/GodotTools/GodotTools/Export/OpenHarmonyExport.cs', helper / 'OpenHarmonyExport.cs')
+    shutil.copyfile(Path(__file__).with_name('HelperTests.cs'), helper / 'HelperTests.cs')
+    (helper / 'Helper.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><Nullable>enable</Nullable></PropertyGroup></Project>')
+    (helper / 'NuGet.Config').write_text('<configuration><packageSources><clear/></packageSources></configuration>')
+    return helper
+
+
+def run_helper_only(args):
+    args.output.mkdir(parents=True, exist_ok=False)
+    output, sdk = args.output.resolve(), args.dotnet_sdk.resolve()
+    source = Path(__file__).resolve().parents[4]
+    with tempfile.TemporaryDirectory(prefix='godot-csharp-export-helper-', dir=os.environ['TMPDIR']) as private_name:
+        private = Path(private_name)
+        helper = prepare_helper(source, private)
+        env = dict(os.environ)
+        for key in ('LD_LIBRARY_PATH', 'LD_PRELOAD'):
+            env.pop(key, None)
+        (private / 'tmp').mkdir()
+        env.update(DOTNET_ROOT=str(sdk), DOTNET_ROOT_ARM64=str(sdk), DOTNET_CLI_HOME=str(private / 'cli'),
+                   DOTNET_OHOS_TMPDIR=str(private / 'tmp'), TMPDIR=str(private / 'tmp'),
+                   NUGET_PACKAGES=str(private / 'nuget'), NUGET_SCRATCH=str(private / 'nuget-scratch'),
+                   NUGET_HTTP_CACHE_PATH=str(private / 'nuget-http'), DOTNET_CLI_TELEMETRY_OPTOUT='1',
+                   DOTNET_GENERATE_ASPNET_CERTIFICATE='false', DOTNET_CLI_USE_MSBUILD_SERVER='0',
+                   MSBUILDDISABLENODEREUSE='1', DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE='true',
+                   NuGetAudit='false', UseSharedCompilation='false')
+        commands = (
+            ('helper-build', [sdk / 'dotnet', 'build', helper / 'Helper.csproj', '-p:OpenHarmonyCodesignEnabled=false',
+                              '-p:UseSharedCompilation=false', '-p:NuGetAudit=false']),
+            ('helper-regression', [sdk / 'dotnet', helper / 'bin/Debug/net10.0/Helper.dll', private / 'helper-fixture']),
+        )
+        for name, command in commands:
+            log_path = output / (name + '.log')
+            with log_path.open('w') as log:
+                log.write('+ ' + ' '.join(map(str, command)) + '\n'); log.flush()
+                completed = subprocess.run(list(map(str, command)), cwd=helper, env=env,
+                                           stdout=log, stderr=subprocess.STDOUT, timeout=600)
+            if completed.returncode:
+                raise RuntimeError(name + ' failed; see ' + str(log_path))
+        log = (output / 'helper-regression.log').read_text()
+        marker = re.search(r'^OHOS_EXPORT_HELPER_PASS checks=\d+ nativeFiles=0$', log, re.MULTILINE)
+        if not marker:
+            raise RuntimeError('Helper regression did not emit its success marker; see ' + str(output))
+        (output / 'result.json').write_text(json.dumps({'platform': sys.platform, 'helperOnly': True,
+            'passed': [name for name, _ in commands], 'marker': marker[0],
+            'scope': 'Metadata-backed managed helper tests only; no publishing, signing, installation or network.'}, indent=2) + '\n')
+        print(marker[0])
+    print('OpenHarmony managed export helper tests passed:', output)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ('dotnet-sdk', 'nuget-feed', 'godotsharp', 'native-sdk', 'output'):
+    for option in ('dotnet-sdk', 'output'):
         parser.add_argument('--' + option, type=Path, required=True)
+    for option in ('nuget-feed', 'godotsharp', 'native-sdk'):
+        parser.add_argument('--' + option, type=Path)
+    parser.add_argument('--helper-only', action='store_true', help='Run isolated SDK/toolchain and ELF helpers without native publish or signing')
     parser.add_argument('--editor', type=Path)
     parser.add_argument('--restricted-tool-path', action='store_true')
     parser.add_argument('--editor-sdk-root', type=Path)
@@ -152,6 +207,11 @@ def main():
     args = parser.parse_args()
     if sys.platform != 'ohos':
         parser.error('Run acceptance on native OpenHarmony')
+    if args.helper_only:
+        run_helper_only(args)
+        return
+    if not all((args.nuget_feed, args.godotsharp, args.native_sdk)):
+        parser.error('Full acceptance requires --nuget-feed, --godotsharp and --native-sdk')
     full = args.hap_template_debug or args.hap_template_release
     if (full or args.restricted_tool_path or args.editor_sdk_root) and not args.editor:
         parser.error('Editor options require --editor')
@@ -233,12 +293,7 @@ def main():
                 shutil.copy2(artifact, libraries / (GAME_LIBRARY if artifact.name == 'Smoke.so' else artifact.name))
         native_audit = audit_libraries(libraries)
         shutil.copytree(libraries, output / 'native-libraries')
-        helper = private / 'helper'
-        helper.mkdir()
-        shutil.copyfile(source / 'modules/mono/editor/GodotTools/GodotTools/Export/OpenHarmonyExport.cs', helper / 'OpenHarmonyExport.cs')
-        shutil.copyfile(Path(__file__).with_name('HelperTests.cs'), helper / 'HelperTests.cs')
-        (helper / 'Helper.csproj').write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net10.0</TargetFramework><OutputType>Exe</OutputType><Nullable>enable</Nullable></PropertyGroup></Project>')
-        (helper / 'NuGet.Config').write_text('<configuration><packageSources><clear/></packageSources></configuration>')
+        helper = prepare_helper(source, private)
         run('helper-build', [dotnet, 'build', helper / 'Helper.csproj', '-p:OpenHarmonyCodesignEnabled=false', '-p:UseSharedCompilation=false', '-p:NuGetAudit=false'])
         run('helper-regression', [dotnet, helper / 'bin/Debug/net10.0/Helper.dll', private / 'helper-fixture', publish], 'OHOS_EXPORT_HELPER_PASS')
         if args.editor:
@@ -299,7 +354,7 @@ dotnet/include_debug_symbols=false
             if full:
                 for mode, archive in (('debug', args.hap_template_debug), ('release', args.hap_template_release)):
                     if not archive: continue
-                    extra = '\nbuild/export_project_only=true\nbuild/sdk_version="26.0.0"\nbuild/compatible_api=23\nbuild/bundle_id="org.oheco.csharpgamewithspaces"\nbuild/sign=false\ncustom_template/' + mode + '=' + json.dumps(str(archive.resolve())) + '\n'
+                    extra = '\nbuild/export_project_only=true\nbuild/sdk_version="26.0.0"\nbuild/compatible_api=26\nbuild/bundle_id="org.oheco.csharpgamewithspaces"\nbuild/sign=false\ncustom_template/' + mode + '=' + json.dumps(str(archive.resolve())) + '\n'
                     preset.write_text(preset_text + extra)
                     target = private / ('full-export-' + mode + '.hap')
                     run('full-project-export-' + mode, [editor, '--headless', '--path', project, '--export-' + mode, 'CSharp OpenHarmony', target], run_env=editor_env)
@@ -333,7 +388,7 @@ dotnet/include_debug_symbols=false
                         '-p:NuGetAudit=false', '-p:UseSharedCompilation=false'],
                         marker='editor-only assembly', expected_exit=1)
                     assert not list((private / 'rejected-native-publish').glob('*.so'))
-                    negative_options = '\nbuild/export_project_only=true\nbuild/sdk_version="26.0.0"\nbuild/compatible_api=23\nbuild/bundle_id="org.oheco.csharpgamewithspaces"\nbuild/sign=false\ncustom_template/' + mode + '=' + json.dumps(str(archive.resolve())) + '\n'
+                    negative_options = '\nbuild/export_project_only=true\nbuild/sdk_version="26.0.0"\nbuild/compatible_api=26\nbuild/bundle_id="org.oheco.csharpgamewithspaces"\nbuild/sign=false\ncustom_template/' + mode + '=' + json.dumps(str(archive.resolve())) + '\n'
                     preset.write_text(preset_text + negative_options)
                     run('full-export-editor-reference-rejected', [editor, '--headless', '--verbose', '--path', project, '--export-' + mode, 'CSharp OpenHarmony', failed], marker='Failed to build project', run_env=editor_env, expected_exit=1)
                     build_logs = list(private.rglob('msbuild_log.txt'))

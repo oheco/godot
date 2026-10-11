@@ -5,9 +5,14 @@ Games and the Editor use one [DevEco source project](<misc/dist/openharmony_temp
 and the same ArkTS/N-API/native engine host. Generated configuration selects the
 application identity, startup policy and optional Editor/.NET environment. Both
 profiles default to the oo **OpenHarmony SDK 26.0.0**, with minimum compatible
-API **23**. Game device types default to **`default`**; the Editor remains
+API **26**. Game device types default to **`default`**; the Editor remains
 2-in-1-only because its external build tools/user-file permissions require that
-profile. The person installing the Editor supplies their own signing material.
+profile. Both profiles detect `runtimeOS` from the selected SDK metadata: a
+complete HarmonyOS SDK bundle uses `HarmonyOS`; a standalone versioned
+OpenHarmony SDK uses `OpenHarmony`. API26 and later use dotted strings such as
+`26.0.0` for compile, target and compatible SDK fields in both modes. Source-only
+templates retain an OpenHarmony baseline until a SDK is selected. The person
+installing the Editor supplies their own signing material.
 
 The Editor payload includes GodotSharp and an offline feed, **not a .NET SDK**.
 The installed oheco SDK is an external runtime dependency of the SDK-enabled
@@ -19,7 +24,7 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
-## Desktop integration in the 4.7.2-ohos.4 candidate
+## Desktop integration in 4.7.2-ohos.5
 
 - The ArkUI startup surface shows the application/Godot logo while runtime,
   templates and the native engine initialize. Log controls appear for failures
@@ -34,13 +39,12 @@ application behaviours after changing the common host.
 - Clipboard writes validate allocation and every UDMF stage. Reads use primary
   plain text across the entire pasteboard data set, with HTML plain-content
   fallback, and report permission/API failures without logging the copied text.
-- This revision does **not** automatically request `READ_PASTEBOARD`, and
-  installed clipboard acceptance is explicitly deferred. Cross-application
-  reads may consequently fail. For an opt-in deployment, add
-  `ohos.permission.READ_PASTEBOARD` to the project configuration only after
-  obtaining its **system_basic, restricted user-grant** signing-profile ACL.
-  A declaration or user dialog alone is insufficient. Clipboard writes do not
-  require this read permission.
+- The Editor profile declares `ohos.permission.READ_PASTEBOARD` with its usage
+  reason and requests it through the shared user-grant permission flow. Its
+  **system_basic, restricted user-grant** signing-profile ACL must also be approved.
+  Installed cross-application clipboard acceptance remains pending; a declaration
+  or user dialog alone is insufficient. Clipboard writes do not require this
+  read permission.
 - File manager requests run asynchronously on the UIAbility thread and open
   Huawei File Manager (`com.huawei.hmos.filemanager/MainAbility`) at the selected
   directory or a file's parent. File selection highlighting is not guaranteed.
@@ -59,14 +63,23 @@ cursor placement. Rebuild editor and both game template libraries and rerun
 `build-cli.py` before regenerating projects; ABI-1 and ABI-2 caches are rejected.
 The managed Godot SDK remains `4.7.2-ohos.3`, since the managed API is unchanged.
 
-Desktop input fixes in this candidate provide the velocity fields expected by
-PopupMenu's hover filter and map the caret through canvas and Window transforms
-once, then add the actual XComponent surface origin in physical screen pixels.
-IME updates cache only successfully submitted coordinates so a transient SDK
-failure does not suppress retries at the same caret. Real-control native tests
-cover root and nested embedded windows at ordinary and 2x stretch. Installed
-startup, popup IME, menu hover, File Manager and unsupported-feature acceptance
-is recorded separately in [desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>).
+Desktop input preserves physical arrows and shortcuts such as Ctrl+X, reconciles
+actual window activity with XComponent focus, and distinguishes touchpad vp axis
+deltas from mouse-wheel steps. External-action notifications use English base
+resources through the internationalized resource lookup.
+
+The IME client remains attached independently of soft-keyboard visibility.
+Releasing a client uses one Detach rather than a preliminary focus-dependent
+HideKeyboard. Cursor mapping keeps desktop window/mouse coordinates and converts
+only the IME anchor to pixels on the current physical display. Display and density
+changes refresh one coherent geometry snapshot; changing displays refreshes the
+client binding. Cursor deduplication includes display identity and commits only
+successful SDK notifications. Real-control tests cover root and nested embedded
+windows at ordinary and 2x stretch. Device acceptance of the repaired input and
+both-display round trip is recorded in
+[release validation](<platform/openharmony/tests/release-validation-ohos5.md>).
+Historical startup, popup, menu and external-action results remain in
+[desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>).
 
 ## Baseline and dependencies
 
@@ -121,10 +134,11 @@ only recognised fields can be overridden:
 - `application`: bundleId, displayName, vendor, versionCode, versionName,
   deviceTypes, orientation (`system` means no manifest override), icons
   (foreground/background PNG paths).
-- `build`: sdkVersion (default `26.0.0`, applied to compile/target), compatibleApi
-  (default `23`), architectures. OpenHarmony SDK views use runtimeOS=OpenHarmony;
-  legacy HarmonyOS version strings remain an explicit project-generation option,
-  not an automatic fallback. The current Editor generator accepts ARM64 only.
+- `build`: sdkVersion (default `26.0.0`), compatibleApi (default `26`),
+  architectures, sdkRoot and commandLineToolsRoot. Compile/target/compatible fields
+  use full dotted versions. SDK metadata selects HarmonyOS for complete bundles or
+  OpenHarmony for standalone versioned component sets. The current Editor generator
+  accepts ARM64 only.
 - `engine.target`: editor, template_debug or template_release, matching the role
   and the separately compiled input library; this is not a runtime engine switch.
 - `host`, `launch`, `instances`, `managed`, `window`, `diagnostics`: the runtime
@@ -186,9 +200,11 @@ Prepare these before the offline build:
 - The existing native LLVM tools and `binary-sign-tool` on PATH
   (`oo install ohos-sdk-toolchains`).
 - The packaged native .NET SDK (`oo install dotnet-sdk`) and the pinned NuGet feed.
-- Native Node 24, oo Hvigor adapter **6.26.4-ohos.1**, all five matching SDK
-  components, and the fixed SDK view. These export tools are not installed by
-  the project packager. No Java, broker, npx download or SDK file patch is used.
+- Official Command Line Tools with bundled Node **24.14.1 or later**, coherent
+  Hvigor/plugin **7.26.8 or later in major 7**, and a complete API26+ SDK.
+  The wrapper's pinned pnpm cache must be prepared before offline export. These
+  tools are not installed by the project packager. Native HarmonyOS signing uses
+  the SDK executable; supplied signing material avoids default credential generation.
 - User-supplied signing material for signed HAP/APP export or device deployment.
   DevEco remains optional for manually building/signing the generated Editor project.
 
@@ -242,34 +258,33 @@ and Vulkan presentation acceptance remain separate checks.
 
 ## On-device export, run and GDScript debug
 
-Prepare the external build tools once (oheco 0.10.0 or newer):
+Prepare the official build tools once:
 
 ```sh
-oo install nodejs
-NPM_CONFIG_REGISTRY=https://repo.harmonyos.com/npm/ oo install hvigor
-oo install ohos-sdk-native@26.0.0.35-Beta ohos-sdk-ets@26.0.0.35-Beta \
-  ohos-sdk-js@26.0.0.35-Beta ohos-sdk-toolchains@26.0.0.35-Beta \
-  ohos-sdk-previewer@26.0.0.35-Beta
-oo sdk create 26.0.0.35-Beta
-"$(npm prefix --global)/bin/hvigor" --adapter-info
+oo install command-line-tools
 ```
 
-The native exporter discovers the active oo Node/global adapter and SDK view.
-Editor Settings exposes `export/openharmony/{node_path,hvigor_entry,sdk_root,hdc_path}`
-for explicit paths; empty settings mean automatic discovery. C# build/publish also
-uses SDK Root to resolve `toolchains/lib/binary-sign-tool`, or the oo command when
-no root is configured, and passes the absolute `OpenHarmonySigningTool` property
-in the MSBuild child environment. Only that child's PATH is extended; a GUI
-launch does not need the terminal's PATH. No fifth signing-tool setting is required.
+Prepare the wrapper's pinned pnpm cache before an offline build. The runner
+checks that cache and uses the empty Hvigor dependency map to select the bundled
+engine and plugin. Project packages must already contain only staged local inputs.
+
+Editor Settings exposes `export/openharmony/command_line_tools_root` and
+`export/openharmony/sdk_root` as directories. Empty tools selects oo's active
+`hvigorw` package; empty SDK selects that package's complete bundled SDK. HDC has
+an optional `export/openharmony/hdc_path` file override. Node and hvigorw.js come
+from the selected tools together. C# build/publish resolves compiler and ELF signer
+from the same selected SDK metadata and passes their absolute paths only to the
+MSBuild child environment.
 A project-only export
 needs no build tools. Full HAP/APP export calls the template's
 [build runner](<misc/dist/openharmony_template/tools/BUILD_RUNNER.md>) directly with
 Node, uses only installed dependencies, and never changes the Editor's global
-PATH/cwd to imitate DevEco. Credentials are passed in a checked private cache
-request, not command arguments; generated signing configuration uses environment
-references and the original profile is restored after the build. Error output is
-redacted. Signed exports require the user's actual certificate/profile/keystore;
-file-signature validation does not prove device trust.
+PATH/cwd to imitate DevEco. Signing configuration is passed in a checked private
+cache request. Password fields contain the unchanged DevEco encrypted values;
+retain the adjacent keystore material directory. The official SDK decrypts those
+values for its native signer. The original profile is restored after the build,
+and output is redacted. Signed exports require the user's actual certificate,
+profile and keystore; file-signature validation does not prove device trust.
 
 Build both `module_mono_enabled=yes` templates. Bundle them with the Editor using
 `--game-template-debug` and `--game-template-release` below. On startup only the
@@ -384,8 +399,8 @@ downloads, verifies and extracts.
 
 Open the project root in DevEco, select the SDK, configure automatic signing with
 your own account, and build the `entry` module. The shell targets **2-in-1
-devices** with the HarmonyOS SDK **6.1.0(23)** and Vulkan only. The engine itself
-is still compiled against the OpenHarmony native SDK, which is a separate input.
+devices** with SDK API **26 or newer** and Vulkan only. The engine itself is
+compiled against the OpenHarmony native SDK, which is a separate input.
 
 The application needs `ohos.permission.READ_WRITE_USER_FILE` and
 `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` to read and run the `oo`-installed
@@ -426,17 +441,16 @@ Checks for the **4.7.2-ohos.2** project:
   expects to find on the device, and it contains no signing material or absolute
   host path.
 
-The checks above describe the historical 4.7.2-ohos.2 baseline. For the current
-4.7.2-ohos.4 desktop candidate, native Editor/debug/release builds, offline
-managed assemblies, CompileArkTS and signed HAP installation were repeated.
-The installed user acceptance covers the official startup logo, popup IME
-alignment, main/context/submenu hover, File Manager and unsupported external
-app notifications. Native tests additionally cover caret geometry, mouse motion
-and retrying a failed IME cursor notification without falsely caching success;
-see [desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>)
-for artifact hashes and the distinction between captured and user-reported
-checks. Final clean-source release provenance and catalog installation are
-recorded separately from this installed candidate.
+The checks above describe the historical 4.7.2-ohos.2 baseline. Later desktop
+acceptance covers the startup logo, popup IME alignment, main/context/submenu
+hover, File Manager and unsupported external actions; their original scope and
+hashes remain in [desktop-validation.md](<platform/openharmony/tests/desktop-validation.md>).
+The 4.7.2-ohos.5 input repair adds physical shortcuts, touchpad normalization,
+focus-aware IME ownership, Detach-only release and multi-display cursor mapping.
+Its installed candidate passed text-field/application-focus switching and both
+screens with a return to primary. See
+[release validation](<platform/openharmony/tests/release-validation-ohos5.md>) for
+current automated checks, release provenance and the separate device scopes.
 
 End users still need their own signing account/profile. Process launch,
 sandboxed GUI .NET execution and project portability beyond the explicitly

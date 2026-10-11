@@ -43,7 +43,7 @@ def main():
             raise SystemExit(f'Missing offline packages: {root}')
         for package in packages:
             shutil.copyfile(package, feed / package.name)
-    with tempfile.TemporaryDirectory(prefix='godot-csharp-acceptance-', dir='/data/storage/el2/base/cache') as private:
+    with tempfile.TemporaryDirectory(prefix='godot-csharp-acceptance-', dir=os.environ['TMPDIR']) as private:
         env = dict(os.environ)
         for key in ('LD_LIBRARY_PATH', 'LD_PRELOAD', 'GODOT_OHOS_RELOAD_REPORT'):
             env.pop(key, None)

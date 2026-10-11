@@ -93,7 +93,7 @@ void EditorExportPlatformOpenHarmony::get_export_options(List<ExportOption> *r_o
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "build/export_project_only"), false, true, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::BOOL, "build/override_project_dir"), false, true, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/sdk_version", PROPERTY_HINT_PLACEHOLDER_TEXT, vformat("%s (default)", OPENHARMONY_DEFAULT_SDK_VERSION)), "", false, true));
-	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/compatible_api", PROPERTY_HINT_RANGE, "23,99,1"), 23));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/compatible_api", PROPERTY_HINT_RANGE, "26,99,1"), 26));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/bundle_id", PROPERTY_HINT_PLACEHOLDER_TEXT, vformat("%s (default)", OPENHARMONY_DEFAULT_BUNDLE_ID)), "", false, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/default_orientation", PROPERTY_HINT_ENUM, OPENHARMONY_ORIENTATION_ENUMS), 0, true, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/background_image", PROPERTY_HINT_GLOBAL_FILE, "*.png"), "", false, false));
@@ -173,7 +173,7 @@ String EditorExportPlatformOpenHarmony::get_export_option_warning(const EditorEx
 	if (p_name == "build/sdk_version") {
 		String sdk = p_preset->get(p_name);
 		if (!sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(sdk)) {
-			return TTR("The shared OpenHarmony host requires API 23 or newer (oo SDK default: 26.0.0).");
+			return TTR("Use a HarmonyOS/OpenHarmony SDK version such as 26.0.0 (API 26 or newer). The build mode is detected from the selected SDK metadata.");
 		}
 	}
 
@@ -185,11 +185,11 @@ String EditorExportPlatformOpenHarmony::get_export_option_warning(const EditorEx
 			if (p_name == "sign/store_file") {
 				return TTR("Store file path is required when signing is enabled.");
 			} else if (p_name == "sign/store_password") {
-				return TTR("Store password is required when signing is enabled.");
+				return TTR("The encrypted DevEco store password is required when signing is enabled.");
 			} else if (p_name == "sign/key_alias") {
 				return TTR("Key alias is required when signing is enabled.");
 			} else if (p_name == "sign/key_password") {
-				return TTR("Key password is required when signing is enabled.");
+				return TTR("The encrypted DevEco key password is required when signing is enabled.");
 			} else if (p_name == "sign/sign_alg") {
 				return TTR("Sign algorithm is required when signing is enabled.");
 			} else if (p_name == "sign/profile_file") {
@@ -271,7 +271,7 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 
 	String requested_sdk = p_preset->get("build/sdk_version");
 	if (!requested_sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(requested_sdk)) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("The shared OpenHarmony host requires API 23 or newer (oo SDK default: 26.0.0)."));
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Use a HarmonyOS/OpenHarmony SDK version such as 26.0.0 (API 26 or newer). The build mode is detected from the selected SDK metadata."));
 		return ERR_INVALID_PARAMETER;
 	}
 	bool has_sign = p_preset->get("build/sign");
@@ -469,6 +469,7 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	ERR_FAIL_INDEX_V(orientation, orientations.size(), ERR_INVALID_PARAMETER);
 	Dictionary host_options;
 	host_options["sdk"] = sdk_version;
+	host_options["sdk_root"] = get_sdk_path(sdk_version);
 	host_options["compatible_api"] = p_preset->get("build/compatible_api");
 	const bool managed_runtime = has_export_feature(p_preset, p_debug, "dotnet");
 	host_options["dotnet"] = managed_runtime;
@@ -497,7 +498,7 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	host_options["verbose"] = p_preset->get("build/verbose_diagnostics");
 	err = OpenHarmonyProjectConfig::configure_game(project_dir, host_options);
 	if (err != OK) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Unable to configure the shared host. Use a current OpenHarmony game template and API 23 or newer."));
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Unable to configure the shared host. Use a current OpenHarmony game template and API 26 or newer."));
 		return err;
 	}
 
@@ -592,7 +593,7 @@ Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPrese
 	const String sdk = get_sdk_path(version);
 	const String runner = p_project.path_join("tools/build.cjs");
 	if (!FileAccess::exists(node) || !FileAccess::exists(hvigor) || !DirAccess::dir_exists_absolute(sdk) || !FileAccess::exists(runner)) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Build"), TTR("Install oo Node, the @oheco/hvigor adapter and matching SDK view, or configure their paths in Editor Settings. Rebuild outdated game templates."));
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Build"), TTR("Select an official Command Line Tools directory and a complete matching SDK in Editor Settings. An empty SDK Root uses the selected tools' bundled SDK. Rebuild outdated game templates."));
 		return ERR_UNCONFIGURED;
 	}
 	// Secrets are never command-line arguments or files on HOME/hmdfs.
@@ -604,10 +605,10 @@ Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPrese
 		return ERR_CANT_CREATE;
 	}
 	Dictionary request;
-	request["schemaVersion"] = 1;
+	request["schemaVersion"] = 2;
 	request["projectDir"] = p_project;
 	request["sdkRoot"] = sdk;
-	request["hvigorEntry"] = hvigor;
+	request["commandLineToolsRoot"] = get_command_line_tools_root();
 	request["buildMode"] = p_debug ? "debug" : "release";
 	request["format"] = p_output.get_extension().to_lower();
 	request["workDir"] = work;
@@ -618,8 +619,8 @@ Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPrese
 		signing["storeFile"] = p_preset->get("sign/store_file");
 		signing["keyAlias"] = p_preset->get("sign/key_alias");
 		signing["signAlg"] = p_preset->get("sign/sign_alg");
-		signing["keyPassword"] = p_preset->get("sign/key_password");
-		signing["storePassword"] = p_preset->get("sign/store_password");
+		signing["keyPasswordEncrypted"] = p_preset->get("sign/key_password");
+		signing["storePasswordEncrypted"] = p_preset->get("sign/store_password");
 		request["signing"] = signing;
 	}
 	const String request_path = work.path_join("request.json");
@@ -647,7 +648,7 @@ Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPrese
 		Dictionary result;
 		err = OpenHarmonyProjectConfig::read_document(work.path_join("result.json"), result);
 		String artifact = result.get("outputPath", "");
-		if (err == OK && (int(result.get("schemaVersion", 0)) != 1 || result.get("mode", "") != request["buildMode"] || result.get("format", "") != request["format"] || bool(result.get("signed", !p_sign)) != p_sign || !artifact.is_absolute_path() || !artifact.begins_with(p_project + "/") || !FileAccess::exists(artifact))) {
+		if (err == OK && (int(result.get("schemaVersion", 0)) != 2 || result.get("mode", "") != request["buildMode"] || result.get("format", "") != request["format"] || bool(result.get("signed", !p_sign)) != p_sign || !artifact.is_absolute_path() || !artifact.begins_with(p_project + "/") || !FileAccess::exists(artifact))) {
 			err = ERR_INVALID_DATA;
 		}
 		if (err == OK) {
@@ -894,7 +895,7 @@ bool EditorExportPlatformOpenHarmony::has_valid_export_configuration(const Ref<E
 
 		if (store_password.is_empty()) {
 			valid = false;
-			err += TTR("Store password is required when signing is enabled.") + "\n";
+			err += TTR("The encrypted DevEco store password is required when signing is enabled.") + "\n";
 		}
 
 		if (key_alias.is_empty()) {
@@ -904,7 +905,7 @@ bool EditorExportPlatformOpenHarmony::has_valid_export_configuration(const Ref<E
 
 		if (key_password.is_empty()) {
 			valid = false;
-			err += TTR("Key password is required when signing is enabled.") + "\n";
+			err += TTR("The encrypted DevEco key password is required when signing is enabled.") + "\n";
 		}
 
 		if (sign_alg.is_empty()) {
@@ -977,7 +978,7 @@ bool EditorExportPlatformOpenHarmony::has_valid_export_configuration(const Ref<E
 		}
 		if (!FileAccess::exists(get_node_path()) || !FileAccess::exists(get_hvigor_path()) || !DirAccess::dir_exists_absolute(get_sdk_path(version))) {
 			valid = false;
-			err += TTR("Install oo Node, @oheco/hvigor and a matching SDK view (oo sdk create), or configure explicit OpenHarmony export paths.") + "\n";
+			err += TTR("Install the official Command Line Tools and select their directory in Editor Settings. Select a complete SDK Root when using an external SDK.") + "\n";
 		}
 	}
 
@@ -1067,16 +1068,20 @@ int EditorExportPlatformOpenHarmony::get_debug_port() const {
 	return int(EDITOR_GET("network/debug/remote_port"));
 }
 
+String EditorExportPlatformOpenHarmony::get_command_line_tools_root() const {
+	return OpenHarmonyToolchain::command_line_tools(EDITOR_GET("export/openharmony/command_line_tools_root"));
+}
+
 String EditorExportPlatformOpenHarmony::get_node_path() const {
-	return OpenHarmonyToolchain::node(EDITOR_GET("export/openharmony/node_path"));
+	return OpenHarmonyToolchain::node(get_command_line_tools_root());
 }
 
 String EditorExportPlatformOpenHarmony::get_sdk_path(const String &p_version) const {
-	return OpenHarmonyToolchain::sdk(EDITOR_GET("export/openharmony/sdk_root"), p_version);
+	return OpenHarmonyToolchain::sdk(EDITOR_GET("export/openharmony/sdk_root"), get_command_line_tools_root(), p_version);
 }
 
 String EditorExportPlatformOpenHarmony::get_hvigor_path() const {
-	return OpenHarmonyToolchain::hvigor(EDITOR_GET("export/openharmony/hvigor_entry"), get_node_path());
+	return OpenHarmonyToolchain::hvigor(get_command_line_tools_root());
 }
 
 String EditorExportPlatformOpenHarmony::get_hdc_path() const {

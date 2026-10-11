@@ -55,6 +55,7 @@ class EditorExportPlatformOpenHarmony : public EditorExportPlatform {
 	Ref<ImageTexture> run_icon;
 
 	String find_game_template(const String &p_filename, String &r_error) const;
+	String get_command_line_tools_root() const;
 	String get_node_path() const;
 	String get_sdk_path(const String &p_version = "26.0.0") const;
 	String get_hvigor_path() const;

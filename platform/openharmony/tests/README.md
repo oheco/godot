@@ -11,8 +11,11 @@ source template or a user's configured DevEco project.
 python3 -m unittest discover -s platform/openharmony/tests -p 'test_*.py' -v
 ```
 
-These tests cover game/editor/native-only profiles, SDK26/API23-compatibility defaults, escaped
-strings, supported permissions, explicit restricted-permission flags, unknown
+These tests cover game/editor/native-only profiles, SDK26/API26-compatibility defaults,
+automatic HarmonyOS/OpenHarmony mode selection from SDK metadata, dotted API26
+SDK fields, rejection of obsolete version syntax and inconsistent SDK layouts,
+conversion of preserved profiles, escaped strings, supported permissions,
+explicit restricted-permission flags, unknown
 fields, schema failures before source replacement, preserving signing/locks,
 removal of obsolete generated entry points, real file-quota failure, rollback
 installation failure and interrupted migration recovery. Editor generation uses
@@ -27,6 +30,7 @@ replacement:
 node platform/openharmony/tests/test_arkts_host.cjs --compiler "$TYPESCRIPT_JS"
 node platform/openharmony/tests/test_host_diagnostics.cjs --compiler "$TYPESCRIPT_JS"
 node platform/openharmony/tests/test_touch_input.cjs --compiler "$TYPESCRIPT_JS"
+node platform/openharmony/tests/test_host_focus.cjs --compiler "$TYPESCRIPT_JS"
 node platform/openharmony/tests/test_templates.cjs --compiler "$TYPESCRIPT_JS"
 node --test platform/openharmony/tests/test_build_runner.cjs
 python3 platform/openharmony/tests/test_device_run.py --sdk "$SDK_VIEW_ROOT"
@@ -96,6 +100,7 @@ signed engine library:
 ```sh
 python3 platform/openharmony/tests/test_ime_geometry.py --native-sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_ime_cursor_notify.py --native-sdk "$NATIVE_SDK"
+python3 platform/openharmony/tests/test_ime_client_lifecycle.py --native-sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_ime_controls.py \
   --native-sdk "$NATIVE_SDK" --library "$SIGNED_ENGINE_LIBRARY" --compile-controls
 python3 platform/openharmony/tests/test_popup_mouse_motion.py \
@@ -135,9 +140,9 @@ Manager still opens the requested directory, browser links still open, and
 scripts can still be edited internally. Broker and terminal cwd integration are
 not acceptance requirements for these disabled menus.
 
-Clipboard acceptance is deferred for this revision: `READ_PASTEBOARD` is not
-automatically declared or requested. A later opt-in clipboard probe requires
-its approved signing-profile ACL and the application's granted permission;
+The Editor profile declares `READ_PASTEBOARD` and requests it through the shared
+user-grant flow. Installed clipboard acceptance remains pending and requires its
+approved signing-profile ACL and the application's granted permission;
 preserve/restore clipboard contents when performing that probe.
 
 ## Real native engine and export
@@ -175,18 +180,22 @@ python3 platform/openharmony/tests/test_debug_protocol.py \
   --output "$NEW_DEBUG_EVIDENCE_DIR"
 ```
 
-The first test calls the actual C++ exporter and the installed oo Hvigor adapter
+The first test calls the actual C++ exporter and official Hvigor wrapper
 for unsigned debug HAP, release HAP and APP output, including paths with spaces.
-No signing/install/dependency download is performed. SDK26/OpenHarmony/default
-is the current source configuration, not a fabricated HarmonyOS API23 SDK.
+No signing/install/dependency download is performed. Its runtime OS and device
+expectations come from the selected real SDK metadata: HarmonyOS/phone for the
+official complete bundle, OpenHarmony/default for a versioned component set.
+Use `--command-line-tools-root` and `--sdk-root` to select explicit installations;
+compile/target/compatible SDK remain dotted 26.0.0.
 The second uses a real Godot TCP protocol peer and real exported GDScript: it
 checks breakpoint/stack/local values, next/continue, actual RemoteSceneTree and
 release debugging rejection with a positive release-boot control. It is not
 GUI/HAP/HDC acceptance. Both clean up their isolated runtime projects/processes.
 
 [build_deveco_project.py](<build_deveco_project.py>) remains useful for an isolated
-source project or `--arkts-only`, but now invokes the installed adapter with
-`--hvigor-entry`, never a direct unadapted official Hvigor entry. Personal signing
+source project or `--arkts-only`; select official tools with
+`--command-line-tools-root`. It validates the coherent Hvigor/plugin and prepared
+wrapper cache, then invokes the official `hvigorw.js` using the bundled Node. Personal signing
 material/history is not copied into its distributable output. C# self-contained
 publish/PCK/template and optional HAP regression is documented
 [here](<../../../modules/mono/tests/openharmony_export/README.md>).

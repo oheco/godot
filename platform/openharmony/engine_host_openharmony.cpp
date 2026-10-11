@@ -7,6 +7,7 @@
 #include "engine_arguments_openharmony.h"
 #include "file_access_openharmony.h"
 #include "os_openharmony.h"
+#include "host_focus_state.h"
 #include "wrapper_openharmony.h"
 
 #ifdef TOOLS_ENABLED
@@ -49,6 +50,9 @@ std::mutex lifetime_mutex;
 std::mutex event_mutex;
 std::condition_variable frame_ready;
 std::deque<Event> events;
+// ArkUI snapshots survive state 0/1. Every access uses event_mutex, including
+// the IME gate; surface focus never substitutes for actual window activation.
+GodotOpenHarmony::HostFocusState focus_state;
 // The engine thread is created explicitly instead of through std::thread: musl
 // gives a new thread about a megabyte of stack, and the .NET runtime needs more
 // than that while it starts (it overran the stack inside libcoreclr otherwise).
@@ -66,6 +70,29 @@ void enqueue(Event event) {
 	std::lock_guard<std::mutex> lock(event_mutex);
 	if (!stopping && (state.load() == 1 || state.load() == 2)) {
 		events.push_back(event);
+	}
+}
+
+void reconcile_focus(OS_OpenHarmony &os) {
+	bool focused;
+	{
+		std::lock_guard<std::mutex> lock(event_mutex);
+		focused = !stopping && focus_state.is_effectively_focused();
+	}
+	// Do not hold event_mutex through engine callbacks: an IME request can read
+	// godot_host_is_window_active() from a focus notification.
+	const bool changed = focused != os.is_window_focused();
+	DisplayServerOpenHarmony *display = DisplayServerOpenHarmony::get_singleton();
+	if (changed && !focused && display) {
+		display->update_ime_focus(false);
+	}
+	if (focused) {
+		os.on_focus_in();
+	} else {
+		os.on_focus_out();
+	}
+	if (changed && focused && display) {
+		display->update_ime_focus(true);
 	}
 }
 
@@ -183,7 +210,7 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 	}
 	OH_NativeVSync *vsync = OH_NativeVSync_Create_ForAssociatedWindow(window_id, "GodotHost", 9);
 	os.main_loop_begin();
-	os.on_focus_in();
+	reconcile_focus(os);
 	state = 2;
 	bool quit = false;
 	while (!quit) {
@@ -212,6 +239,9 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 			pending.swap(events);
 		}
 		for (Event &event : pending) {
+			// A mouse/key event queued before INACTIVE must see the latest UI
+			// snapshot, even when INACTIVE occurs later in this pending batch.
+			reconcile_focus(os);
 			switch (event.type) {
 				case Event::TOUCH:
 					godot_touch(&event.touch, 1);
@@ -226,17 +256,13 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 					DisplayServerOpenHarmony::get_singleton()->resize_window(event.first, event.second);
 					break;
 				case Event::WINDOW:
+					// Focus/visibility (1-4, 8-9) are already normalized on the
+					// UI thread. Dispatch lifecycle/close only, never replay focus.
 					switch (event.first) {
-						case 1:
-						case 2:
-							os.on_focus_in();
-							break;
-						case 3:
-						case 4:
-							os.on_focus_out();
-							break;
 						case 5:
-							os.on_exit_background();
+							// OS::on_exit_background() implicitly asserts focus.
+							// Preserve RESUMED without granting inactive windows focus.
+							os.get_main_loop()->notification(MainLoop::NOTIFICATION_APPLICATION_RESUMED);
 							break;
 						case 6:
 							os.on_enter_background();
@@ -248,6 +274,9 @@ void run(NativeResourceManager *resources, void *window, int32_t window_id,
 					break;
 			}
 		}
+		// Background dispatch may have cleared OS focus while a newer ACTIVE
+		// snapshot was arriving; also reconcile on frames without queued input.
+		reconcile_focus(os);
 		quit = os.main_loop_iterate();
 	}
 	if (vsync) {
@@ -414,9 +443,32 @@ void godot_host_set_surface_position(int32_t window_id, double x, double y) {
 	ohos_wrapper_set_surface_position(window_id, x, y);
 }
 
+bool godot_host_is_window_active() {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	return !stopping && focus_state.is_window_active();
+}
+
+bool godot_host_is_input_focused() {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	return !stopping && focus_state.is_effectively_focused();
+}
+
 void godot_host_window_event(int32_t p_event) {
-	Event event{};
-	event.type = Event::WINDOW;
-	event.first = p_event;
-	enqueue(event);
+	if (p_event < 1 || p_event > 9) {
+		return;
+	}
+	std::lock_guard<std::mutex> lock(event_mutex);
+	const int current_state = state.load();
+	if (stopping || current_state < 0 || current_state == 3) {
+		return;
+	}
+	// Keep snapshots even before an engine thread exists. Older queued focus
+	// events never modify them again when dispatched on the engine thread.
+	focus_state.window_event(p_event);
+	if (current_state == 1 || current_state == 2) {
+		Event event{};
+		event.type = Event::WINDOW;
+		event.first = p_event;
+		events.push_back(event);
+	}
 }

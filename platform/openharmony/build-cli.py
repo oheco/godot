@@ -16,8 +16,14 @@ parser.add_argument('--native-sdk', type=Path, required=True)
 parser.add_argument('--output', type=Path, required=True, help='New isolated directory')
 args = parser.parse_args()
 if sys.platform != 'ohos': raise SystemExit('Run on native OpenHarmony')
-compiler, signer = shutil.which('clang++'), shutil.which('binary-sign-tool')
-if not compiler or not signer: raise SystemExit('Check native LLVM and binary-sign-tool in PATH')
+# Use the compiler belonging to the selected native SDK, just like SCons.
+# An unrelated active compiler can auto-sign during linking, making the explicit
+# final binary-sign-tool step fail when it encounters an existing .codesign.
+compiler = args.native_sdk.resolve() / 'llvm/bin/clang++'
+signer = shutil.which('binary-sign-tool')
+if not compiler.is_file() or not signer:
+    raise SystemExit('Check the selected native SDK LLVM and binary-sign-tool in PATH')
+compiler = str(compiler)
 source = Path(__file__).resolve().parents[2]
 args.output.mkdir(parents=True, exist_ok=False)
 output = args.output.resolve()

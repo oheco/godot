@@ -12,6 +12,7 @@ import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
 import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
 import { nativeStringArray } from '../runtime/NativeArguments';
 import { TouchInput } from '../runtime/TouchInput';
+import { localizedUIString } from '../runtime/LocalizedStrings';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
@@ -26,7 +27,7 @@ class GodotSurface extends XComponentController {
 @Component
 struct Index {
   @State ready: boolean = false;
-  @State message: string = '正在准备 Godot…';
+  @State message: string = '';
   @State expandSystemArea: boolean = false;
   @State showLog: boolean = false;
   @State logText: string = '';
@@ -57,12 +58,15 @@ struct Index {
 
   aboutToAppear(): void {
     this.disposed = false;
+    this.message = localizedUIString(this.getUIContext(), $r('app.string.host_preparing'));
     this.prepare();
   }
   aboutToDisappear(): void {
     this.disposed = true;
     if (this.imeWindow !== undefined) {
       try { this.imeWindow.off('windowRectChange', this.imeGeometryChanged); } catch (ignored) {}
+      try { this.imeWindow.off('displayIdChange', this.imeGeometryChanged); } catch (ignored) {}
+      try { this.imeWindow.off('systemDensityChange', this.imeGeometryChanged); } catch (ignored) {}
       this.imeWindow = undefined;
     }
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
@@ -86,7 +90,7 @@ struct Index {
       record(`terminateSelf failed: ${describe(error as BusinessError)}`);
       this.ready = false;
       this.showStatus = true;
-      this.message = '引擎已退出，但关闭当前窗口失败，请查看日志。';
+      this.message = localizedUIString(this.getUIContext(), $r('app.string.host_close_failed'));
       this.logText = readFullDiagnostics();
       this.showLog = true;
     }
@@ -105,7 +109,8 @@ struct Index {
       this.expandSystemArea = config.window.expandIntoSystemArea;
       this.instanceSupport = instancesEnabled(config);
       if (this.instanceSupport) { this.crashTime = crashLogTime(); }
-      this.message = packagedGame ? '正在启动游戏…' : '正在准备 Godot Editor…';
+      this.message = localizedUIString(this.getUIContext(), packagedGame ?
+        $r('app.string.host_starting_game') : $r('app.string.host_preparing_editor'));
       let runtime: string = '';
       if (!packagedGame && config.managed.mode === 'sdk') {
         setStep('host:extract-runtime');
@@ -130,6 +135,8 @@ struct Index {
         this.imeWindow = await window.getLastWindow(context);
         if (this.disposed) { return; }
         this.imeWindow.on('windowRectChange', this.imeGeometryChanged);
+        this.imeWindow.on('displayIdChange', this.imeGeometryChanged);
+        this.imeWindow.on('systemDensityChange', this.imeGeometryChanged);
       } catch (error) {
         record(`IME window geometry listener unavailable: ${describe(error as BusinessError)}`);
       }
@@ -155,7 +162,7 @@ struct Index {
       probeEnvironment(context);
       this.ready = false;
       this.showStatus = true;
-      this.message = `无法启动 Godot（点“显示日志”查看详情）：${cause.message}`;
+      this.message = localizedUIString(this.getUIContext(), $r('app.string.host_start_failed'), cause.message);
     }
   }
   private updateImeSurfacePosition(): void {
@@ -164,8 +171,9 @@ struct Index {
       const ui = this.getUIContext();
       const node = ui.getFrameNodeById('godot-surface');
       if (node === null) { return; }
+      // Publish the global desktop position for Godot window/mouse APIs.
+      // The native IME mapper subtracts the current display's physical origin.
       // FrameNode positions are vp; SurfaceRect offsets are already px.
-      // This includes window placement, ArkUI decoration and safe-area layout.
       const position = node.getGlobalPositionOnDisplay();
       const surface = this.controller.getXComponentSurfaceRect();
       plugin.setSurfacePosition(ui.vp2px(position.x) + (surface.offsetX ?? 0),
@@ -182,6 +190,8 @@ struct Index {
     if (state === 2 && !this.engineReadyReported) {
       this.engineReadyReported = true;
       this.engineRunning = true;
+      // The surface is mounted asynchronously, after the page's initial focus pass.
+      this.requestSurfaceFocus();
       record('engine running');
       if (this.instanceSupport) {
         logInstanceState(context, 'engine-running');
@@ -191,7 +201,7 @@ struct Index {
       }
     }
     if (state < 0) {
-      this.message = `Godot 启动失败（${state}），点“显示日志”查看详情。`;
+      this.message = localizedUIString(this.getUIContext(), $r('app.string.host_engine_failed'), state);
       this.ready = false;
       this.showStatus = true;
     }
@@ -210,7 +220,7 @@ struct Index {
       this.crashed = true;
       this.ready = false;
       this.showStatus = true;
-      this.message = '子进程崩溃了';
+      this.message = localizedUIString(this.getUIContext(), $r('app.string.host_child_crashed'));
       this.logText = readFullDiagnostics(attachedPid, this.crashTime);
       this.showLog = true;
     }
@@ -222,13 +232,22 @@ struct Index {
         this.childRunning = true;
         this.ready = false;
         this.showStatus = true;
-        this.message = '子进程仍在运行；本窗口保持打开以维持它的进程。';
+        this.message = localizedUIString(this.getUIContext(), $r('app.string.host_child_running'));
         record(`engine exited; holding for attached pid ${this.spawnedPid}`);
       } else if (this.childRunning) {
         if (childHasExited(context, this.spawnedPid)) { this.terminateHost(context); }
       } else {
         this.terminateHost(context);
       }
+    }
+  }
+  private requestSurfaceFocus(): void {
+    if (!this.ready || this.disposed || this.terminating || this.showStatus) { return; }
+    try {
+      this.getUIContext().getFocusController().requestFocus('godot-surface');
+    } catch (error) {
+      // A later pointer press can retry if the surface is not on the tree yet.
+      record(`Godot surface focus unavailable: ${describe(error as BusinessError)}`);
     }
   }
   private button(button: MouseButton): number {
@@ -242,6 +261,8 @@ struct Index {
     }
   }
   private mouse(event: MouseEvent): void {
+    if (this.disposed || this.terminating) { return; }
+    if (event.action === MouseAction.Press) { this.requestSurfaceFocus(); }
     const button = this.button(event.button);
     const type = event.action === MouseAction.Press ? 0 : event.action === MouseAction.Release ? 1 : 2;
     if (button > 0) {
@@ -261,9 +282,9 @@ struct Index {
     }
     const input: SimplifiedMouseEvent = {
       type: type, button: button, mask: this.mouseMask, x: x, y: y,
-      alt: event.getModifierKeyState?.(['alt']) ?? false,
-      ctrl: event.getModifierKeyState?.(['ctrl']) ?? false,
-      shift: event.getModifierKeyState?.(['shift']) ?? false,
+      alt: event.getModifierKeyState?.(['Alt']) ?? false,
+      ctrl: event.getModifierKeyState?.(['Ctrl']) ?? false,
+      shift: event.getModifierKeyState?.(['Shift']) ?? false,
       meta: this.metaPressed, doubleClick: doubleClick, factor: 1,
       hasRelative: event.rawDeltaX !== undefined && event.rawDeltaY !== undefined,
       relativeX: event.rawDeltaX ?? 0, relativeY: event.rawDeltaY ?? 0
@@ -272,30 +293,33 @@ struct Index {
   }
   private wheel(event: AxisEvent, value: number, negative: number, positive: number): void {
     if (value === 0) { return; }
+    // scrollStep is mouse-wheel-only; touchpad axes are vp, not notch counts.
+    // Keep the existing 120-unit normalization for smooth Godot wheel factors.
+    // Only cursor coordinates need vp2px; the factor is independent of DPI.
+    const step: number = event.sourceTool === SourceTool.TOUCHPAD ? 120 : (event.scrollStep || 120);
     const input: SimplifiedMouseEvent = {
       type: 0, button: value < 0 ? negative : positive, mask: this.mouseMask,
       x: this.getUIContext().vp2px(event.x), y: this.getUIContext().vp2px(event.y),
-      alt: event.getModifierKeyState?.(['alt']) ?? false,
-      ctrl: event.getModifierKeyState?.(['ctrl']) ?? false,
-      shift: event.getModifierKeyState?.(['shift']) ?? false,
-      meta: this.metaPressed, doubleClick: false, factor: Math.abs(value) / (event.scrollStep || 120),
+      alt: event.getModifierKeyState?.(['Alt']) ?? false,
+      ctrl: event.getModifierKeyState?.(['Ctrl']) ?? false,
+      shift: event.getModifierKeyState?.(['Shift']) ?? false,
+      meta: this.metaPressed, doubleClick: false, factor: Math.abs(value) / step,
       hasRelative: false, relativeX: 0, relativeY: 0
     };
     plugin.inputMouse(input); input.type = 1; plugin.inputMouse(input);
   }
   private handleKey(event: KeyEvent): boolean {
+    if (this.disposed || this.terminating) { return false; }
     const code = mapKeyCode(event.keyCode);
     if (code === 0) { return false; }
     const pressed = event.type === KeyType.Down;
-    if (event.keyCode === KeyCode.KEYCODE_META_LEFT || event.keyCode === KeyCode.KEYCODE_META_RIGHT) {
-      this.metaPressed = pressed;
-    }
+    this.metaPressed = event.metaKey === 1;
     const input: SimplifiedKeyEvent = {
       code: code, unicode: event.unicode ?? 0, pressed: pressed,
       echo: pressed && this.pressedKeys.has(event.keyCode),
-      alt: event.getModifierKeyState?.(['alt']) ?? false,
-      ctrl: event.getModifierKeyState?.(['ctrl']) ?? false,
-      shift: event.getModifierKeyState?.(['shift']) ?? false, meta: this.metaPressed
+      alt: event.getModifierKeyState?.(['Alt']) ?? false,
+      ctrl: event.getModifierKeyState?.(['Ctrl']) ?? false,
+      shift: event.getModifierKeyState?.(['Shift']) ?? false, meta: this.metaPressed
     };
     if (pressed) { this.pressedKeys.add(event.keyCode); } else { this.pressedKeys.delete(event.keyCode); }
     plugin.inputKey(input); return true;
@@ -325,7 +349,7 @@ struct Index {
           .onAreaChange(() => this.updateImeSurfacePosition())
           .expandSafeArea(this.expandSystemArea ? [SafeAreaType.SYSTEM] : [],
             this.expandSystemArea ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM, SafeAreaEdge.START, SafeAreaEdge.END] : [])
-          .focusable(true).defaultFocus(true)
+          .focusable(true).defaultFocus(true).focusOnTouch(true)
           .onKeyEvent((event: KeyEvent) => this.handleKey(event))
           .onMouse((event: MouseEvent) => this.mouse(event))
           .onAxisEvent((event: AxisEvent) => {
@@ -340,10 +364,10 @@ struct Index {
         Column({ space: 16 }) {
           Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
           if (this.crashed) {
-            Text('上次引擎启动崩溃了，点“显示日志”查看回溯。').fontSize(14).fontColor('#ffb366')
+            Text($r('app.string.host_previous_crash')).fontSize(14).fontColor('#ffb366')
               .padding({ left: 24, right: 24 }).copyOption(CopyOptions.LocalDevice)
           }
-          Button('显示日志').onClick(() => {
+          Button($r('app.string.host_show_logs')).onClick(() => {
             this.logText = readFullDiagnostics();
             this.showLog = !this.showLog;
           })

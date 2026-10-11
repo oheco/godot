@@ -44,6 +44,9 @@
 		<member name="build/bundle_id" type="String" setter="" getter="">
 			The unique bundle identifier for the OpenHarmony application. This should follow reverse domain notation (e.g., "com.example.myapp"). This identifier is used in the application manifest and must be unique across the OpenHarmony ecosystem.
 		</member>
+		<member name="build/compatible_api" type="int" setter="" getter="">
+			The minimum compatible API major. Defaults to [code]26[/code] and must be between 26 and the compile API. API26 and later write this value as a full dotted SDK string, such as [code]26.0.0[/code], in either runtime mode.
+		</member>
 		<member name="build/default_orientation" type="int" setter="" getter="">
 			The default screen orientation for the application. Determines how the application will be displayed when launched on OpenHarmony devices.
 		</member>
@@ -60,7 +63,7 @@
 			When enabled, allows overriding the default project directory structure during export. This can be useful for custom build configurations or when integrating with existing OpenHarmony projects.
 		</member>
 		<member name="build/sdk_version" type="String" setter="" getter="">
-			The SDK version applied to compile, target and compatible SDK fields. Defaults to [code]6.1.0(23)[/code]. The shared host requires API 23 or newer, and the version must match an installed SDK.
+			The SDK version applied to compile and target SDK fields, in the form [code]26.0.0[/code] (the default). API26 and later use this full dotted form in both HarmonyOS and OpenHarmony modes. The selected SDK metadata determines [code]runtimeOS[/code]: a complete HarmonyOS SDK bundle uses HarmonyOS; a standalone versioned OpenHarmony SDK uses OpenHarmony. Source-only templates retain an OpenHarmony baseline until a SDK is selected. The version must match the selected SDK. [member build/compatible_api] selects the minimum compatible API major.
 		</member>
 		<member name="build/sign" type="bool" setter="" getter="">
 			Enable application signing during the export process. When enabled, the application will be signed using the provided certificate and profile files. This is required for distribution and installation on real devices. When enabled, all signing options become visible and required.
@@ -93,7 +96,7 @@
 			The alias name of the key pair in the keystore file. This identifies which key from the keystore should be used for signing the application. Required when signing is enabled. This option is only visible when build/sign is enabled.
 		</member>
 		<member name="sign/key_password" type="String" setter="" getter="">
-			The password for the specific key identified by the key alias in the keystore. This password protects the private key used for signing. Required when signing is enabled. This field is marked as secret in the UI. This option is only visible when build/sign is enabled.
+			The encrypted key password from DevEco's signing material.keyPassword field. The official Hvigor wrapper consumes this encrypted value unchanged; retain the material directory adjacent to the keystore. Required when signing is enabled. This field is marked as secret in the UI. This option is only visible when build/sign is enabled.
 		</member>
 		<member name="sign/profile_file" type="String" setter="" getter="">
 			Path to the provisioning profile file ([code].p7b[/code]) that authorizes the application to run on OpenHarmony devices. This file contains information about the application's capabilities and the devices it can run on. Required when signing is enabled. This option is only visible when build/sign is enabled.
@@ -105,7 +108,7 @@
 			Path to the keystore file containing the private key and certificate used for signing the application. This file stores the cryptographic keys needed for the signing process. Required when signing is enabled. This option is only visible when build/sign is enabled.
 		</member>
 		<member name="sign/store_password" type="String" setter="" getter="">
-			The password for the keystore file. This password protects access to the keystore containing the signing keys. Required when signing is enabled. This field is marked as secret in the UI. This option is only visible when build/sign is enabled.
+			The encrypted keystore password from DevEco's signing material.storePassword field. The official Hvigor wrapper consumes this encrypted value unchanged; retain the material directory adjacent to the keystore. Required when signing is enabled. This field is marked as secret in the UI. This option is only visible when build/sign is enabled.
 		</member>
 	</members>
 </class>
