@@ -234,6 +234,7 @@ function testStorageAndAbility() {
       '@ohos.window': {}, 'libentry.so': { default: plugin }, '../runtime/Config': config,
       '../runtime/Diagnostics': hostDiagnostics,
       '../runtime/ExternalApps': { openExternal: async () => {} },
+      '../runtime/WindowMode': { WindowModeController: class {} },
       '../runtime/Launch': {
         hasEngineFlag: (args, flag, short) => args.includes(flag) || args.includes(short),
         logInstanceState: () => {}, reportStarted: () => {},
@@ -462,9 +463,6 @@ async function testIndex() {
       '../runtime/Runtime': {
         prepareRuntime: async () => { calls.push(['runtime']); return '/private/runtime'; },
       },
-      '../runtime/Templates': {
-        prepareTemplates: async (_context, filesDir) => { calls.push(['templates', filesDir]); },
-      },
       '../runtime/Diagnostics': hostDiagnostics,
       '../runtime/ExternalApps': { openExternal: async () => {} },
       '../runtime/Launch': {
@@ -501,8 +499,6 @@ async function testIndex() {
     assert.deepEqual(plain(calls.find((call) => call[0] === 'setup')),
       ['setup', plain(storage.godotArguments), granted, mode === 'game']);
     assert.equal(calls.some((call) => call[0] === 'runtime'), mode === 'editor-sdk');
-    assert.equal(calls.some((call) => call[0] === 'templates'), mode !== 'game');
-    if (mode !== 'game') { assert.deepEqual(calls.find((call) => call[0] === 'templates'), ['templates', paths.filesDir]); }
     // All roles request declared user grants, including non-SDK editor MIC.
     // Even duplicated SDK file-access resource entries yield only one request.
     assert.deepEqual(plain(calls.filter((call) => call[0] === 'user-permissions')),

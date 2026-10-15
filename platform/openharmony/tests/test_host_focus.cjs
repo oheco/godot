@@ -38,7 +38,10 @@ for (const scenario of ['inactive', 'active', 'query-failure']) {
   const calls = [];
   const storage = new Map();
   const stageEvents = { SHOWN: 1, ACTIVE: 2, INACTIVE: 3, HIDDEN: 4, RESUMED: 5, PAUSED: 6 };
-  const plugin = { sendWindowEvent: event => calls.push(['native', event]) };
+  const plugin = {
+    sendWindowEvent: event => calls.push(['native', event]),
+    setWindowModeHandler: () => {},
+  };
   const dependencies = {
     '@kit.AbilityKit': { UIAbility: class {} },
     '@ohos.window': { default: { WindowStageEventType: stageEvents } },
@@ -47,6 +50,7 @@ for (const scenario of ['inactive', 'active', 'query-failure']) {
     '../runtime/Diagnostics': { record: () => {}, describe: String },
     '../runtime/ExternalApps': {},
     '../runtime/Launch': {},
+    '../runtime/WindowMode': { WindowModeController: class { request() {} destroy() {} } },
   };
   const sandbox = {
     exports: {},

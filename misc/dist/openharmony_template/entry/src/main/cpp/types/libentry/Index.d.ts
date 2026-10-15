@@ -30,5 +30,10 @@ export const setLauncher: (callback: (requestId: number, args: string[]) => void
 export const spawnResult: (requestId: number, pid: number) => void;
 // kind: 0=URI, 1=folder, 2=terminal. Calls are queued without waiting for launch.
 export const setExternalOpener: (callback: (kind: number, target: string) => void) => void;
+// 0=windowed, 1=minimized, 2=maximized, 3=ordinary fullscreen.
+export const setWindowModeHandler: (callback: (requestId: number, mode: number) => void) => void;
+export const windowModeStatus: (mode: number) => void;
+// actualMode=-1 retains the last known actual status after a failed query.
+export const windowModeResult: (requestId: number, actualMode: number) => void;
 export const openTerminal: (directoryUri: string) => Promise<void>;
 export const processId: () => number;

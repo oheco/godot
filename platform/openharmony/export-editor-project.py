@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a complete, relocatable Godot .NET Editor DevEco project offline."""
+"""Assemble a relocatable Godot .NET Editor project; export templates are separate downloads."""
 import argparse
 import hashlib
 import json
@@ -72,7 +72,11 @@ def zip_tree(archive, root, prefix='', project=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog='Download the debug/release export-template ZIPs separately from GitHub Releases. '
+               'Place them in Godot\'s versioned export templates directory or select their paths '
+               'in the export preset custom template options.')
     parser.add_argument('--library', type=Path, required=True, help='Final ARM64 libgodot.so; do not strip after signing')
     parser.add_argument('--config', type=Path, help='JSON overrides of the editor profile; never modifies template sources')
     parser.add_argument('--sdk-root', type=Path, help='Selected complete HarmonyOS or versioned OpenHarmony SDK; runtimeOS is detected from metadata')
@@ -80,8 +84,6 @@ def main():
     parser.add_argument('--godotsharp', type=Path, help='Required with managed.mode=sdk')
     parser.add_argument('--dotnet-sdk', type=Path, help='Required with managed.mode=sdk: native SDK build input, not shipped')
     parser.add_argument('--nuget-feed', type=Path, help='Required with managed.mode=sdk: verified pinned NuGet archives')
-    parser.add_argument('--game-template-debug', type=Path, help='Complete mono-enabled template_debug ZIP to bundle for editor exports')
-    parser.add_argument('--game-template-release', type=Path, help='Complete mono-enabled template_release ZIP to bundle for editor exports')
     parser.add_argument('--output', type=Path, required=True, help='DevEco project directory')
     parser.add_argument('--archive', type=Path, help='Optional project ZIP')
     parser.add_argument('--update', action='store_true',
@@ -163,21 +165,6 @@ def main():
             header = stream.read(20)
         if header[:6] != b'\x7fELF\x02\x01' or int.from_bytes(header[18:20], 'little') != 183:
             raise SystemExit(f'Expected ELF64 AArch64: {path}')
-    bundled_templates = {}
-    if bool(args.game_template_debug) != bool(args.game_template_release):
-        raise SystemExit('Provide both --game-template-debug and --game-template-release, or neither')
-    for kind, path in (('debug', args.game_template_debug), ('release', args.game_template_release)):
-        if path is None:
-            continue
-        if not path.is_file():
-            raise SystemExit(f'Missing game template: {path}')
-        with zipfile.ZipFile(path) as archive:
-            metadata = json.loads(archive.read('entry/src/main/resources/rawfile/godot_template.json'))
-            if (metadata.get('hostAbi') != HOST_ABI_VERSION or metadata.get('monoEnabled') is not True or
-                metadata.get('target') != 'template_' + kind or metadata.get('architecture') != 'arm64-v8a' or
-                'tools/build.cjs' not in archive.namelist()):
-                raise SystemExit(f'Incompatible game template: {path}; rebuild current mono-enabled ARM64 templates')
-        bundled_templates[f'openharmony_{kind}_arm64-v8a.zip'] = path
     library_digest = sha256(args.library)
     native_info = read_document(args.library.parent / 'build-info.json')
     if type(native_info.get('openharmony_host_abi')) is not int or native_info['openharmony_host_abi'] != HOST_ABI_VERSION:
@@ -236,21 +223,12 @@ def main():
         shutil.copyfile(source / 'platform/openharmony' / name, include / name)
     raw = args.output / 'entry/src/main/resources/rawfile'
     raw.mkdir(parents=True, exist_ok=True)
-    template_manifest = None
-    if bundled_templates:
-        entries = [{'name': name, 'sha256': sha256(path), 'size': path.stat().st_size}
-                   for name, path in sorted(bundled_templates.items())]
-        identity = hashlib.sha256(json.dumps(entries, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        template_manifest = {'schemaVersion': 1, 'sha256': identity, 'files': entries}
-        destination = raw / 'export-templates'
-        destination.mkdir(exist_ok=True)
-        for name, path in bundled_templates.items():
-            shutil.copyfile(path, destination / name)
-        (raw / 'export-templates.json').write_text(json.dumps(template_manifest, indent=2) + '\n')
-    else:
-        (raw / 'export-templates.json').unlink(missing_ok=True)
-        if (raw / 'export-templates').is_dir():
-            shutil.rmtree(raw / 'export-templates')
+    # Export templates are separate GitHub Releases downloads. An explicit
+    # --update also removes resources produced by the former bundling options,
+    # so rebuilding that project cannot accidentally ship the old archives.
+    (raw / 'export-templates.json').unlink(missing_ok=True)
+    if (raw / 'export-templates').is_dir():
+        shutil.rmtree(raw / 'export-templates')
     runtime_manifest = None
     if managed:
         runtime = raw / 'runtime.zip'
@@ -303,9 +281,9 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
-    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.5',
+    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.6',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
-                  'runtime': runtime_manifest, 'export_templates': template_manifest,
+                  'runtime': runtime_manifest, 'export_templates': None,
                   'dotnet_resolution': "oheco package installation; not shipped" if managed else None,
                   'host_configuration': config}
     provenance['dotnet_buildinfo'] = dotnet_buildinfo

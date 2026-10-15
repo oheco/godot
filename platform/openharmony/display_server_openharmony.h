@@ -89,6 +89,14 @@ class DisplayServerOpenHarmony : public DisplayServer {
 	DisplayServerEnums::MouseMode mouse_mode_base = DisplayServerEnums::MOUSE_MODE_VISIBLE;
 	DisplayServerEnums::MouseMode mouse_mode_override = DisplayServerEnums::MOUSE_MODE_VISIBLE;
 	bool mouse_mode_override_enabled = false;
+	// Requested mode survives focus loss; the system's applied lock does not.
+	bool mouse_mode_applied = false;
+	// Untouched VISIBLE needs no privileged cursor API. Once a non-visible mode
+	// is requested, release/restore it until VISIBLE has been applied again.
+	bool mouse_mode_managed = false;
+	uint64_t mouse_focus_generation = 0;
+	uint64_t mouse_mode_retry_at_usec = 0;
+	int mouse_mode_last_error = 0;
 	DisplayServerEnums::CursorShape cursor_shape = DisplayServerEnums::CURSOR_ARROW;
 	void _mouse_update_mode();
 
@@ -114,6 +122,7 @@ class DisplayServerOpenHarmony : public DisplayServer {
 	static void _input_text_key(Key p_key, char32_t p_char, Key p_unshifted, Key p_physical, int p_modifier, bool p_pressed, KeyLocation p_location);
 
 public:
+	void update_mouse_focus(bool p_focused);
 	virtual void mouse_set_mode(DisplayServerEnums::MouseMode p_mode) override;
 	virtual DisplayServerEnums::MouseMode mouse_get_mode() const override { return mouse_mode; }
 	virtual void mouse_set_mode_override(DisplayServerEnums::MouseMode p_mode) override;

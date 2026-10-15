@@ -466,6 +466,7 @@ void OS_OpenHarmony::on_focus_out() {
 		Input::get_singleton()->release_pressed_events();
 
 		if (DisplayServerOpenHarmony::get_singleton()) {
+			DisplayServerOpenHarmony::get_singleton()->update_mouse_focus(false);
 			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_OUT);
 		}
 
@@ -482,6 +483,7 @@ void OS_OpenHarmony::on_focus_in() {
 		is_focused = true;
 
 		if (DisplayServerOpenHarmony::get_singleton()) {
+			DisplayServerOpenHarmony::get_singleton()->update_mouse_focus(true);
 			DisplayServerOpenHarmony::get_singleton()->send_window_event(DisplayServerEnums::WINDOW_EVENT_FOCUS_IN);
 		}
 

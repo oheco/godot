@@ -137,12 +137,15 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 
 	Input::get_singleton()->set_event_dispatch_function(_dispatch_input_events);
 
+	// ArkUI owns the existing main window; apply the project's initial mode
+	// through the same asynchronous path used by later script requests.
+	window_set_mode(p_mode);
 	r_error = OK;
 }
 
 DisplayServerOpenHarmony::~DisplayServerOpenHarmony() {
 	virtual_keyboard_hide();
-	if (mouse_mode != DisplayServerEnums::MOUSE_MODE_VISIBLE) {
+	if (mouse_mode_managed && godot_host_is_window_active_for_cleanup()) {
 		ohos_wrapper_set_mouse_mode(OS_OpenHarmony::get_singleton()->get_window_id(), false, true, true);
 	}
 	if (rendering_device) {
@@ -864,11 +867,17 @@ Size2i DisplayServerOpenHarmony::window_get_size_with_decorations(DisplayServerE
 }
 
 void DisplayServerOpenHarmony::window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window) {
-	// Not supported on OpenHarmony.
+	ERR_FAIL_COND(p_window != DisplayServerEnums::MAIN_WINDOW_ID);
+	ERR_FAIL_COND(p_mode < DisplayServerEnums::WINDOW_MODE_WINDOWED || p_mode > DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN);
+	// HarmonyOS exposes ordinary fullscreen; never advertise or request an
+	// exclusive display mode. The host also normalizes this at its ABI boundary.
+	const DisplayServerEnums::WindowMode mode = p_mode == DisplayServerEnums::WINDOW_MODE_EXCLUSIVE_FULLSCREEN ? DisplayServerEnums::WINDOW_MODE_FULLSCREEN : p_mode;
+	ERR_FAIL_COND_MSG(godot_host_set_window_mode(mode) != 0, "Cannot queue window mode change.");
 }
 
 DisplayServerEnums::WindowMode DisplayServerOpenHarmony::window_get_mode(DisplayServerEnums::WindowID p_window) const {
-	return DisplayServerEnums::WINDOW_MODE_WINDOWED;
+	ERR_FAIL_COND_V(p_window != DisplayServerEnums::MAIN_WINDOW_ID, DisplayServerEnums::WINDOW_MODE_WINDOWED);
+	return static_cast<DisplayServerEnums::WindowMode>(godot_host_get_window_mode());
 }
 
 void DisplayServerOpenHarmony::window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window) {
@@ -914,6 +923,9 @@ bool DisplayServerOpenHarmony::can_any_window_draw() const {
 }
 
 void DisplayServerOpenHarmony::process_events() {
+	// Reapply locks invalidated by the system, including rapid focus switches
+	// that were folded into one latest host snapshot. Failed requests retry here.
+	_mouse_update_mode();
 	// Window caches its screen position for absolute viewport transforms. Update
 	// it on the engine thread when ArkUI moves the surface without resizing it.
 	const Rect2i rect(window_get_position(), window_get_size());
@@ -928,18 +940,66 @@ void DisplayServerOpenHarmony::process_events() {
 	_update_ime_cursor();
 }
 
-void DisplayServerOpenHarmony::_mouse_update_mode() {
-	using namespace DisplayServerEnums;
-	MouseMode wanted = mouse_mode_override_enabled ? mouse_mode_override : mouse_mode_base;
-	if (wanted == mouse_mode) {
+void DisplayServerOpenHarmony::update_mouse_focus(bool p_focused) {
+	if (!p_focused) {
+		mouse_mode_applied = false;
+		mouse_mode_retry_at_usec = 0;
+		mouse_mode_last_error = 0;
 		return;
 	}
-	int32_t id = OS_OpenHarmony::get_singleton()->get_window_id();
-	bool locked = wanted == MOUSE_MODE_CAPTURED || wanted == MOUSE_MODE_CONFINED || wanted == MOUSE_MODE_CONFINED_HIDDEN;
-	bool visible = wanted == MOUSE_MODE_VISIBLE || wanted == MOUSE_MODE_CONFINED;
-	int result = ohos_wrapper_set_mouse_mode(id, locked, wanted != MOUSE_MODE_CAPTURED, visible);
-	ERR_FAIL_COND_MSG(result != 0, vformat("Cannot change window cursor mode: %d", result));
-	mouse_mode = wanted;
+	_mouse_update_mode();
+}
+
+void DisplayServerOpenHarmony::_mouse_update_mode() {
+	using namespace DisplayServerEnums;
+	const MouseMode wanted = mouse_mode_override_enabled ? mouse_mode_override : mouse_mode_base;
+	const uint64_t focus_generation = godot_host_get_window_focus_generation();
+	if (wanted != mouse_mode || focus_generation != mouse_focus_generation) {
+		mouse_mode = wanted;
+		mouse_focus_generation = focus_generation;
+		mouse_mode_applied = false;
+		mouse_mode_retry_at_usec = 0;
+		mouse_mode_last_error = 0;
+	}
+	if (wanted != MOUSE_MODE_VISIBLE) {
+		mouse_mode_managed = true;
+	}
+	if (!mouse_mode_managed) {
+		// Default-visible games need neither LockCursor permission nor an SDK call.
+		mouse_mode_applied = true;
+		return;
+	}
+	// Acquire only with input focus, but allow release to VISIBLE after a
+	// surface blur while the actual window still owns the system cursor.
+	if (!godot_host_is_window_active() || (wanted != MOUSE_MODE_VISIBLE && !godot_host_is_input_focused())) {
+		mouse_mode_applied = false;
+		mouse_mode_retry_at_usec = 0;
+		return;
+	}
+	if (mouse_mode_applied) {
+		return;
+	}
+	const uint64_t now = OS::get_singleton()->get_ticks_usec();
+	if (now < mouse_mode_retry_at_usec) {
+		return;
+	}
+	const int32_t id = OS_OpenHarmony::get_singleton()->get_window_id();
+	const bool locked = wanted == MOUSE_MODE_CAPTURED || wanted == MOUSE_MODE_CONFINED || wanted == MOUSE_MODE_CONFINED_HIDDEN;
+	const bool visible = wanted == MOUSE_MODE_VISIBLE || wanted == MOUSE_MODE_CONFINED;
+	const int result = ohos_wrapper_set_mouse_mode(id, locked, wanted != MOUSE_MODE_CAPTURED, visible);
+	if (result != 0) {
+		// Activation can race the SDK call. Retain the request and avoid retrying
+		// or reporting the same transient error every rendered frame.
+		mouse_mode_retry_at_usec = now + 500000;
+		if (result != mouse_mode_last_error) {
+			mouse_mode_last_error = result;
+			ERR_FAIL_MSG(vformat("Cannot change window cursor mode: %d", result));
+		}
+		return;
+	}
+	mouse_mode_last_error = 0;
+	mouse_mode_applied = true;
+	mouse_mode_managed = wanted != MOUSE_MODE_VISIBLE;
 }
 
 void DisplayServerOpenHarmony::mouse_set_mode(DisplayServerEnums::MouseMode p_mode) {

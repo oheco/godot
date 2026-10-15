@@ -579,7 +579,10 @@ void ScrollBar::_drag_node_exit() {
 }
 
 void ScrollBar::_drag_node_input(const Ref<InputEvent> &p_input) {
-	if (!drag_node_enabled) {
+	// Touch scrolling uses mouse events emulated from native touch input.
+	// A physical mouse on a touchscreen device must remain available for text
+	// selection, rather than panning against the selection's auto-scroll timer.
+	if (!drag_node_enabled || p_input->get_device() != InputEvent::DEVICE_ID_EMULATION) {
 		return;
 	}
 

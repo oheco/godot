@@ -24,10 +24,25 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
+## Editor updates in 4.7.2-ohos.6
+
+- Mouse selection in Output/error logs no longer triggers touchscreen panning.
+  Dragging above/below the log scrolls and extends the selection; holding the
+  pointer still continues selection, and releasing stops it. Finger panning is
+  retained.
+- HDC deployments reserve device-side debug/file-server ports separately from
+  Editor listeners and write those mapped ports into the game's arguments.
+  Existing rules are preserved and only this deployment's rules are removed.
+- Export templates are separate Release downloads. The Editor App and its
+  startup no longer carry or install their ZIP files. Select the downloaded
+  Debug/Release ZIPs in the OpenHarmony preset's Custom Template fields.
+- The Editor and both export templates include the accepted ABI-4 window-mode
+  and mouse-capture host changes. The managed API/feed remains 4.7.2-ohos.3.
+
 ## Desktop integration in 4.7.2-ohos.5
 
-- The ArkUI startup surface shows the application/Godot logo while runtime,
-  templates and the native engine initialize. Log controls appear for failures
+- The ArkUI startup surface shows the application/Godot logo while the managed
+  runtime and native engine initialize. Log controls appear for failures
   and child-process status, rather than during normal startup.
 - Editor auto scaling uses the system's display `densityPixels` (physical pixels
   per vp). It does not use font `scaledDensity`; manual Editor scale settings
@@ -57,10 +72,16 @@ application behaviours after changing the common host.
   terminal in the requested directory was not established. Broker support for
   export/build and HDC operations is separate and remains available.
 
-The common host ABI is now **3**. This includes the external application bridge
-and the physical screen position of the actual XComponent surface used for IME
-cursor placement. Rebuild editor and both game template libraries and rerun
-`build-cli.py` before regenerating projects; ABI-1 and ABI-2 caches are rejected.
+The common host ABI is now **4**. It includes asynchronous main-window mode
+requests and actual status snapshots, alongside the external application bridge
+and physical XComponent screen position used for IME cursor placement. Rebuild
+editor and both game template libraries and rerun `build-cli.py` before
+regenerating projects; older host ABI caches are rejected.
+
+Windowed and ordinary fullscreen modes can be switched at runtime. Exclusive
+fullscreen requests fall back to ordinary fullscreen and report that mode back
+to Godot. Initial project window modes and system title-bar mode changes use the
+same state path; window operations execute on ArkUI without blocking the engine.
 The managed Godot SDK remains `4.7.2-ohos.3`, since the managed API is unchanged.
 
 Desktop input preserves physical arrows and shortcuts such as Ctrl+X, reconciles
@@ -286,18 +307,22 @@ values for its native signer. The original profile is restored after the build,
 and output is redacted. Signed exports require the user's actual certificate,
 profile and keystore; file-signature validation does not prove device trust.
 
-Build both `module_mono_enabled=yes` templates. Bundle them with the Editor using
-`--game-template-debug` and `--game-template-release` below. On startup only the
-Editor streams/verifies these archives into private digest-versioned storage;
-ordinary games do not prepare templates. This is separate from `runtime.zip`.
-Old/manual export templates remain a fallback when no bundled manifest exists.
+Build both `module_mono_enabled=yes` templates with `generate_bundle=yes`.
+The Editor App does not bundle or extract export templates. Download
+`openharmony_debug_arm64-v8a.zip` and `openharmony_release_arm64-v8a.zip` from the
+matching [GitHub Release](https://github.com/oheco/godot/releases), then select
+the archives under **Export → OpenHarmony → Custom Template → Debug / Release**.
+Keep the ZIP files intact. The Editor's `runtime.zip` contains its managed tools
+and offline feed; it remains separate from these optional game export templates.
 
 - F5/F6 launch another attached UIAbility process with the project/scene/debugger
   arguments. F8 stops the recorded game PID; no HAP packaging or HDC is involved.
 - Remote Deploy requires an authorized HDC target and signing preset. Every
-  install/start/forward command names that target, uses the actual debugger port
-  and loopback address, and checks success. Debug/file-server deployments add
-  INTERNET. Only owned forwarding rules are removed. F8 and debugger disconnect
+  install/start/forward command names that target and checks success. Debug and
+  file-server deployments reserve distinct device-side ports before exporting,
+  remap the game's loopback arguments to those ports, and retain the Editor's
+  listening ports. This also works when HDC targets the Editor's own device.
+  These deployments add INTERNET. Only owned forwarding rules are removed. F8 and debugger disconnect
   explicitly stop the device bundle; failed cleanup is retained for retry before
   the next deployment, not silently forgotten. Do not concurrently manage the
   same device ports from independent HDC clients.
@@ -362,8 +387,6 @@ python3 platform/openharmony/export-editor-project.py \
   --godotsharp bin/GodotSharp \
   --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
-  --game-template-debug bin/openharmony_debug_arm64-v8a.zip \
-  --game-template-release bin/openharmony_release_arm64-v8a.zip \
   --output /path/to/GodotEditor
 
 # later iterations: same directory, no new copy to open
@@ -372,8 +395,6 @@ python3 platform/openharmony/export-editor-project.py \
   --godotsharp bin/GodotSharp \
   --dotnet-sdk "$DOTNET_SDK" \
   --nuget-feed /path/to/pinned-nuget-feed \
-  --game-template-debug bin/openharmony_debug_arm64-v8a.zip \
-  --game-template-release bin/openharmony_release_arm64-v8a.zip \
   --output /path/to/GodotEditor --update
 ```
 

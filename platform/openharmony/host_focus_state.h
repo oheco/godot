@@ -1,6 +1,8 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 #pragma once
 
+#include <cstdint>
+
 namespace GodotOpenHarmony {
 // Pure host snapshot normalization, shared by production and focused tests.
 // The caller serializes updates/reads; queued events must not replay old focus.
@@ -11,9 +13,11 @@ class HostFocusState {
 	bool surface_focused = false;
 	bool visible = false;
 	bool background = false;
+	uint64_t window_focus_generation = 0;
 
 public:
 	constexpr void window_event(int p_event) {
+		const bool was_active = window_active;
 		switch (p_event) {
 			case 1: // SHOWN: visibility is independent of activation.
 				visible = true;
@@ -42,8 +46,14 @@ public:
 				window_active = false;
 				break;
 		}
+		// LockCursor is released by the system on window deactivation. Retain
+		// that transition even if ACTIVE arrives before the engine's next frame.
+		if (was_active && !window_active) {
+			++window_focus_generation;
+		}
 	}
 
+	constexpr uint64_t get_window_focus_generation() const { return window_focus_generation; }
 	constexpr bool is_window_active() const { return window_active; }
 	constexpr bool is_surface_focused() const { return surface_focused; }
 	constexpr bool is_effectively_focused() const { return window_active && surface_focused; }

@@ -94,38 +94,63 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
         self.assertEqual(read_document(self.output / 'entry/src/main/module.json5')['module']['deviceTypes'], ['2in1'])
 
-    def template_zip(self, kind, mono=True):
-        path = self.root / (kind + '.zip')
+    def template_zip(self, kind):
+        path = self.root / f'openharmony_{kind}_arm64-v8a.zip'
         with zipfile.ZipFile(path, 'w') as archive:
             archive.writestr('entry/src/main/resources/rawfile/godot_template.json', json.dumps({
-                'hostAbi': HOST_ABI_VERSION, 'monoEnabled': mono,
+                'hostAbi': HOST_ABI_VERSION, 'monoEnabled': True,
                 'architecture': 'arm64-v8a', 'target': 'template_' + kind}))
             archive.writestr('tools/build.cjs', '// configuration-only fixture, not executable\n')
         return path
 
-    def test_bundled_template_pair_digest_and_explicit_removal(self):
-        debug, release = self.template_zip('debug'), self.template_zip('release')
-        self.generate('--game-template-debug', str(debug), '--game-template-release', str(release))
+    def test_editor_and_archive_exclude_separately_downloaded_templates(self):
+        downloads = [self.template_zip(kind) for kind in ('debug', 'release')]
+        before = {path: path.read_bytes() for path in downloads}
+        archive = self.root / 'Editor.zip'
+        self.generate('--archive', str(archive))
         raw = self.output / 'entry/src/main/resources/rawfile'
-        manifest = read_document(raw / 'export-templates.json')
-        self.assertEqual(manifest['schemaVersion'], 1)
-        self.assertEqual(len(manifest['files']), 2)
-        for entry in manifest['files']:
-            payload = (raw / 'export-templates' / entry['name']).read_bytes()
-            self.assertEqual(entry['size'], len(payload))
-            self.assertEqual(entry['sha256'], hashlib.sha256(payload).hexdigest())
-        identity = hashlib.sha256(json.dumps(manifest['files'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-        self.assertEqual(manifest['sha256'], identity)
-        self.generate('--update')
         self.assertFalse((raw / 'export-templates.json').exists())
         self.assertFalse((raw / 'export-templates').exists())
+        self.assertIsNone(read_document(self.output / 'build-inputs.json')['export_templates'])
+        with zipfile.ZipFile(archive) as packaged:
+            self.assertFalse(any('export-templates' in name or
+                                 name.endswith(tuple(path.name for path in downloads))
+                                 for name in packaged.namelist()))
+        self.assertEqual(before, {path: path.read_bytes() for path in downloads})
 
-    def test_incomplete_or_non_mono_templates_do_not_touch_output(self):
-        debug, release = self.template_zip('debug'), self.template_zip('release', mono=False)
-        self.generate('--game-template-debug', str(debug), success=False)
+    def test_update_removes_former_bundled_resources_and_preserves_other_files(self):
+        self.generate()
+        raw = self.output / 'entry/src/main/resources/rawfile'
+        bundled = raw / 'export-templates'
+        bundled.mkdir()
+        for kind in ('debug', 'release'):
+            path = self.template_zip(kind)
+            (bundled / path.name).write_bytes(path.read_bytes())
+        (raw / 'export-templates.json').write_text('{"oldBundledManifest":true}\n')
+        unrelated = raw / 'user-resource.txt'
+        unrelated.write_text('Keep unrelated project resources.\n')
+        downloads = {path: path.read_bytes() for path in self.root.glob('openharmony_*.zip')}
+        archive = self.root / 'Updated Editor.zip'
+        self.generate('--update', '--archive', str(archive))
+        self.assertFalse((raw / 'export-templates.json').exists())
+        self.assertFalse(bundled.exists())
+        self.assertEqual(unrelated.read_text(), 'Keep unrelated project resources.\n')
+        self.assertEqual(downloads, {path: path.read_bytes() for path in downloads})
+        self.assertIsNone(read_document(self.output / 'build-inputs.json')['export_templates'])
+        with zipfile.ZipFile(archive) as packaged:
+            self.assertFalse(any('export-templates' in name for name in packaged.namelist()))
+
+    def test_removed_bundling_options_fail_before_touching_project(self):
+        debug, release = self.template_zip('debug'), self.template_zip('release')
+        options = ('--game-template-debug', str(debug), '--game-template-release', str(release))
+        result = self.generate(*options, success=False)
+        self.assertIn('unrecognized arguments', result.stderr)
         self.assertFalse(self.output.exists())
-        self.generate('--game-template-debug', str(debug), '--game-template-release', str(release), success=False)
-        self.assertFalse(self.output.exists())
+        self.generate()
+        before = {p: p.read_bytes() for p in self.output.rglob('*') if p.is_file()}
+        result = self.generate('--update', *options, success=False)
+        self.assertIn('unrecognized arguments', result.stderr)
+        self.assertEqual(before, {p: p.read_bytes() for p in self.output.rglob('*') if p.is_file()})
 
     def test_legacy_native_cache_is_rejected_before_update(self):
         self.generate()

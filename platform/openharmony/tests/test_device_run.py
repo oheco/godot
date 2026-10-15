@@ -2,8 +2,9 @@
 # Godot Engine contributors. SPDX-License-Identifier: MIT
 """Compile, sign and run the real standalone DeviceRunSession on HarmonyOS.
 
-Only an in-memory Executor fixture runs: no HDC, connected target, HAP signing,
-installation, port forwarding, daemon or OS network activity is performed.
+An in-memory Executor tests HDC transactions; a loopback socket fixture also
+reproduces an Editor listener and an occupied device-port candidate. No real HDC,
+connected target, HAP signing, installation, port forwarding or daemon is used.
 Temporary sources/binaries are automatically removed from application TMPDIR.
 """
 
@@ -26,7 +27,7 @@ def native_sdk(value):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk", default=os.environ.get("OPENHARMONY_SDK_PATH"))
-    parser.add_argument("--cxx", default=os.environ.get("CXX") or shutil.which("clang++"))
+    parser.add_argument("--cxx", default=os.environ.get("CXX"))
     parser.add_argument("--sign-tool", default=shutil.which("binary-sign-tool"))
     args = parser.parse_args()
     if not args.sdk:
@@ -36,7 +37,11 @@ def main():
     except ValueError as error:
         parser.error(str(error))
     if not args.cxx:
-        parser.error("Provide --cxx or a native clang++ in PATH")
+        # Match the selected SDK, avoiding unrelated PATH auto-signing compilers.
+        compiler = sdk / "llvm" / "bin" / "clang++"
+        args.cxx = str(compiler) if compiler.is_file() else shutil.which("clang++")
+    if not args.cxx:
+        parser.error("Provide --cxx or a native clang++ in the SDK/PATH")
     if not args.sign_tool:
         parser.error("Provide --sign-tool or binary-sign-tool in PATH")
     tmpdir = os.environ.get("TMPDIR")

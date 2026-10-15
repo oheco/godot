@@ -101,6 +101,7 @@ signed engine library:
 python3 platform/openharmony/tests/test_ime_geometry.py --native-sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_ime_cursor_notify.py --native-sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_ime_client_lifecycle.py --native-sdk "$NATIVE_SDK"
+python3 platform/openharmony/tests/test_mouse_capture.py --native-sdk "$NATIVE_SDK"
 python3 platform/openharmony/tests/test_ime_controls.py \
   --native-sdk "$NATIVE_SDK" --library "$SIGNED_ENGINE_LIBRARY" --compile-controls
 python3 platform/openharmony/tests/test_popup_mouse_motion.py \
@@ -127,7 +128,29 @@ The popup fixture uses real engine Input/Viewport/Button/PopupMenu objects and c
 platform bridge. It checks motion velocity, zero raw-delta fallback, captured
 pointer motion and click preservation. Installed ArkUI GUI acceptance remains
 separate from these native regression fixtures.
-Rebuild the common ABI-3 host, editor and both templates, then verify Chinese
+The mouse-capture fixture extracts the current production mouse methods, teardown,
+focus queries and member declarations, then signs and runs them on HarmonyOS with
+an independent mock cursor SDK and deterministic clock. It covers system unlock
+on app switching, rapid activation pairs, background requests, overrides, release
+after surface blur, stop/join cleanup, untouched visible mode without cursor
+permission and transient-failure retries. It neither monitors real input nor
+adds mouse-event logs. Installed TPS app-switch capture acceptance remains a
+manual device check.
+
+Window mode regressions cover the production asynchronous state helper and ArkUI
+controller, using actual state independently of requested modes:
+
+```sh
+python3 platform/openharmony/tests/test_window_mode.py --native-sdk "$NATIVE_SDK"
+node platform/openharmony/tests/test_window_mode.cjs --compiler "$TYPESCRIPT_JS"
+```
+
+They check window/fullscreen switching, exclusive-to-ordinary fallback, external
+status snapshots, superseded requests, SDK failure rollback and destruction while
+an operation is pending. GUI acceptance still requires an installed application
+switching its real main window and receiving the resulting surface resize.
+
+Rebuild the common ABI-4 host, editor and both templates, then verify Chinese
 candidate placement below the caret in moved/maximized windows and embedded
 LineEdit/TextEdit popups, as well as real mouse hover over menus and submenus.
 Screen mouse positions and Window rectangle callbacks must use the same surface
@@ -144,6 +167,33 @@ The Editor profile declares `READ_PASTEBOARD` and requests it through the shared
 user-grant flow. Installed clipboard acceptance remains pending and requires its
 approved signing-profile ACL and the application's granted permission;
 preserve/restore clipboard contents when performing that probe.
+
+## Output selection on hybrid mouse/touch devices
+
+```sh
+python3 platform/openharmony/tests/test_log_selection.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY"
+```
+
+The native fixture runs real OpenHarmony mouse/touch conversion, Input, Viewport,
+RichTextLabel, ScrollBar and selection timers against a touchscreen-capable
+headless display. Both directions must scroll monotonically while a physical
+mouse is held outside the log, including stationary and zero-raw-delta motion;
+release stops scrolling and preserves the selection. In-bounds mouse selection
+must not pan content, and native finger panning remains functional.
+`--expect-original-bug` with the previous library reproduces the opposing pan and
+selection scroll paths. This is an actual native control regression; graphical
+acceptance in the installed HAP is a separate check.
+
+The DeviceRunSession fixture now covers distinct device/host port pairs,
+occupied candidates with a real local Editor listener, simultaneous debugger and
+file-server command-line remapping, borrowed-rule preservation, and failure
+rollback/cleanup retries. The real HDC broker port test separately verifies TCP
+byte roundtrips and preservation of all preexisting rules.
+
+Editor-generation tests require both fresh projects and updated archives to
+omit bundled template ZIPs/manifests. Host startup runs without template-resource
+imports; separate template downloads use preset Custom Template paths.
 
 ## Real native engine and export
 

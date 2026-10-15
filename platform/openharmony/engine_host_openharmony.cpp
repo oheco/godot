@@ -8,6 +8,7 @@
 #include "file_access_openharmony.h"
 #include "os_openharmony.h"
 #include "host_focus_state.h"
+#include "host_window_mode_state.h"
 #include "wrapper_openharmony.h"
 
 #ifdef TOOLS_ENABLED
@@ -53,6 +54,7 @@ std::deque<Event> events;
 // ArkUI snapshots survive state 0/1. Every access uses event_mutex, including
 // the IME gate; surface focus never substitutes for actual window activation.
 GodotOpenHarmony::HostFocusState focus_state;
+GodotOpenHarmony::HostWindowModeState window_mode_state;
 // The engine thread is created explicitly instead of through std::thread: musl
 // gives a new thread about a megabyte of stack, and the .NET runtime needs more
 // than that while it starts (it overran the stack inside libcoreclr otherwise).
@@ -61,6 +63,7 @@ bool engine_thread_started = false;
 std::atomic<int> state{ 0 };
 std::atomic<GodotCreateInstanceCallback> create_instance_callback{ nullptr };
 std::atomic<GodotOpenExternalCallback> open_external_callback{ nullptr };
+std::atomic<GodotSetWindowModeCallback> window_mode_callback{ nullptr };
 bool stopping = false;
 bool frame = false;
 bool frame_requested = false;
@@ -371,6 +374,48 @@ int32_t godot_host_create_instance(int argc, const char *const *argv) {
 	const auto callback = create_instance_callback.load();
 	return callback ? callback(argc, argv) : -1;
 }
+void godot_host_set_window_mode_callback(GodotSetWindowModeCallback callback) {
+	window_mode_callback = callback;
+}
+int32_t godot_host_set_window_mode(int32_t mode) {
+	const auto callback = window_mode_callback.load();
+	const int32_t normalized = GodotOpenHarmony::HostWindowModeState::normalize(mode);
+	if (!callback || normalized < 0) {
+		return -1;
+	}
+	uint32_t request;
+	{
+		std::lock_guard<std::mutex> lock(event_mutex);
+		if (stopping || !window_mode_state.request(normalized, request)) {
+			return -1;
+		}
+	}
+	if (request == 0) {
+		return 0;
+	}
+	const int32_t result = callback(request, normalized);
+	if (result != 0) {
+		std::lock_guard<std::mutex> lock(event_mutex);
+		window_mode_state.cancel(request);
+	}
+	return result;
+}
+int32_t godot_host_get_window_mode() {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	return window_mode_state.get_mode();
+}
+void godot_host_window_mode_status(int32_t mode) {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	if (!stopping) {
+		window_mode_state.observe(mode);
+	}
+}
+void godot_host_window_mode_result(uint32_t request, int32_t actual_mode) {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	if (!stopping) {
+		window_mode_state.complete(request, actual_mode);
+	}
+}
 void godot_host_set_open_external_callback(GodotOpenExternalCallback callback) {
 	open_external_callback = callback;
 }
@@ -451,6 +496,16 @@ bool godot_host_is_window_active() {
 bool godot_host_is_input_focused() {
 	std::lock_guard<std::mutex> lock(event_mutex);
 	return !stopping && focus_state.is_effectively_focused();
+}
+
+bool godot_host_is_window_active_for_cleanup() {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	return focus_state.is_window_active();
+}
+
+uint64_t godot_host_get_window_focus_generation() {
+	std::lock_guard<std::mutex> lock(event_mutex);
+	return focus_state.get_window_focus_generation();
 }
 
 void godot_host_window_event(int32_t p_event) {

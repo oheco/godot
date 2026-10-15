@@ -41,6 +41,11 @@ uint32_t next_spawn = 0;
 bool launcher_stopping = false;
 napi_threadsafe_function launch_function = nullptr;
 napi_threadsafe_function external_function = nullptr;
+napi_threadsafe_function window_mode_function = nullptr;
+struct WindowModeRequest {
+	uint32_t id;
+	int32_t mode;
+};
 struct ExternalRequest {
 	int32_t kind;
 	std::string target;
@@ -307,6 +312,31 @@ void external_on_ui(napi_env env, napi_value callback, void *, void *data) {
 	napi_create_string_utf8(env, request->target.data(), request->target.size(), &args[1]);
 	napi_call_function(env, receiver, callback, 2, args, &ignored);
 }
+int32_t set_window_mode(uint32_t id, int32_t mode) {
+	std::lock_guard<std::mutex> lock(spawn_mutex);
+	if (!window_mode_function || launcher_stopping) {
+		return -1;
+	}
+	auto *request = new WindowModeRequest{ id, mode };
+	if (napi_call_threadsafe_function(window_mode_function, request, napi_tsfn_nonblocking) != napi_ok) {
+		delete request;
+		return -1;
+	}
+	return 0;
+}
+void window_mode_on_ui(napi_env env, napi_value callback, void *, void *data) {
+	std::unique_ptr<WindowModeRequest> request(static_cast<WindowModeRequest *>(data));
+	if (!env || !callback || destroyed) {
+		return;
+	}
+	napi_value args[2], receiver, ignored;
+	napi_get_undefined(env, &receiver);
+	napi_create_uint32(env, request->id, &args[0]);
+	napi_create_int32(env, request->mode, &args[1]);
+	if (napi_call_function(env, receiver, callback, 2, args, &ignored) != napi_ok) {
+		godot_host_window_mode_result(request->id, -1);
+	}
+}
 void cleanup(void *) {
 	if (destroyed) {
 		return;
@@ -322,6 +352,7 @@ void cleanup(void *) {
 	}
 	godot_host_set_create_instance_callback(nullptr);
 	godot_host_set_open_external_callback(nullptr);
+	godot_host_set_window_mode_callback(nullptr);
 	// Stop and join before releasing ANY resource the engine may still use.
 	godot_host_stop();
 	if (launch_function) {
@@ -331,6 +362,10 @@ void cleanup(void *) {
 	if (external_function) {
 		napi_release_threadsafe_function(external_function, napi_tsfn_abort);
 		external_function = nullptr;
+	}
+	if (window_mode_function) {
+		napi_release_threadsafe_function(window_mode_function, napi_tsfn_abort);
+		window_mode_function = nullptr;
 	}
 	if (window) {
 		OH_NativeWindow_DestroyNativeWindow(window);
@@ -680,6 +715,62 @@ napi_value set_external_opener(napi_env env, napi_callback_info info) {
 	godot_host_set_open_external_callback(open_external);
 	return undefined(env);
 }
+napi_value set_window_mode_handler(napi_env env, napi_callback_info info) {
+	napi_value args[1];
+	if (!values(env, info, 1, args) || !alive(env)) {
+		return nullptr;
+	}
+	napi_valuetype type;
+	if (napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
+		type_error(env, "Expected a window mode handler function");
+		return nullptr;
+	}
+	std::lock_guard<std::mutex> lock(spawn_mutex);
+	if (window_mode_function) {
+		napi_throw_error(env, nullptr, "Window mode handler already configured");
+		return nullptr;
+	}
+	napi_value name;
+	napi_create_string_utf8(env, "GodotWindowMode", NAPI_AUTO_LENGTH, &name);
+	if (napi_create_threadsafe_function(env, args[0], nullptr, name, 64, 1, nullptr, nullptr, nullptr,
+				window_mode_on_ui, &window_mode_function) != napi_ok) {
+		napi_throw_error(env, nullptr, "Cannot create window mode thread-safe function");
+		return nullptr;
+	}
+	godot_host_set_window_mode_callback(set_window_mode);
+	return undefined(env);
+}
+napi_value window_mode_status(napi_env env, napi_callback_info info) {
+	napi_value args[1];
+	int32_t mode;
+	if (!values(env, info, 1, args) || !integer_value(env, args[0], mode)) {
+		return nullptr;
+	}
+	if (mode < 0 || mode > 3) {
+		type_error(env, "Expected a window mode from 0 to 3");
+		return nullptr;
+	}
+	if (!destroyed) {
+		godot_host_window_mode_status(mode);
+	}
+	return undefined(env);
+}
+napi_value window_mode_result(napi_env env, napi_callback_info info) {
+	napi_value args[2];
+	uint32_t id;
+	int32_t mode;
+	if (!values(env, info, 2, args) || !integer_value(env, args[0], id) || !integer_value(env, args[1], mode)) {
+		return nullptr;
+	}
+	if (id == 0 || mode < -1 || mode > 3) {
+		type_error(env, "Expected a nonzero window mode request and actual mode from -1 to 3");
+		return nullptr;
+	}
+	if (!destroyed) {
+		godot_host_window_mode_result(id, mode);
+	}
+	return undefined(env);
+}
 napi_value spawn_result(napi_env env, napi_callback_info info) {
 	napi_value args[2];
 	uint32_t id;
@@ -708,6 +799,9 @@ napi_value init(napi_env env, napi_value exports) {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
 		METHOD("setLauncher", set_launcher),
 		METHOD("setExternalOpener", set_external_opener),
+		METHOD("setWindowModeHandler", set_window_mode_handler),
+		METHOD("windowModeStatus", window_mode_status),
+		METHOD("windowModeResult", window_mode_result),
 		METHOD("openTerminal", open_terminal),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),

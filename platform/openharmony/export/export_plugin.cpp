@@ -264,7 +264,7 @@ Error EditorExportPlatformOpenHarmony::export_project(const Ref<EditorExportPres
 	return export_project_helper(p_preset, p_debug, p_path, should_sign, export_project_only, p_flags, p_notify);
 }
 
-Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify) {
+Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify, const DeviceRunSession *p_run_session) {
 	ExportNotifier notifier(*this, p_preset, p_debug, p_path, p_flags, p_notify);
 
 	EditorProgress ep("export", TTR("Exporting OpenHarmony Project"), 7, true);
@@ -428,7 +428,19 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	}
 
 	Vector<String> command_line_flags = gen_export_flags(p_flags);
-	if (p_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG_LOCALHOST)) {
+	if (p_run_session) {
+		std::vector<std::string> arguments;
+		for (const String &flag : command_line_flags) {
+			arguments.emplace_back(flag.utf8().get_data());
+		}
+		if (!p_run_session->remap_arguments(arguments)) {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Run"), TTR("The device debug port mappings do not match the exported command line."));
+			return ERR_INVALID_DATA;
+		}
+		for (int i = 0; i < command_line_flags.size(); ++i) {
+			command_line_flags.write[i] = String::utf8(arguments[i].c_str());
+		}
+	} else if (p_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG_LOCALHOST)) {
 		for (int i = 0; i + 1 < command_line_flags.size(); i++) {
 			if (command_line_flags[i] == "--remote-debug") {
 				command_line_flags.write[i + 1] = get_debug_protocol() + "127.0.0.1:" + itos(get_debug_port());
@@ -802,29 +814,37 @@ Error EditorExportPlatformOpenHarmony::run(const Ref<EditorExportPreset> &p_pres
 		return err;
 	}
 	const String temp = work.path_join("project.hap");
-	err = export_project_helper(p_preset, true, temp, true, false, p_debug_flags);
+	String bundle = p_preset->get("build/bundle_id");
+	if (bundle.is_empty()) {
+		bundle = OPENHARMONY_DEFAULT_BUNDLE_ID;
+	}
+	const String endpoint = use_broker() ? get_broker_endpoint() : String();
+	auto session = std::make_unique<DeviceRunSession>(device_id.utf8().get_data(), bundle.utf8().get_data(),
+			[this, hdc, endpoint](const std::vector<std::string> &arguments, std::string &out) {
+				List<String> args;
+				for (const std::string &argument : arguments) {
+					args.push_back(String::utf8(argument.c_str()));
+				}
+				String output;
+				const Error result = execute_hdc(hdc, args, output, &endpoint);
+				out = output.utf8().get_data();
+				return result == OK;
+			});
+	std::string output;
+	if (!session->prepare_ports(ports, output)) {
+		err = ERR_CANT_CONNECT;
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Run"), String::utf8(output.c_str()));
+	} else {
+		// The HAP must connect to the reserved device listeners, not the Editor
+		// listeners that HDC forwards to. Keep the reservations throughout export.
+		err = export_project_helper(p_preset, true, temp, true, false, p_debug_flags, true, session.get());
+	}
 	if (err == OK && !progress.step(TTR("Deploying and starting on device..."), 1)) {
-		String bundle = p_preset->get("build/bundle_id");
-		if (bundle.is_empty()) {
-			bundle = OPENHARMONY_DEFAULT_BUNDLE_ID;
-		}
-		const String endpoint = use_broker() ? get_broker_endpoint() : String();
-		remote_run = std::make_unique<DeviceRunSession>(device_id.utf8().get_data(), bundle.utf8().get_data(),
-				[this, hdc, endpoint](const std::vector<std::string> &arguments, std::string &out) {
-					List<String> args;
-					for (const std::string &argument : arguments) {
-						args.push_back(String::utf8(argument.c_str()));
-					}
-					String output;
-					const Error result = execute_hdc(hdc, args, output, &endpoint);
-					out = output.utf8().get_data();
-					return result == OK;
-				});
-		std::string output;
-		if (!remote_run->start(temp.utf8().get_data(), ports, output)) {
+		if (!session->start(temp.utf8().get_data(), output)) {
 			err = ERR_CANT_CONNECT;
 			add_message(EXPORT_MESSAGE_ERROR, TTR("Run"), String::utf8(output.c_str()));
 		} else {
+			remote_run = std::move(session);
 			print_line("OpenHarmony game started on " + device_id);
 			if (p_debug_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG) && EditorDebuggerNode::get_singleton()) {
 				ScriptEditorDebugger *debugger = EditorDebuggerNode::get_singleton()->get_current_debugger();
@@ -836,6 +856,12 @@ Error EditorExportPlatformOpenHarmony::run(const Ref<EditorExportPreset> &p_pres
 		}
 	} else if (err == OK) {
 		err = ERR_SKIP;
+	}
+	if (err != OK) {
+		// Export failure/cancellation must release reservations too. Retain failed
+		// cleanup on remote_run so the next deployment cannot silently leak rules.
+		remote_run = std::move(session);
+		clear_remote_run(true);
 	}
 	_remove_dir_recursive(work);
 	return err;

@@ -8,9 +8,11 @@ import { engineArguments, HostConfig, hostStorage, instancesEnabled, loadHostCon
 import { describe, initDiagnostics, record, setDiagnosticsLevel } from '../runtime/Diagnostics';
 import { openExternal } from '../runtime/ExternalApps';
 import { hasEngineFlag, launchInstance, logInstanceState, reportExit, reportLaunchFailure, reportStarted, reportWindowReady } from '../runtime/Launch';
+import { WindowModeController } from '../runtime/WindowMode';
 
 export default class EntryAbility extends UIAbility {
   private launcherEnabled: boolean = false;
+  private controller?: WindowModeController;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     try {
@@ -57,6 +59,17 @@ export default class EntryAbility extends UIAbility {
     record('ability onWindowStageCreate');
     const mainWindow = stage.getMainWindowSync();
     AppStorage.setOrCreate('godotWindowId', mainWindow.getWindowProperties().id);
+    try {
+      this.controller?.destroy();
+      this.controller = new WindowModeController(mainWindow);
+      plugin.setWindowModeHandler((requestId: number, mode: number): void => {
+        this.controller?.request(requestId, mode);
+      });
+    } catch (error) {
+      this.controller?.destroy();
+      this.controller = undefined;
+      record(`window mode initialization failed: ${describe(error as BusinessError)}`);
+    }
     stage.on('windowStageEvent', (event: window.WindowStageEventType) => {
       // Codes 2/3 belong exclusively to XComponent surface focus. Window
       // activation is independent, and SHOWN/HIDDEN retain visibility codes.
@@ -97,13 +110,20 @@ export default class EntryAbility extends UIAbility {
 
   onForeground(): void { plugin.sendWindowEvent(5); }
   onBackground(): void { plugin.sendWindowEvent(6); }
-  onWindowStageDestroy(): void { record('ability onWindowStageDestroy'); plugin.destroySurface(); }
+  onWindowStageDestroy(): void {
+    record('ability onWindowStageDestroy');
+    this.controller?.destroy();
+    this.controller = undefined;
+    plugin.destroySurface();
+  }
   onDestroy(): void {
     record('ability onDestroy');
     if (this.launcherEnabled) {
       logInstanceState(this.context, 'ability-onDestroy');
       reportExit(this.context);
     }
+    this.controller?.destroy();
+    this.controller = undefined;
     plugin.destroySurface();
   }
 }

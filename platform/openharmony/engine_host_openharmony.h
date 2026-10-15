@@ -19,6 +19,17 @@ enum GodotExternalKind {
 typedef int32_t (*GodotOpenExternalCallback)(int32_t kind, const char *target);
 void godot_host_set_open_external_callback(GodotOpenExternalCallback callback);
 int32_t godot_host_open_external(int32_t kind, const char *target);
+// Mode codes match DisplayServer: 0 windowed, 1 minimized, 2 maximized,
+// 3 fullscreen. Exclusive fullscreen (4) always normalizes to ordinary (3).
+// Requests queue to ArkUI without blocking the engine thread. UI status snapshots
+// survive before start; acknowledgements cannot replace a newer pending intent.
+typedef int32_t (*GodotSetWindowModeCallback)(uint32_t request, int32_t mode);
+void godot_host_set_window_mode_callback(GodotSetWindowModeCallback callback);
+int32_t godot_host_set_window_mode(int32_t mode);
+int32_t godot_host_get_window_mode();
+void godot_host_window_mode_status(int32_t mode);
+// actual_mode=-1 keeps the last known state when the UI query is unavailable.
+void godot_host_window_mode_result(uint32_t request, int32_t actual_mode);
 // Synchronous broker operation: call only from a background worker, never the
 // engine/ArkUI thread. Uses the installed shell service and system aa command.
 int32_t godot_host_open_terminal(const char *uri, char *diagnostic, uint32_t capacity);
@@ -53,4 +64,8 @@ bool godot_host_is_window_active();
 // Latest actual window activation AND acknowledged surface focus. IME clients
 // retain requests while false and attach only when this snapshot is eligible.
 bool godot_host_is_input_focused();
+// Retains system cursor-lock invalidation across rapid INACTIVE/ACTIVE pairs.
+uint64_t godot_host_get_window_focus_generation();
+// Teardown still releases an active window's cursor after stop has been set.
+bool godot_host_is_window_active_for_cleanup();
 }

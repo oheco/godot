@@ -78,9 +78,10 @@ after signing; the shared DevEco build disables stripping.
 - The .NET Editor additionally contains `runtime.zip` and its size/SHA-256
   manifest. It extracts GodotSharp, a C# example and an offline NuGet feed into
   private storage. Concurrent starts use separate staging paths.
-- The Editor may also carry the debug/release export template archives and their
-  digest manifest. Only Editors publish these into private versioned storage;
-  games do not run template preparation.
+- The Editor App does not include debug/release export template archives.
+  Download the two ZIPs from the matching Godot OpenHarmony GitHub Release and
+  select them in the OpenHarmony export preset's Custom Template fields.
+  Existing downloaded archives and export-preset paths are retained on update.
 - The .NET SDK is **not** shipped. Install it using `oo install dotnet-sdk`.
   The Editor resolves the oheco package, honouring `OHECO_ROOT` and the explicit
   `GODOT_OHOS_DOTNET_ROOT` environment override.
