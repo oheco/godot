@@ -490,6 +490,19 @@ void DocTools::generate(BitField<GenerateFlags> p_flags) {
 				// instead we just make a local instance to get default values.
 				Ref<EditorSettings> edset = memnew(EditorSettings);
 				edset->get_property_list(&properties);
+				// Exporters register additional built-in settings after defaults are
+				// loaded. Include their property metadata so XML descriptions can
+				// merge into the help used by the settings inspector's tooltips.
+				EditorSettings *settings = EditorSettings::get_singleton();
+				if (settings) {
+					List<PropertyInfo> exporter_properties;
+					settings->get_property_list(&exporter_properties);
+					for (const PropertyInfo &property : exporter_properties) {
+						if (property.name.begins_with("export/") && settings->has_default_value(property.name) && !edset->has_setting(property.name)) {
+							properties.push_back(property);
+						}
+					}
+				}
 				own_properties = properties;
 			} else if (name == "ProjectSettings") {
 				ProjectSettings::get_singleton()->get_property_list(&properties);

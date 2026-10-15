@@ -349,3 +349,45 @@ adds HDC installation after confirming that process is absent. HDC reads the
 passed path and performs its own device upload; this is distinct from a file
 transfer over the broker control connection. `--install-only` skips port testing.
 No applications are launched/stopped and no services are started or restarted.
+
+## Automatic debug signing and Editor Settings help
+
+```sh
+node --test platform/openharmony/tests/test_auto_sign.cjs
+python3 platform/openharmony/tests/test_auto_sign_policy.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY"
+python3 platform/openharmony/tests/test_editor_settings_docs.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY"
+python3 platform/openharmony/tests/test_auto_sign_export.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY" \
+  --template "$DEBUG_TEMPLATE_ZIP" --command-line-tools-root "$CLT_ROOT"
+```
+
+The Node suite executes the production helper with local executable CLI/HDC,
+profile-verifier and build-runner substitutes. It covers exact public CLI/profile
+schemas, SDK ACL classification, zero-exit logged-out status, team selection,
+UDID/ACL/expiry changes, confirmation binding and stale tokens, cache reuse,
+generation rollback, stable project identities, real permission checks after
+chmod, copied login isolation, certificate bundles, locks, SIGTERM cleanup,
+restored public profiles and redacted one-object receipts. It cannot issue a
+certificate, log in, install an application or send a cloud request.
+
+The native policy fixture checks the production inline signing decision on real
+EditorSettings and export presets, including default-enabled switches and all
+manual fields. Complete but invalid manual signing remains a manual error when
+Always Auto Sign is off. Ordinary public export validation stays strict.
+
+The documentation fixture checks real EditorHelp descriptions both after normal
+startup and after regeneration, using an existing core setting as a positive
+control. With an old signed Editor library, `--expect-missing-docs` must reproduce
+the missing exporter descriptions. This is documentation-data acceptance; it does
+not hover a setting in an installed GUI.
+
+The native export fixture needs the rebuilt library's Dictionary context API. It
+exports real projects/PCKs from copies of a real debug template and invokes real
+CLT Node through the production C++ bridge. Only the helper entry is replaced by
+a fixed local protocol substitute. Success, confirmation in headless mode,
+logged-out messages, malformed/secret output, invalid signing receipts, unsafe
+artifact paths and old templates are checked without CLI/HDC/network calls.
+The output HAP bytes are synthetic. Real cloud issuance, the installed GUI's
+confirmation/resume and a device's signature trust remain separate acceptance.

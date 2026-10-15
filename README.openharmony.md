@@ -38,6 +38,10 @@ This revision is a local candidate; it has not been tagged or published.
 - Export templates are separate Release downloads. The Editor App and its
   startup no longer carry or install their ZIP files. Select the downloaded
   Debug/Release ZIPs in the OpenHarmony preset's Custom Template fields.
+- Remote Deploy supports DevEco CLI automatic debug signing. Auto Signing and
+  Always Auto Sign default to enabled. Matching private cached materials are reused;
+  new or replacement materials require confirmation before the CLI can replace a
+  team certificate. All OpenHarmony Editor Settings have native help tooltips.
 - Game export presets expose **Build > Device Types** as checkboxes, defaulting
   to phone. Select any combination of phone, tablet, 2in1, tv, wearable and car.
   The OpenHarmony SDK spells the phone type `default`; the HarmonyOS SDK uses
@@ -312,6 +316,46 @@ values for its native signer. The original profile is restored after the build,
 and output is redacted. Signed exports require the user's actual certificate,
 profile and keystore; file-signature validation does not prove device trust.
 
+### Automatic signing for Remote Deploy
+
+Install the official `@deveco/deveco-cli` npm package separately and complete its
+`devecocli auth login` flow before deploying. The selected Command Line Tools must
+provide Node.js 22 or newer, Hvigor, the SDK and HDC. The integration is checked
+against DevEco CLI 1.3.5; it does not install packages or open a login flow silently.
+
+Under **Editor Settings → Export → OpenHarmony**:
+
+| Setting | Default | Remote Deploy behavior |
+| --- | --- | --- |
+| Auto Signing | On | Allows automatic debug signing when needed. Off requires complete manual preset signing. |
+| Always Auto Sign | On | With Auto Signing on, ignores manual preset signing. Off prefers a complete manual configuration and otherwise uses automatic signing. |
+| DevEcoCLI Path | Empty | Discovers the installed CLI; accepts an explicit JavaScript entry file if discovery fails. |
+| Auto Signing Team ID | Empty | Selects the only available team. Multiple teams require an explicit ID from `devecocli auth team list`. |
+| Auto Signing Data Dir | Empty | Reuses the existing CLI login directory, including an inherited `DEVECO_CLI_DATA_DIR`; set it when login used a different directory. |
+
+These settings apply to Remote Deploy. Ordinary export and distribution signing
+continue to use the preset's Build > Sign and sign/* fields. A complete manual
+configuration whose files disappeared remains a manual error when Always Auto
+Sign is off; the Editor does not silently change that configured identity.
+
+The helper queries the selected HDC target's actual UDID and checks the verified
+debug profile's bundle, device list, ACL permissions, validity and matching
+certificate. An HDC serial or network address is not a signing UDID. Matching
+cached materials are reused. Before requesting new or replacement materials, the
+Editor asks for confirmation: CLI 1.3.5 can replace its team-wide cloud certificate
+when regenerating for a new device, changed permissions or expiry. Failed signing
+is reported, and local previous materials are retained. Existing applications are
+never automatically uninstalled to bypass a signature mismatch.
+
+Signing materials and the helper's working copy of the existing CLI login stay
+in permission-checked private storage in the executing host's `XDG_CONFIG_HOME`.
+The original CLI login and export preset are preserved. On HarmonyOS, the broker
+owns this host namespace; its `XDG_CONFIG_HOME` and `TMPDIR` must support real
+0700/0600 permissions. Missing tools, logged-out or expired sessions, ambiguous
+teams, unavailable devices, invalid profiles and build failures produce actionable
+errors. See the [helper contract](<misc/dist/openharmony_template/tools/AUTO_SIGNING.md>)
+for cache and confirmation details.
+
 Build both `module_mono_enabled=yes` templates with `generate_bundle=yes`.
 The Editor App does not bundle or extract export templates. Download
 `openharmony_debug_arm64-v8a.zip` and `openharmony_release_arm64-v8a.zip` from the
@@ -322,8 +366,9 @@ and offline feed; it remains separate from these optional game export templates.
 
 - F5/F6 launch another attached UIAbility process with the project/scene/debugger
   arguments. F8 stops the recorded game PID; no HAP packaging or HDC is involved.
-- Remote Deploy requires an authorized HDC target and signing preset. Every
-  install/start/forward command names that target and checks success. Debug and
+- Remote Deploy requires an authorized HDC target and either automatic debug
+  signing or a complete manual signing preset. Every install/start/forward command
+  names that target and checks success. Debug and
   file-server deployments reserve distinct device-side ports before exporting,
   remap the game's loopback arguments to those ports, and retain the Editor's
   listening ports. This also works when HDC targets the Editor's own device.
@@ -336,7 +381,8 @@ and offline feed; it remains separate from these optional game export templates.
   oheco-broker` if needed). The editor reads `~/.oheco/broker/endpoint`, independently
   of the SDK/tool root, and connects to its numeric loopback endpoint;
   there is no port setting. Device discovery, HDC installation, ability start/stop,
-  debugger/file-server port forwarding and forwarding cleanup use that service.
+  debugger/file-server port forwarding, forwarding cleanup and the automatic
+  debug-signing/build helper use that service.
   Commands keep their executable and argument arrays; they are never shell strings.
   Broker failures are reported without retrying or falling back to direct HDC.
 - The native HDC socket at `/data/hdc/hdc_debug/hdc_server` is absent from the
@@ -350,8 +396,9 @@ and offline feed; it remains separate from these optional game export templates.
   executable/arguments and output. The project directory must be accessible to both
   the editor and the terminal running the broker. The owned run directory is
   removed after deployment.
-  OpenHarmony export/build/sign operations and local UIAbility F5/F6/F8 execution
-  retain their existing toolchain. Turning Use Broker off selects direct HDC.
+  Ordinary manual exports and local UIAbility F5/F6/F8 execution retain their
+  existing toolchain. Turning Use Broker off invokes HDC and the automatic signing
+  helper directly in the Editor's namespace.
 - Debug templates support GDScript breakpoints, stack/locals, step/continue and
   Remote SceneTree. Release templates intentionally reject remote debugging.
 - C# ARM64 games use .NET 10 NativeAOT Shared for `openharmony-arm64` in both

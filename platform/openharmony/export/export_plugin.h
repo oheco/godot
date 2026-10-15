@@ -61,7 +61,19 @@ class EditorExportPlatformOpenHarmony : public EditorExportPlatform {
 	String get_hvigor_path() const;
 	String get_hdc_path() const;
 	int get_debug_port() const;
-	Error build_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, bool p_sign);
+	bool validate_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug, bool p_validate_signing) const;
+	Error build_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, bool p_sign, const Dictionary &p_auto_signing = {});
+	Error build_auto_signed(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing);
+	Error request_auto_signing_confirmation(const Ref<EditorExportPreset> &p_preset, const String &p_target, const Dictionary &p_result);
+	void confirm_auto_signing();
+	void cancel_auto_signing();
+	ObjectID auto_signing_confirmation;
+	Ref<EditorExportPreset> auto_signing_pending_preset;
+	String auto_signing_pending_target;
+	String auto_signing_pending_token;
+	Ref<EditorExportPreset> auto_signing_consent_preset;
+	String auto_signing_consent_target;
+	String auto_signing_consent_token;
 	bool use_broker() const;
 	String get_broker_endpoint() const;
 	Error execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000, const String *p_broker_endpoint = nullptr);
@@ -84,6 +96,24 @@ protected:
 	void _notification(int p_what);
 
 public:
+	// Field completeness chooses an identity. File existence is checked later so
+	// a broken manual configuration never silently selects another identity.
+	static bool has_complete_manual_signing(const Ref<EditorExportPreset> &p_preset) {
+		if (p_preset.is_null() || !bool(p_preset->get("build/sign"))) {
+			return false;
+		}
+		for (const char *field : { "sign/store_file", "sign/store_password", "sign/key_alias", "sign/key_password", "sign/sign_alg", "sign/profile_file", "sign/certpath_file" }) {
+			if (String(p_preset->get(field)).is_empty()) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	static bool should_auto_sign_remote_run(const Ref<EditorExportPreset> &p_preset, bool p_auto_signing, bool p_always_auto_sign) {
+		return p_auto_signing && (p_always_auto_sign || !has_complete_manual_signing(p_preset));
+	}
+
 	virtual void get_preset_features(const Ref<EditorExportPreset> &p_preset, List<String> *r_features) const override;
 
 	virtual void get_export_options(List<ExportOption> *r_options) const override;
@@ -113,7 +143,7 @@ public:
 
 	virtual Error export_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, BitField<EditorExportPlatform::DebugFlags> p_flags = 0, bool p_notify = true) override;
 
-	Error export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify = true, const DeviceRunSession *p_run_session = nullptr);
+	Error export_project_helper(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_path, bool should_sign, bool export_project_only, BitField<EditorExportPlatform::DebugFlags> p_flags, bool p_notify = true, const DeviceRunSession *p_run_session = nullptr, const Dictionary &p_auto_signing = {});
 
 	virtual Error run(const Ref<EditorExportPreset> &p_preset, int p_device, BitField<EditorExportPlatform::DebugFlags> p_debug_flags) override;
 	virtual void stop_remote_run() override;

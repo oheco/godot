@@ -43,12 +43,16 @@ void register_openharmony_exporter_types() {
 
 void register_openharmony_exporter() {
 	// The selected official tools own Node/Hvigor; an empty SDK uses their bundle.
-	for (const char *name : { "command_line_tools_root", "sdk_root", "hdc_path" }) {
+	for (const char *name : { "command_line_tools_root", "sdk_root", "hdc_path", "devecocli_path", "auto_signing_data_dir" }) {
 		String setting = String("export/openharmony/") + name;
 		EDITOR_DEF_BASIC(setting, "");
 		EditorSettings::get_singleton()->add_property_hint(PropertyInfo(Variant::STRING, setting,
-				String(name) == "hdc_path" ? PROPERTY_HINT_GLOBAL_FILE : PROPERTY_HINT_GLOBAL_DIR));
+				String(name) == "hdc_path" || String(name) == "devecocli_path" ? PROPERTY_HINT_GLOBAL_FILE : PROPERTY_HINT_GLOBAL_DIR));
 	}
+
+	EDITOR_DEF_BASIC("export/openharmony/auto_signing", true);
+	EDITOR_DEF_BASIC("export/openharmony/always_auto_sign", true);
+	EDITOR_DEF_BASIC("export/openharmony/auto_signing_team_id", "");
 
 #ifdef OPENHARMONY_ENABLED
 	EDITOR_DEF_BASIC("export/openharmony/use_broker", true);

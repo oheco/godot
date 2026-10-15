@@ -806,6 +806,40 @@
 		<member name="editors/visual_editors/visual_shader/port_preview_size" type="int" setter="" getter="">
 			The size to use for port previews in the visual shader uniforms (toggled by clicking the "eye" icon next to an output). The value is defined in pixels at 100% zoom, and will scale with zoom automatically.
 		</member>
+		<member name="export/openharmony/always_auto_sign" type="bool" setter="" getter="">
+			If [code]true[/code] (the default) and [member export/openharmony/auto_signing] is enabled, remote device runs always use automatic debug signing, even when the export preset contains complete manual signing settings. If [code]false[/code], remote runs use complete manual signing settings, and fall back to automatic signing when those settings are missing or incomplete.
+			This setting only affects running on a remote device from the editor. It does not change signing for normal exports or release/distribution packages.
+		</member>
+		<member name="export/openharmony/auto_signing" type="bool" setter="" getter="">
+			If [code]true[/code] (the default), allows automatic debug signing when running on an OpenHarmony device from the editor. [member export/openharmony/always_auto_sign] determines whether this overrides complete manual signing settings in the export preset. If [code]false[/code], remote runs never request automatic signing.
+			Automatic signing requires Node.js 22 or newer, a separately installed npm package [code]@deveco/deveco-cli[/code], and the user to complete [code]devecocli auth login[/code] before running from the editor. It also requires the official Command Line Tools and HDC; installing the npm CLI alone does not provide the build tools or device connector. See [member export/openharmony/devecocli_path], [member export/openharmony/auto_signing_team_id], and [member export/openharmony/auto_signing_data_dir].
+			Matching cached signing materials are reused. Before requesting new or replacement materials, the editor asks for confirmation because the official CLI may replace the team's existing CLI certificate when a profile expires or no longer matches the device or permissions.
+			This setting only affects running on a remote device from the editor. It does not change signing for normal exports or release/distribution packages.
+		</member>
+		<member name="export/openharmony/auto_signing_data_dir" type="String" setter="" getter="">
+			Optional global directory containing the DevEco CLI login state to reuse for automatic debug signing. Leave empty to use an inherited [code]DEVECO_CLI_DATA_DIR[/code] or the CLI's default login directory. If set, select the same directory used when completing [code]devecocli auth login[/code] with [code]DEVECO_CLI_DATA_DIR[/code]. The editor does not log in on the user's behalf. See [member export/openharmony/auto_signing].
+		</member>
+		<member name="export/openharmony/auto_signing_team_id" type="String" setter="" getter="">
+			Optional team ID for automatic debug signing. If empty, use the only available team. If several teams are available, automatic signing asks the user to fill in this setting instead of silently choosing a team. The team is always passed explicitly to the CLI. See [member export/openharmony/auto_signing].
+		</member>
+		<member name="export/openharmony/command_line_tools_root" type="String" setter="" getter="">
+			Global directory containing the official OpenHarmony/HarmonyOS Command Line Tools. The selected tools provide the build's Node.js and Hvigor, and can supply the bundled SDK. If empty, use automatic tool discovery. Configure this path if the installed tools cannot be found. See [member export/openharmony/sdk_root] and [member export/openharmony/hdc_path].
+			Automatic debug signing also requires Node.js 22 or newer and the separately installed npm package [code]@deveco/deveco-cli[/code]; that package does not replace the official build tools or HDC. See [member export/openharmony/auto_signing].
+		</member>
+		<member name="export/openharmony/devecocli_path" type="String" setter="" getter="">
+			Optional global file path to the DevEco CLI entry point used for automatic debug signing. A JavaScript entry file is supported. Enter a file path, not a shell command containing an interpreter and arguments. If empty, the editor attempts to discover the installed CLI entry point automatically.
+			Install Node.js 22 or newer and the npm package [code]@deveco/deveco-cli[/code] separately, then complete [code]devecocli auth login[/code] before using automatic signing. See [member export/openharmony/auto_signing_data_dir] if the login uses a custom [code]DEVECO_CLI_DATA_DIR[/code]. The CLI does not replace the official Command Line Tools or HDC.
+		</member>
+		<member name="export/openharmony/hdc_path" type="String" setter="" getter="">
+			Optional global file path to the official HDC (HarmonyOS Device Connector) executable used for device discovery, deployment, and remote debugging. If empty, use automatic HDC discovery. The npm DevEco CLI package does not include HDC.
+			The HDC target serial selects the connected device. It is different from the device UDID used to authorize a debug signing profile; do not use the target serial as a signing UDID.
+		</member>
+		<member name="export/openharmony/sdk_root" type="String" setter="" getter="">
+			Optional global directory for the OpenHarmony/HarmonyOS SDK. Select an SDK compatible with the export preset's SDK version. A supported SDK bundle or standalone versioned OpenHarmony SDK can be used. If empty, use SDK discovery, including the SDK bundled with the selected official Command Line Tools. See [member export/openharmony/command_line_tools_root].
+		</member>
+		<member name="export/openharmony/use_broker" type="bool" setter="" getter="">
+			If [code]true[/code] (the default), the OpenHarmony editor runs HDC and the automatic debug-signing/build helper through the oheco broker. The broker must already be available to the editor. If [code]false[/code], invoke these tools directly from the editor process. Ordinary manual exports retain their existing build toolchain. This setting is only available when the editor itself runs on OpenHarmony; other hosts invoke tools directly.
+		</member>
 		<member name="export/ssh/scp" type="String" setter="" getter="">
 			Path to the SCP (secure copy) executable (used for remote deploy to desktop platforms). If left empty, the editor will attempt to run [code]scp[/code] from [code]PATH[/code].
 			[b]Note:[/b] SCP is not the same as SFTP. Specifying the SFTP executable here will not work.
