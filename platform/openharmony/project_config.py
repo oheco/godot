@@ -377,7 +377,10 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
     native['path'] = './src/main/cpp/CMakeLists.txt'
     native['abiFilters'] = config['build']['architectures']
     for option in [build, *entry.get('buildOptionSet', [])]:
-        option.setdefault('nativeLib', {}).setdefault('debugSymbol', {})['strip'] = False
+        # Recover the Editor project's DevEco setting: strip its staged HAP
+        # libraries before the official HAP signing task. Source/CLI libraries
+        # remain untouched; game-template archives retain their signed bytes.
+        option.setdefault('nativeLib', {}).setdefault('debugSymbol', {})['strip'] = role == 'editor'
     module = documents['entry/src/main/module.json5']['module']
     module['mainElement'] = 'EntryAbility'
     devices = {'default': 'phone'} if sdk['runtimeOS'] == 'HarmonyOS' else {'phone': 'default'}
@@ -399,8 +402,11 @@ def configure_project(project, config, restricted=(), *, dry_run=False, preserve
     if role == 'editor':
         # Native-only editors also use oo Node/Hvigor/SDK and user projects.
         permissions.update(('ohos.permission.INTERNET', 'ohos.permission.LOCK_WINDOW_CURSOR',
-                            'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.READ_PASTEBOARD',
-                            'ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE'))
+                            'ohos.permission.READ_WRITE_USER_FILE', 'ohos.permission.READ_PASTEBOARD'))
+        # The approved weak sandbox already permits the oo tool processes. Match
+        # the working Editor profile without requiring an additional system grant.
+        if 'ohos.permission.CUSTOM_SANDBOX' not in restricted:
+            permissions.add('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE')
     permissions.update(restricted)
     user_reasons = {'ohos.permission.MICROPHONE': 'MICROPHONE_reason',
                     'ohos.permission.READ_WRITE_USER_FILE': 'reason_user_file',

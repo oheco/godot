@@ -69,8 +69,10 @@ invocation is editing or playing a project.
 ## Generated payloads
 
 All native libraries use `entry/libs/<ABI>/libgodot.so`. Public bridge headers are
-placed in `entry/src/main/cpp/include`. Do not strip or rewrite a signed library
-after signing; the shared DevEco build disables stripping.
+placed in `entry/src/main/cpp/include`. Signed source/CLI libraries remain
+unchanged. Game projects disable stripping to retain their signed input bytes;
+Editor projects enable Hvigor's staged-library stripping before official HAP
+signing, matching the working DevEco Editor project.
 
 - Games contain their PCK and export arguments in the raw resources. The engine
   loads the PCK explicitly; the native host merges the exported command line with
@@ -91,9 +93,11 @@ application. Generate it from the Godot source checkout before building in DevEc
 
 ## Editor permissions and tools
 
-Access to user projects and oo Node/Hvigor/SDK needs `ohos.permission.READ_WRITE_USER_FILE` (user grant) and
-`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. These restricted permissions need
-matching ACL entries in the signing profile and are limited to 2-in-1 apps.
+Access to user projects uses `ohos.permission.READ_WRITE_USER_FILE` (user grant).
+With an approved `CUSTOM_SANDBOX` profile the Editor can start oo-installed tools
+without additionally requesting `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`;
+the latter is retained for generated profiles without `--custom-sandbox`.
+Restricted permissions need matching ACL entries and the Editor targets 2-in-1.
 The Editor also declares `ohos.permission.READ_PASTEBOARD`, with a usage reason
 for pasting text from other applications, and requests it through the shared
 user-grant flow. Its signing profile must include the approved pasteboard ACL.

@@ -288,21 +288,24 @@ function testCrashMonitoring(root) {
   // only ArkUI build()/decorators, not updateEngineState or crashLogTime logic.
   const { Index } = load('pages/Index.ets', {
     'libentry.so': { default: f.plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
+    '@kit.ArkUI': { window: {} },
     '../runtime/Diagnostics': f.diagnostics, '../runtime/Config': {}, '../runtime/Permissions': {}, '../runtime/Runtime': {},
-    '../runtime/NativeArguments': {}, '../runtime/Templates': {},
+    '../runtime/NativeArguments': {},
+    '../runtime/LocalizedStrings': { localizedUIString: (_context, resource) => resource },
     // This fixture exercises the crash poller, not input (covered separately).
     '../runtime/TouchInput': { TouchInput: class {} },
     '../runtime/Launch': {
       spawnedChildPid: () => childPid, childHasExited: () => false, logInstanceState: () => {}, reportExit: () => {},
     },
   }, {
-    XComponentController: class {}, AppStorage: { get: () => false }, setInterval: () => 1, clearInterval: () => {},
+    XComponentController: class {}, AppStorage: { get: () => false }, $r: (key) => key, setInterval: () => 1, clearInterval: () => {},
   }, (source) => {
     assert.ok(source.includes('  build() {'), 'Index structure changed; update the logic-only transformation');
     return (source.slice(0, source.indexOf('  build() {')) + '}\n')
       .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
   });
   const page = new Index();
+  page.getUIContext = () => ({});
   page.instanceSupport = true;
   page.crashTime = f.diagnostics.crashLogTime();
   page.updateEngineState(f.context);

@@ -24,7 +24,9 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
-## Editor updates in 4.7.2-ohos.6
+## Editor updates in 4.7.2-ohos.6 (development)
+
+This revision is a local candidate; it has not been tagged or published.
 
 - Mouse selection in Output/error logs no longer triggers touchscreen panning.
   Dragging above/below the log scrolls and extends the selection; holding the
@@ -36,6 +38,12 @@ application behaviours after changing the common host.
 - Export templates are separate Release downloads. The Editor App and its
   startup no longer carry or install their ZIP files. Select the downloaded
   Debug/Release ZIPs in the OpenHarmony preset's Custom Template fields.
+- Game export presets expose **Build > Device Types** as checkboxes, defaulting
+  to phone. Select any combination of phone, tablet, 2in1, tv, wearable and car.
+  The OpenHarmony SDK spells the phone type `default`; the HarmonyOS SDK uses
+  `phone`. The other selected types are retained in the generated module.
+- The Editor project's staged HAP stripping, numeric application version name
+  and CUSTOM_SANDBOX permission selection are recovered in the generator.
 - The Editor and both export templates include the accepted ABI-4 window-mode
   and mouse-capture host changes. The managed API/feed remains 4.7.2-ohos.3.
 
@@ -124,15 +132,12 @@ Historical startup, popup, menu and external-action results remain in
   `OHECO_ROOT`, with `GODOT_OHOS_DOTNET_ROOT` as a test override). The project
   therefore carries no .NET SDK and stays decoupled from its version; upgrading
   it is `oo install dotnet-sdk` on the device.
-- Reaching the SDK requires the restricted permissions
-  `ohos.permission.READ_WRITE_USER_FILE` (user-grant) and
-  `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` (system-grant). Both are
-  `system_basic`, available to 2-in-1 device applications only, and the signing
-  profile's ACL must carry them. Declaring a restricted permission without that
-  ACL makes the **installation** fail with `grant request permissions failed`
-  (9568289), so the ACL has to be applied for before the first install. In the
-  debug phase DevEco's automatic signing submits that application to AGC for you
-  and a short-lived temporary profile covers the wait.
+- Reaching the SDK uses `ohos.permission.READ_WRITE_USER_FILE` (user-grant).
+  With `--custom-sandbox`, the Editor uses the approved weak sandbox to start
+  oo-installed tools and does not additionally request
+  `ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. Without that flag the generator
+  retains the external-native-code permission. The signing profile must cover
+  the restricted permissions selected for the application.
 - The managed build uses the pinned NuGet archives listed in
   [`platform/openharmony/dotnet/nuget-inputs.json`](platform/openharmony/dotnet/nuget-inputs.json).
   Every entry records its source, version, size, digest and license metadata.
@@ -423,15 +428,17 @@ your own account, and build the `entry` module. The shell targets **2-in-1
 devices** with SDK API **26 or newer** and Vulkan only. The engine itself is
 compiled against the OpenHarmony native SDK, which is a separate input.
 
-The application needs `ohos.permission.READ_WRITE_USER_FILE` and
-`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE` to read and run the `oo`-installed
-.NET SDK outside its sandbox. Both are in the platform's restricted-permission
-list with exactly this scenario — an IDE or developer tool running on PC/2-in-1 —
-and both are `system_basic`, so the signing profile needs an AGC-approved ACL
-before the first install succeeds. In the debug phase, signing automatically from
-DevEco submits the application for you; a temporary profile is issued while it is
-pending (around three working days). `READ_WRITE_USER_FILE` is user-grant, so the
-application also requests it at runtime.
+The Editor requests `ohos.permission.READ_WRITE_USER_FILE` at runtime to access
+user projects and the oo-installed SDK. Its approved `CUSTOM_SANDBOX` profile
+permits the external tool processes. For profiles generated without
+`--custom-sandbox`, the generator instead retains
+`ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE`. The signing ACL must match the
+selected restricted permissions.
+
+The generated Editor's two `nativeLib.debugSymbol.strip` settings follow the
+working DevEco project and are enabled. Hvigor strips the staged HAP libraries
+before official HAP signing; the signed input library and CLI files remain
+unchanged. Game-template archives continue to preserve their signed libraries.
 
 ## Design and verification scope
 

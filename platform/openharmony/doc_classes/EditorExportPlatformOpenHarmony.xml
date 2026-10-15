@@ -50,6 +50,11 @@
 		<member name="build/default_orientation" type="int" setter="" getter="">
 			The default screen orientation for the application. Determines how the application will be displayed when launched on OpenHarmony devices.
 		</member>
+		<member name="build/device_types" type="int" setter="" getter="" default="1">
+			Device types for the exported game, selected using checkboxes. Combine [code]phone = 1[/code], [code]tablet = 2[/code], [code]2in1 = 4[/code], [code]tv = 8[/code], [code]wearable = 16[/code] and [code]car = 32[/code] as a bitmask. The default is phone only; for example, [code]3[/code] selects phone and tablet. At least one type must be selected, and unknown bits are rejected.
+			The selected types are written to [code]module.json5[/code]'s [code]deviceTypes[/code] array. With an SDK whose metadata selects [code]runtimeOS = OpenHarmony[/code], phone is written as [code]default[/code] to match its module schema. With [code]runtimeOS = HarmonyOS[/code], it is written as [code]phone[/code]. Every other selected type is preserved in either mode; an export without phone never adds it automatically.
+			This option affects exported games only. It does not change the generated Godot Editor's [code]2in1[/code] profile. Declaring a device type does not verify the game's renderer, input or API compatibility on that device; test each target device with a matching SDK.
+		</member>
 		<member name="build/expand_into_system_area" type="bool" setter="" getter="">
 			Expand the shared host surface into the system safe area. Enabled by default for games.
 		</member>

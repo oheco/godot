@@ -4,7 +4,7 @@
     "displayName": "Godot Editor",
     "vendor": "oheco",
     "versionCode": 4070206,
-    "versionName": "4.7.2-ohos.6",
+    "versionName": "4.7.2.6",
     "deviceTypes": ["2in1"],
     "orientation": "system"
   },

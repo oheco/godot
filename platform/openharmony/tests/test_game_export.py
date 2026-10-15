@@ -168,6 +168,23 @@ def main():
             shutil.copyfile(pck, runner / 'godot.pck')
             text = run('template-runtime', [str(runner / 'godot'), '--headless'], cwd=runner)
             assert 'SHARED_HOST_PCK_PASS' in text
+        # Omitted build/device_types above exercises migration of older presets:
+        # it must still default to phone, independently of the SDK family.
+        phone_type = 'phone' if sdk['runtimeOS'] == 'HarmonyOS' else 'default'
+        for mask, devices in ((3, [phone_type, 'tablet']), (6, ['tablet', '2in1']),
+                              (56, ['tv', 'wearable', 'car']),
+                              (63, [phone_type, 'tablet', '2in1', 'tv', 'wearable', 'car'])):
+            (project / 'export_presets.cfg').write_text(preset + f'build/device_types={mask}\n')
+            run(f'export-devices-{mask}', [str(args.godot), '--headless', '--path', str(project),
+                '--export-debug', 'OpenHarmony', str(root / f'Devices{mask}.hap')])
+            manifest = json.loads((root / f'Devices{mask}/entry/src/main/module.json5').read_text())['module']
+            assert manifest['deviceTypes'] == devices, (mask, manifest)
+        for index, mask in enumerate(('0', '-1', '64', '65', '4294967296', '4611686018427387904', '1.5', 'true', '"phone"')):
+            (project / 'export_presets.cfg').write_text(preset + f'build/device_types={mask}\n')
+            target = root / f'InvalidDevices{index}.hap'
+            run(f'reject-devices-{index}', [str(args.godot), '--headless', '--path', str(project),
+                '--export-debug', 'OpenHarmony', str(target)], expected=1)
+            assert not target.exists() and not target.with_suffix('').exists(), mask
         (project / 'export_presets.cfg').write_text(preset.replace('build/sdk_version=""', 'build/sdk_version="5.1.0(18)"'))
         run('reject-old-api', [str(args.godot), '--headless', '--path', str(project), '--export-debug', 'OpenHarmony', str(root / 'Old.hap')], expected=1)
         assert not (root / 'Old').exists()

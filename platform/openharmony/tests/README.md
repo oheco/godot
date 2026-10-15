@@ -191,6 +191,22 @@ file-server command-line remapping, borrowed-rule preservation, and failure
 rollback/cleanup retries. The real HDC broker port test separately verifies TCP
 byte roundtrips and preservation of all preexisting rules.
 
+`test_debug_port_export.py --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY"
+--template "$GAME_TEMPLATE_ZIP"` separately starts the real Editor debugger with
+its configured port occupied. It requires the actual fallback listener port in
+both HDC mapping preparation and the `_cl_` emitted by the real C++ exporter,
+including remote file-server arguments. It uses temporary settings/project
+paths, simulated HDC commands and project-only export; no HAP install occurs.
+The previous library must fail the normal regression; `--expect-original-bug`
+requires a successful matching-port control followed by the exact fallback
+mapping error.
+
+The native device-type configuration test in `test_project_config.py` accepts
+`GODOT_OHOS_TEST_NATIVE_SDK` and `GODOT_OHOS_TEST_LIBRARY`. It exercises all 63
+nonempty selection masks for each SDK mode and requires invalid input to leave
+all configuration documents unchanged. The real export script also checks
+preset defaults, mixed masks and rejection before creating an output directory.
+
 Editor-generation tests require both fresh projects and updated archives to
 omit bundled template ZIPs/manifests. Host startup runs without template-resource
 imports; separate template downloads use preset Custom Template paths.

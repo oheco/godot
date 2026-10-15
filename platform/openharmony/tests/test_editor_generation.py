@@ -46,6 +46,9 @@ class EditorGenerationTest(unittest.TestCase):
         product = read_document(self.output / 'build-profile.json5')['app']['products'][0]
         self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
         self.assertEqual(product['runtimeOS'], 'OpenHarmony')
+        entry = read_document(self.output / 'entry/build-profile.json5')
+        for option in [entry['buildOption'], *entry['buildOptionSet']]:
+            self.assertTrue(option['nativeLib']['debugSymbol']['strip'])
         permissions = {item['name']: item for item in read_document(self.output / 'entry/src/main/module.json5')['module']['requestPermissions']}
         self.assertEqual(permissions['ohos.permission.READ_PASTEBOARD']['reason'], '$string:reason_pasteboard')
         self.assertFalse((self.output / 'entry/src/main/resources/rawfile/runtime.zip').exists())
@@ -84,6 +87,21 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertEqual(lock.read_text(), '{"localResolvedLock":true}\n')
         self.assertTrue((self.output / 'entry/src/main/ets/entryability/EntryAbility.ets').exists())
         self.generate(success=False)
+
+    def test_editor_recovers_deveco_hap_settings_with_custom_sandbox(self):
+        self.generate('--custom-sandbox')
+        entry = read_document(self.output / 'entry/build-profile.json5')
+        for option in [entry['buildOption'], *entry['buildOptionSet']]:
+            self.assertTrue(option['nativeLib']['debugSymbol']['strip'])
+        permissions = {item['name'] for item in read_document(
+            self.output / 'entry/src/main/module.json5')['module']['requestPermissions']}
+        self.assertIn('ohos.permission.CUSTOM_SANDBOX', permissions)
+        self.assertNotIn('ohos.permission.ALLOW_EXTERNAL_NATIVE_CODE', permissions)
+        self.assertIn('ohos.permission.READ_WRITE_USER_FILE', permissions)
+        self.assertIn('ohos.permission.READ_PASTEBOARD', permissions)
+        self.assertEqual((self.output / 'entry/libs/arm64-v8a/libgodot.so').read_bytes(), self.library.read_bytes())
+        self.generate('--update', '--custom-sandbox')
+        self.assertEqual(read_document(self.output / 'entry/build-profile.json5'), entry)
 
     def test_editor_sdk_selection_uses_harmonyos_metadata(self):
         sdk = make_sdk(self.root / 'sdk with spaces', 'HarmonyOS')

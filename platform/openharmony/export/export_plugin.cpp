@@ -96,6 +96,7 @@ void EditorExportPlatformOpenHarmony::get_export_options(List<ExportOption> *r_o
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/compatible_api", PROPERTY_HINT_RANGE, "26,99,1"), 26));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/bundle_id", PROPERTY_HINT_PLACEHOLDER_TEXT, vformat("%s (default)", OPENHARMONY_DEFAULT_BUNDLE_ID)), "", false, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/default_orientation", PROPERTY_HINT_ENUM, OPENHARMONY_ORIENTATION_ENUMS), 0, true, true));
+	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/device_types", PROPERTY_HINT_FLAGS, "phone:1,tablet:2,2in1:4,tv:8,wearable:16,car:32"), OpenHarmonyProjectConfig::DEVICE_PHONE, false, true));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/background_image", PROPERTY_HINT_GLOBAL_FILE, "*.png"), "", false, false));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::STRING, "build/foreground_image", PROPERTY_HINT_GLOBAL_FILE, "*.png"), "", false, false));
 	r_options->push_back(ExportOption(PropertyInfo(Variant::INT, "build/version_code", PROPERTY_HINT_RANGE, "1,2147483647,1"), 1000000));
@@ -175,6 +176,10 @@ String EditorExportPlatformOpenHarmony::get_export_option_warning(const EditorEx
 		if (!sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(sdk)) {
 			return TTR("Use a HarmonyOS/OpenHarmony SDK version such as 26.0.0 (API 26 or newer). The build mode is detected from the selected SDK metadata.");
 		}
+	}
+
+	if (p_name == "build/device_types" && !OpenHarmonyProjectConfig::valid_device_types(p_preset->get(p_name))) {
+		return TTR("Select at least one valid device type (phone, tablet, 2in1, tv, wearable or car).");
 	}
 
 	// Check sign options when build/sign is enabled
@@ -272,6 +277,10 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	String requested_sdk = p_preset->get("build/sdk_version");
 	if (!requested_sdk.is_empty() && !OpenHarmonyProjectConfig::valid_sdk(requested_sdk)) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Use a HarmonyOS/OpenHarmony SDK version such as 26.0.0 (API 26 or newer). The build mode is detected from the selected SDK metadata."));
+		return ERR_INVALID_PARAMETER;
+	}
+	if (!OpenHarmonyProjectConfig::valid_device_types(p_preset->get("build/device_types"))) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("Select at least one valid device type (phone, tablet, 2in1, tv, wearable or car)."));
 		return ERR_INVALID_PARAMETER;
 	}
 	bool has_sign = p_preset->get("build/sign");
@@ -428,6 +437,17 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	}
 
 	Vector<String> command_line_flags = gen_export_flags(p_flags);
+	if (p_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG_LOCALHOST)) {
+		// gen_export_flags uses the configured port, but the debugger may have
+		// selected another listener when that port was already occupied.
+		for (int i = 0; i + 1 < command_line_flags.size(); i++) {
+			if (command_line_flags[i] == "--remote-debug") {
+				command_line_flags.write[i + 1] = get_debug_protocol() + "127.0.0.1:" + itos(get_debug_port());
+			} else if (command_line_flags[i] == "--remote-fs") {
+				command_line_flags.write[i + 1] = "127.0.0.1:" + itos(int(EDITOR_GET("filesystem/file_server/port")));
+			}
+		}
+	}
 	if (p_run_session) {
 		std::vector<std::string> arguments;
 		for (const String &flag : command_line_flags) {
@@ -439,14 +459,6 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 		}
 		for (int i = 0; i < command_line_flags.size(); ++i) {
 			command_line_flags.write[i] = String::utf8(arguments[i].c_str());
-		}
-	} else if (p_flags.has_flag(DEBUG_FLAG_REMOTE_DEBUG_LOCALHOST)) {
-		for (int i = 0; i + 1 < command_line_flags.size(); i++) {
-			if (command_line_flags[i] == "--remote-debug") {
-				command_line_flags.write[i + 1] = get_debug_protocol() + "127.0.0.1:" + itos(get_debug_port());
-			} else if (command_line_flags[i] == "--remote-fs") {
-				command_line_flags.write[i + 1] = "127.0.0.1:" + itos(int(EDITOR_GET("filesystem/file_server/port")));
-			}
 		}
 	}
 	String cl_file_path = project_dir.path_join("entry/src/main/resources/rawfile/_cl_");
@@ -483,6 +495,7 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	host_options["sdk"] = sdk_version;
 	host_options["sdk_root"] = get_sdk_path(sdk_version);
 	host_options["compatible_api"] = p_preset->get("build/compatible_api");
+	host_options["device_types"] = p_preset->get("build/device_types");
 	const bool managed_runtime = has_export_feature(p_preset, p_debug, "dotnet");
 	host_options["dotnet"] = managed_runtime;
 	host_options["dotnet_native_aot"] = has_export_feature(p_preset, p_debug, "dotnet_native_aot");

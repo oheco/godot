@@ -7,6 +7,41 @@
 
 namespace OpenHarmonyProjectConfig {
 
+// Keep these bits stable: export_presets.cfg stores build/device_types as a mask.
+enum DeviceType {
+	DEVICE_PHONE = 1 << 0,
+	DEVICE_TABLET = 1 << 1,
+	DEVICE_2IN1 = 1 << 2,
+	DEVICE_TV = 1 << 3,
+	DEVICE_WEARABLE = 1 << 4,
+	DEVICE_CAR = 1 << 5,
+	DEVICE_TYPES_ALL = DEVICE_PHONE | DEVICE_TABLET | DEVICE_2IN1 | DEVICE_TV | DEVICE_WEARABLE | DEVICE_CAR,
+};
+
+inline bool valid_device_types(const Variant &p_mask) {
+	if (p_mask.get_type() != Variant::INT) {
+		return false;
+	}
+	const int64_t mask = p_mask;
+	return mask > 0 && (mask & ~int64_t(DEVICE_TYPES_ALL)) == 0;
+}
+
+inline Error resolve_device_types(const Variant &p_mask, const String &p_runtime_os, Array &r_devices) {
+	ERR_FAIL_COND_V_MSG(!valid_device_types(p_mask), ERR_INVALID_PARAMETER,
+			"Select at least one valid OpenHarmony device type (phone, tablet, 2in1, tv, wearable or car).");
+	const int64_t mask = p_mask;
+	const char *types[] = { "phone", "tablet", "2in1", "tv", "wearable", "car" };
+	r_devices.clear();
+	for (int i = 0; i < 6; i++) {
+		if (mask & (int64_t(1) << i)) {
+			// The OpenHarmony SDK module schema calls the phone type "default".
+			// Preserve every other selection, including a list without phones.
+			r_devices.push_back(i == 0 && p_runtime_os == "OpenHarmony" ? "default" : types[i]);
+		}
+	}
+	return OK;
+}
+
 inline Error read_document(const String &p_path, Dictionary &r_document) {
 	Error error;
 	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ, &error);
@@ -156,6 +191,9 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	Dictionary sdk_selection;
 	Error sdk_error = resolve_sdk(sdk, compatible_api, p_options.get("sdk_root", ""), sdk_selection);
 	ERR_FAIL_COND_V(sdk_error != OK, sdk_error);
+	Array device_types;
+	Error device_error = resolve_device_types(p_options.get("device_types", DEVICE_PHONE), sdk_selection["runtimeOS"], device_types);
+	ERR_FAIL_COND_V(device_error != OK, device_error);
 	const int64_t version_code = p_options["version_code"];
 	ERR_FAIL_COND_V(version_code < 1 || version_code > 2147483647 || String(p_options["version_name"]).is_empty(), ERR_INVALID_PARAMETER);
 	Dictionary app = documents[0]["app"];
@@ -183,7 +221,7 @@ inline Error configure_game(const String &p_root, const Dictionary &p_options) {
 	native["abiFilters"] = architectures;
 	build["externalNativeOptions"] = native;
 	Dictionary module = documents[5]["module"];
-	module["deviceTypes"] = Array{ sdk_selection["runtimeOS"] == "HarmonyOS" ? "phone" : "default" };
+	module["deviceTypes"] = device_types;
 	Array abilities = module.get("abilities", Array());
 	ERR_FAIL_COND_V(abilities.is_empty(), ERR_INVALID_DATA);
 	Dictionary ability = abilities[0];
