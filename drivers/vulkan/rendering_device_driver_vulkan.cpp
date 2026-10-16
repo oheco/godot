@@ -699,12 +699,10 @@ Error RenderingDeviceDriverVulkan::_initialize_device_extensions() {
 void RenderingDeviceDriverVulkan::_check_driver_workarounds(const VkPhysicalDeviceProperties &p_device_properties, const VkPhysicalDeviceDriverPropertiesKHR *p_driver_properties) {
 #ifdef OPENHARMONY_ENABLED
 	// Maleoon 935 rejects compute sampling through opaque function parameters.
-	// Keep this compatibility transform limited to the device/driver tested with
-	// the original and inlined SPIR-V; do not assume future drivers need it.
+	// Apply function inlining across Huawei GPUs so related devices and driver
+	// revisions can use the same compatibility transform. Keep the opt-out below.
 	maleoon_compute_function_inlining_workaround =
 			p_device_properties.vendorID == 0x19e5 &&
-			p_device_properties.deviceID == 0x20021000 &&
-			p_device_properties.driverVersion == 1337773855 &&
 			OS::get_singleton()->get_environment("GODOT_VULKAN_DISABLE_MALEOON_COMPUTE_INLINE") != "1";
 	if (maleoon_compute_function_inlining_workaround) {
 		print_line("Vulkan: enabled Maleoon compute function inlining workaround (v1).");

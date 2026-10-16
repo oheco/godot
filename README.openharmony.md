@@ -151,6 +151,14 @@ New headers do not upgrade the operating system's Vulkan driver. The current
 Maleoon 935 test host reports Vulkan **1.3.309**. The renderer must negotiate its
 actual features and extensions. No system loader or driver is replaced.
 
+On OpenHarmony, Huawei GPUs (`vendorID=0x19e5`) use function inlining for compute
+shaders, independently of device ID or driver version. This compatibility
+transform was validated on Maleoon 935; crash logs from Maleoon 916B also show
+failures inside the driver compute pipeline compiler, but the expanded workaround
+still needs validation on that device. Set
+`GODOT_VULKAN_DISABLE_MALEOON_COMPUTE_INLINE=1` to disable it for comparison.
+Transformed pipelines use a separate cache key.
+
 ## One project, configured profiles
 
 The [game host defaults](<misc/dist/openharmony_template/entry/src/main/resources/rawfile/godot_host.json>)
