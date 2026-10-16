@@ -230,6 +230,15 @@ const args=process.argv.slice(2),file=args[1],request=JSON.parse(fs.readFileSync
 const stat=fs.statSync(file),parent=fs.statSync(path.dirname(file));
 log('build',{args,requestMode:stat.mode&0o777,parentMode:parent.mode&0o777,request,requestFile:file});
 if(args[0]!=='--request'||request.schemaVersion!==2)throw new Error('invalid build contract');
+if(control.hvigorWorkspaceProbe){
+  const home=request.hvigorUserHome,source=process.env.HVIGOR_USER_HOME;
+  const workspace=path.join(home,'project_caches/fixture/workspace/node_modules/@ohos');
+  fs.mkdirSync(workspace,{recursive:true});
+  const stat=fs.statSync(home),config=path.join(home,'hvigor-config.json5');
+  if(!fs.readFileSync(config).equals(fs.readFileSync(path.join(source,'hvigor-config.json5'))))throw new Error('global Hvigor config not preserved');
+  if(fs.statSync(config).ino===fs.statSync(path.join(source,'hvigor-config.json5')).ino)throw new Error('caller Hvigor config must not be writable through the private home');
+  log('hvigor-workspace',{home,mode:stat.mode&0o7777,owner:stat.uid,umask:process.umask(),wrapper:fs.realpathSync(path.join(home,'wrapper')),configMode:fs.statSync(config).mode&0o7777,workspaceCreated:fs.statSync(workspace).isDirectory()});
+}
 const profile=path.join(request.projectDir,'build-profile.json5'),original=fs.readFileSync(profile);
 try{
   write(profile,'temporary signing bytes: '+request.signing.keyPasswordEncrypted);
@@ -303,6 +312,7 @@ function fixture(t, initial = {}) {
   ]};
   json(path.join(sdk,'default/openharmony/toolchains/lib/permissionDefinitions.json'),permissionDefinitions);
   json(path.join(sdk,'default/sdk-pkg.json'),{data:{apiVersion:'26',platformVersion:'26.0.0'}});
+  fs.mkdirSync(path.join(home,'.hvigor/wrapper'),{recursive:true,mode:0o700});
   const controlFile=path.join(root,'control.json');
   let control={cert:CERT,...initial};json(controlFile,control);
   const cli=path.join(root,'official fake CLI.cjs'),hdc=path.join(root,'hdc with spaces');
@@ -338,7 +348,7 @@ console.log('OTHER_CHILD_OK');
   write(identity,'[application]\nconfig/name="Original source"\n');write(preset,originalPreset);
   const request={schemaVersion:1,projectDir:project,projectIdentity:identity,nodePath:process.execPath,
     commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:NATIVE&&control.cliUseSDK?path.join(sdk,'default/openharmony/toolchains/hdc'):hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_ORIGINAL_CLT:clt,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE,FIXTURE_SELECTED_NODE_RUNTIME:runtime,FIXTURE_UNSELECTED_NODE_RUNTIME:unselectedRuntime};
+  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,HVIGOR_USER_HOME:path.join(home,'.hvigor'),FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_ORIGINAL_CLT:clt,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE,FIXTURE_SELECTED_NODE_RUNTIME:runtime,FIXTURE_UNSELECTED_NODE_RUNTIME:unselectedRuntime};
   if(initial.runtimeIsolation){
     const brokerLibraries=[path.join(root,'broker runtime first'),path.join(root,'broker runtime second')];
     for(const dir of brokerLibraries)fs.mkdirSync(dir,{mode:0o700});
@@ -365,6 +375,23 @@ console.log('OTHER_CHILD_OK');
   }
   return {root,home,config,tmp,project,clt,sdk,cli,hdc,login,request,env,run,events,update,cache,profileEdit,assertClean,original,module};
 }
+
+if(NATIVE)test('native Hvigor workspace avoids a readonly caller cache while keeping private umask',t=>{
+  const f=fixture(t,{hvigorWorkspaceProbe:true}),home=path.join(f.home,'.hvigor');
+  const config=path.join(home,'hvigor-config.json5'),original=Buffer.from('{"modelVersion":"5.0.0","dependencies":{}}\n');
+  write(config,original);write(path.join(home,'wrapper/prepared-dependency'),'offline dependency');
+  const before=fs.statSync(config);fs.chmodSync(home,0o500);
+  try{
+    const result=f.run();assert.equal(result.status,'ok',JSON.stringify(result));
+    const event=f.events().find(row=>row.kind==='hvigor-workspace');assert.ok(event);
+    assert.ok(event.home.startsWith(f.tmp+path.sep));assert.equal(event.mode,0o700);assert.equal(event.owner,process.getuid());
+    assert.equal(event.umask,0o077);assert.equal(event.configMode,0o600);assert.equal(event.workspaceCreated,true);
+    assert.equal(event.wrapper,fs.realpathSync(path.join(home,'wrapper')));
+    assert.equal(fs.existsSync(path.join(home,'project_caches')),false);assert.equal(fs.existsSync(event.home),false);
+    assert.deepEqual(fs.readFileSync(config),original);assert.equal(fs.statSync(config).mtimeMs,before.mtimeMs);
+    assert.equal(fs.statSync(home).mode&0o7777,0o500);f.assertClean();
+  }finally{fs.chmodSync(home,0o700);}
+});
 
 test('strict exported API and official team table parser',t=>{
   if(NATIVE){
@@ -399,7 +426,7 @@ test('first request without a token generates once automatically; matching cache
   const held=f.events().find(event=>event.kind==='generate').locks;
   assert.equal(held.length,3);assert.ok(held.includes('cli'));assert.ok(held.some(name=>name.startsWith('project-')));assert.ok(held.some(name=>name.startsWith('team-')));
   const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,f.home);assert.notEqual(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
-  const build=f.events().find(e=>e.kind==='build');assert.equal(build.requestMode,0o600);assert.equal(build.parentMode,0o700);assert.equal(build.request.hvigorUserHome,path.join(f.home,'.hvigor'));
+  const build=f.events().find(e=>e.kind==='build');assert.equal(build.requestMode,0o600);assert.equal(build.parentMode,0o700);if(NATIVE)assert.ok(build.request.hvigorUserHome.startsWith(f.tmp+path.sep));else assert.equal(build.request.hvigorUserHome,path.join(f.home,'.hvigor'));
   for(const key of ['certificate','profile','storeFile'])assert.ok(build.request.signing[key].startsWith(f.cache()+path.sep));
   assert.ok(!JSON.stringify(build.args).includes(build.request.signing.keyPasswordEncrypted));assert.ok(!fs.existsSync(build.requestFile));
   for(const dir of [path.join(f.config,'godot-openharmony-signing'),generate.home,f.cache()])assert.equal(fs.statSync(dir).mode&0o7777,0o700);

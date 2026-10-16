@@ -1015,6 +1015,26 @@ std::string buildSdkRoot(const JSON &request) {
 	if (fs::path(selected).filename() == "openharmony" && fs::path(parent(selected)).filename() == "default" && exists(join(parent(selected), "sdk-pkg.json"))) return parent(parent(selected));
 	return field(request, "sdkRoot");
 }
+std::string buildHvigorHome(Context &ctx) {
+	// Keep the private umask: HOME/hmdfs maps directory ownership and cannot
+	// safely host owner-only workspaces. Reuse only the prepared wrapper tree;
+	// all writable Hvigor state belongs to this permission-capable operation.
+	const auto selected = ctx.originalEnv.find("HVIGOR_USER_HOME");
+	const std::string source = selected == ctx.originalEnv.end() ? join(ctx.originalHome, ".hvigor") : selected->second;
+	need(absolute(source), "CLT_MISSING", "The prepared Hvigor home must be an absolute path.");
+	const std::string wrapper = real(join(source, "wrapper"), "CLT_MISSING");
+	directory(wrapper, "CLT_MISSING");
+	const std::string home = privateDir(join(ctx.work, "hvigor-home"));
+	need(entries(home).empty(), "PRIVATE_STORAGE_REQUIRED", "The private Hvigor workspace must be empty before initialization.");
+	need(::symlink(wrapper.c_str(), join(home, "wrapper").c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot reuse the prepared Hvigor wrapper dependencies.");
+	const std::string config = join(source, "hvigor-config.json5");
+	if (exists(config)) {
+		// Preserve the public runner's validation of global dependencies/options
+		// without allowing this build to rewrite the caller's configuration.
+		privateWrite(join(home, "hvigor-config.json5"), readBytes(real(config, "CLT_MISSING"), "CLT_MISSING"));
+	}
+	return home;
+}
 JSON build(Context &ctx, const JSON &material) {
 	const std::string project = field(ctx.request, "projectDir"), runner = join(project, "tools/build.cjs"), profilePath = join(project, "build-profile.json5");
 	regular(runner, "BUILD_FAILED");
@@ -1022,7 +1042,7 @@ JSON build(Context &ctx, const JSON &material) {
 	JSON request(Json::objectValue); request["schemaVersion"] = 2; request["projectDir"] = project;
 	request["sdkRoot"] = buildSdkRoot(ctx.request); request["commandLineToolsRoot"] = ctx.request["commandLineToolsRoot"];
 	request["buildMode"] = "debug"; request["format"] = "hap"; request["workDir"] = workDir;
-	request["hvigorUserHome"] = join(ctx.originalHome, ".hvigor");
+	request["hvigorUserHome"] = buildHvigorHome(ctx);
 	JSON signing(Json::objectValue);
 	for (const auto &item : std::array<std::pair<const char *, const char *>, 7>{{{"certificate", "certpath"}, {"profile", "profile"}, {"storeFile", "storeFile"}, {"keyAlias", "keyAlias"}, {"signAlg", "signAlg"}, {"keyPasswordEncrypted", "keyPassword"}, {"storePasswordEncrypted", "storePassword"}}}) signing[item.first] = material[item.second];
 	request["signing"] = signing;
