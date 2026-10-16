@@ -2,12 +2,26 @@
 #pragma once
 
 #include <string>
+#include <vector>
+
+struct DevelopmentKitCandidate {
+	std::string root;
+	std::string manifest;
+};
+// Explicit override, active oo executable, then installed versions descending.
+// Manifests are bounded UTF-8 JSON text; the ArkTS caller validates compatibility.
+std::vector<DevelopmentKitCandidate> development_kit_candidates();
+bool publish_development_kit_templates(const std::string &files, const std::string &runtime,
+		std::string &notice);
+// For the oo headless executable only: preserve caller overrides and NuGet state.
+bool configure_cli_development_kit(const std::string &executable, std::string &notice);
 
 // "none" prepares only sandbox paths and accepts an empty runtime. "sdk"
-// additionally prepares the editor's GodotSharp, SDK, sample and NuGet setup.
+// additionally prepares the external development kit, SDK and NuGet setup.
 // Unknown modes and invalid paths fail before mutating the environment.
 bool configure_runtime_paths(const std::string &files, const std::string &cache,
-		const std::string &runtime, const std::string &managed_mode, std::string &error);
+		const std::string &runtime, const std::string &managed_mode, std::string &error,
+		const std::string &temporary = "");
 
 // Resolves the .NET SDK to run: by default the one installed by the oheco
 // package manager, so the engine does not ship a copy and stays decoupled from

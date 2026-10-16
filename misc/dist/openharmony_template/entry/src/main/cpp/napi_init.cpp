@@ -378,10 +378,16 @@ void cleanup(void *) {
 }
 
 napi_value configure(napi_env env, napi_callback_info info) {
-	napi_value args[4];
-	std::string files, cache, runtime, mode;
-	if (!values(env, info, 4, args) || !string_value(env, args[0], files) || !string_value(env, args[1], cache) ||
-			!string_value(env, args[2], runtime) || !string_value(env, args[3], mode) || !alive(env)) {
+	napi_value args[5];
+	size_t count = 0;
+	if (napi_get_cb_info(env, info, &count, nullptr, nullptr, nullptr) != napi_ok || (count != 4 && count != 5)) {
+		type_error(env, "configure expects four paths/mode arguments and an optional temporary directory");
+		return nullptr;
+	}
+	std::string files, cache, runtime, mode, temporary;
+	if (!values(env, info, count, args) || !string_value(env, args[0], files) || !string_value(env, args[1], cache) ||
+			!string_value(env, args[2], runtime) || !string_value(env, args[3], mode) ||
+			(count == 5 && !string_value(env, args[4], temporary)) || !alive(env)) {
 		return nullptr;
 	}
 	if (configured || started) {
@@ -389,12 +395,15 @@ napi_value configure(napi_env env, napi_callback_info info) {
 		return nullptr;
 	}
 	std::string error;
-	if (!configure_runtime_paths(files, cache, runtime, mode, error)) {
+	if (!configure_runtime_paths(files, cache, runtime, mode, error, temporary)) {
 		napi_throw_error(env, nullptr, error.c_str());
 		return nullptr;
 	}
 	configured = true;
-	return maybe_start(env) ? undefined(env) : nullptr;
+	if (!maybe_start(env)) { return nullptr; }
+	napi_value notice;
+	napi_create_string_utf8(env, error.c_str(), error.size(), &notice);
+	return notice;
 }
 napi_value set_resources(napi_env env, napi_callback_info info) {
 	napi_value args[1];
@@ -794,6 +803,24 @@ napi_value process_id(napi_env env, napi_callback_info info) {
 	napi_create_int32(env, getpid(), &result);
 	return result;
 }
+napi_value development_kits(napi_env env, napi_callback_info info) {
+	if (!values(env, info, 0, nullptr)) { return nullptr; }
+	const auto candidates = development_kit_candidates();
+	napi_value result;
+	if (napi_create_array_with_length(env, candidates.size(), &result) != napi_ok) { return nullptr; }
+	for (size_t index = 0; index < candidates.size(); ++index) {
+		napi_value item, root, manifest;
+		if (napi_create_object(env, &item) != napi_ok ||
+				napi_create_string_utf8(env, candidates[index].root.c_str(), candidates[index].root.size(), &root) != napi_ok ||
+				napi_create_string_utf8(env, candidates[index].manifest.c_str(), candidates[index].manifest.size(), &manifest) != napi_ok ||
+				napi_set_named_property(env, item, "root", root) != napi_ok || napi_set_named_property(env, item, "manifest", manifest) != napi_ok ||
+				napi_set_element(env, result, static_cast<uint32_t>(index), item) != napi_ok) {
+			napi_throw_error(env, nullptr, "Unable to expose development-kit candidates");
+			return nullptr;
+		}
+	}
+	return result;
+}
 napi_value init(napi_env env, napi_value exports) {
 	const napi_property_descriptor properties[] = {
 #define METHOD(name, callback) { name, nullptr, callback, nullptr, nullptr, nullptr, napi_default, nullptr }
@@ -805,6 +832,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("openTerminal", open_terminal),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
+		METHOD("developmentKits", development_kits),
 		METHOD("configure", configure),
 		METHOD("setResourceManager", set_resources),
 		METHOD("setWindowId", set_window),

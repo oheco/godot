@@ -10,8 +10,11 @@ export interface SimplifiedMouseEvent {
   alt: boolean; ctrl: boolean; shift: boolean; meta: boolean;
   doubleClick: boolean; factor: number; hasRelative: boolean; relativeX: number; relativeY: number;
 }
-// game: runtime='', managedMode='none'; editor SDK: extracted runtime, 'sdk'.
-export const configure: (filesDir: string, cacheDir: string, runtime: string, managedMode: string) => void;
+export interface DevelopmentKitCandidate { root: string; manifest: string; }
+export const developmentKits: () => DevelopmentKitCandidate[];
+// game/no compatible kit: runtime='', managedMode='none'. Returns a nonfatal
+// template/SDK diagnostic, or ''. The optional temp path preserves old callers.
+export const configure: (filesDir: string, cacheDir: string, runtime: string, managedMode: string, tempDir?: string) => string;
 export const setResourceManager: (resources: resourceManager.ResourceManager) => void;
 export const setWindowId: (id: number) => void;
 export const setSurfaceId: (id: bigint) => void;

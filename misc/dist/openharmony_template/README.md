@@ -77,16 +77,21 @@ signing, matching the working DevEco Editor project.
 - Games contain their PCK and export arguments in the raw resources. The engine
   loads the PCK explicitly; the native host merges the exported command line with
   configured arguments.
-- The .NET Editor additionally contains `runtime.zip` and its size/SHA-256
-  manifest. It extracts GodotSharp, a C# example and an offline NuGet feed into
-  private storage. Concurrent starts use separate staging paths.
+- The Editor APP contains only the native editor/host and startup resources,
+  plus a small `development-kit.json` compatibility record. It starts its native
+  and GDScript features without an installed development kit. GodotSharp,
+  headless CLI, the four matching Godot NuGet packages and both game templates
+  belong to the optional oo `godot-editor` development kit. Normal third-party
+  project dependencies are downloaded by `dotnet restore`; no general offline
+  NuGet feed or C# example is bundled into the APP.
 - The Editor App does not include debug/release export template archives.
-  Download the two ZIPs from the matching Godot OpenHarmony GitHub Release and
-  select them in the OpenHarmony export preset's Custom Template fields.
-  Existing downloaded archives and export-preset paths are retained on update.
+  The oo development kit supplies both and the host links them into the existing
+  template lookup path. Explicit preset Custom Template paths still take
+  precedence; separately downloaded templates remain supported and preserved.
 - The .NET SDK is **not** shipped. Install it using `oo install dotnet-sdk`.
-  The Editor resolves the oheco package, honouring `OHECO_ROOT` and the explicit
-  `GODOT_OHOS_DOTNET_ROOT` environment override.
+  With a compatible development kit the Editor resolves that external SDK,
+  honouring `OHECO_ROOT` and `GODOT_OHOS_DOTNET_ROOT`. The kit itself can be selected
+  with `GODOT_OHOS_DEVKIT_ROOT`; incompatible kits leave C# support disabled.
 
 If the native payloads are absent, this is the source template, not a ready-to-build
 application. Generate it from the Godot source checkout before building in DevEco.
@@ -118,7 +123,8 @@ use `oheco-broker shell serve` when **Use Broker** is enabled, with automatic
 under the current project's `.godot` and passes the same absolute HAP path to HDC.
 The private tool environment uses `GODOT_SHARP_ROOT`, `GODOT_NUGET_SOURCE`,
 `NUGET_PACKAGES`, `DOTNET_CLI_HOME` and `TMPDIR`. User projects and existing NuGet
-configuration are not overwritten by host initialization.
+configuration are preserved; only the exact legacy auto-generated local-only
+NuGet configuration is upgraded to local Godot packages plus NuGet.org.
 
 For full export, prepare oo Node, the **6.26.4-ohos.1** Hvigor adapter and a fixed
 SDK view from `oo sdk create 26.0.0.35-Beta`. The native Editor resolves their paths;

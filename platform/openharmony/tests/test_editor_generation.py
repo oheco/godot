@@ -112,6 +112,28 @@ class EditorGenerationTest(unittest.TestCase):
         self.assertEqual(product['compatibleSdkVersion'], '26.0.0')
         self.assertEqual(read_document(self.output / 'entry/src/main/module.json5')['module']['deviceTypes'], ['2in1'])
 
+    def test_editor_uses_optional_development_kit_without_bundled_payload(self):
+        write_document(self.config, {'managed': {'mode': 'sdk'}})
+        # No GodotSharp, .NET SDK or offline-feed input is needed to generate the app.
+        self.generate()
+        raw = self.output / 'entry/src/main/resources/rawfile'
+        (raw / 'runtime.zip').write_bytes(b'legacy managed DLLs and offline packages')
+        (raw / 'runtime-manifest.json').write_text('{}')
+        archive = self.root / 'Thin Editor.zip'
+        self.generate('--update', '--archive', str(archive))
+        self.assertFalse((raw / 'runtime.zip').exists())
+        self.assertFalse((raw / 'runtime-manifest.json').exists())
+        requirement = read_document(raw / 'development-kit.json')
+        self.assertEqual(requirement['hostAbiVersion'], HOST_ABI_VERSION)
+        self.assertEqual(requirement['engineLibrarySha256'], hashlib.sha256(self.library.read_bytes()).hexdigest())
+        self.assertEqual(requirement['managedVersion'], '4.7.2-ohos.3')
+        with zipfile.ZipFile(archive) as packaged:
+            names = packaged.namelist()
+            self.assertFalse(any(name.endswith(('runtime.zip', 'runtime-manifest.json', '.nupkg')) for name in names))
+            self.assertFalse(any('/GodotSharp/' in name or '/export-templates/' in name for name in names))
+            self.assertEqual(json.loads(packaged.read(self.output.name + '/entry/src/main/resources/rawfile/development-kit.json')),
+                             requirement)
+
     def template_zip(self, kind):
         path = self.root / f'openharmony_{kind}_arm64-v8a.zip'
         with zipfile.ZipFile(path, 'w') as archive:

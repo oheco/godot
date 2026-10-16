@@ -14,6 +14,32 @@ namespace GodotTools.ProjectEditor
 
         public static string GodotMinimumRequiredTfm => OperatingSystem.IsOSPlatform("OPENHARMONY") ? "net10.0" : "net8.0";
 
+        private const string LegacyOpenHarmonyNuGetConfig =
+            "<configuration><packageSources><clear/>" +
+            "<add key=\"godot-bundled\" value=\"%GODOT_NUGET_SOURCE%\"/>" +
+            "</packageSources></configuration>\n";
+
+        private const string OpenHarmonyNuGetConfig =
+            "<configuration><packageSources><clear/>" +
+            "<add key=\"godot-bundled\" value=\"%GODOT_NUGET_SOURCE%\"/>" +
+            "<add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" protocolVersion=\"3\"/>" +
+            "</packageSources></configuration>\n";
+
+        private static void EnsureOpenHarmonyNuGetConfig(string dir)
+        {
+            string path = Path.Combine(dir, "NuGet.Config");
+            var info = new FileInfo(path);
+            if (info.LinkTarget != null || Directory.Exists(path))
+                return;
+
+            // File.ReadAllText strips a BOM. Decode the bytes directly so only
+            // the exact previous auto-generated file is migrated.
+            if (info.Exists && Encoding.UTF8.GetString(File.ReadAllBytes(path)) != LegacyOpenHarmonyNuGetConfig)
+                return;
+
+            File.WriteAllText(path, OpenHarmonyNuGetConfig, new UTF8Encoding(false));
+        }
+
         public static ProjectRootElement GenGameProject(string name)
         {
             if (name.Length == 0)
@@ -61,17 +87,12 @@ namespace GodotTools.ProjectEditor
             // Save (without BOM)
             root.Save(path, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
-            // The HAP carries a pinned local feed. Keep its location relocatable
-            // and leave an existing project's NuGet configuration intact.
-            string nugetConfig = Path.Combine(dir, "NuGet.Config");
+            // Keep only Godot's matching packages local; normal dependencies
+            // restore from NuGet.org using the external SDK. Preserve custom config.
             if (OperatingSystem.IsOSPlatform("OPENHARMONY") &&
-                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GODOT_NUGET_SOURCE")) &&
-                !File.Exists(nugetConfig))
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("GODOT_NUGET_SOURCE")))
             {
-                File.WriteAllText(nugetConfig,
-                    "<configuration><packageSources><clear/>" +
-                    "<add key=\"godot-bundled\" value=\"%GODOT_NUGET_SOURCE%\"/>" +
-                    "</packageSources></configuration>\n", new UTF8Encoding(false));
+                EnsureOpenHarmonyNuGetConfig(dir);
             }
 
             return Guid.NewGuid().ToString().ToUpperInvariant();

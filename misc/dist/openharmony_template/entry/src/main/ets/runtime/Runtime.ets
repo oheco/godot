@@ -1,121 +1,91 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 import { common } from '@kit.AbilityKit';
-import { fileIo as fs, hash } from '@kit.CoreFileKit';
-import { BusinessError, zlib } from '@kit.BasicServicesKit';
+import { fileIo as fs } from '@kit.CoreFileKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
 import plugin from 'libentry.so';
 import { describe, record, setStep } from './Diagnostics';
-import { ensureDirectory, exists, removeTree } from './FileSystem';
 
-interface RuntimeManifest { version: string; sha256: string; size: number; }
+interface DevelopmentKitManifest {
+  schemaVersion: number;
+  engineVersion: string;
+  hostAbiVersion: number;
+  managedVersion: string;
+  architecture: string;
+  engineLibrarySha256: string;
+  managedRoot?: string;
+  templatesRoot?: string;
+  templateSetSha256?: string;
+}
 let preparing: Promise<string> | undefined = undefined;
-let extractionSequence: number = 0;
 
-function readyRuntime(destination: string, manifest: RuntimeManifest): boolean {
-  const path = `${destination}/.ready`;
-  if (!exists(path)) { return false; }
-  try {
-    const info = fs.statSync(path);
-    if (!fs.statSync(destination).isDirectory() || !info.isFile() || info.size <= 0 || info.size > 4096) { return false; }
-    const ready = JSON.parse(fs.readTextSync(path, { length: info.size })) as RuntimeManifest;
-    return ready !== null && ready.version === manifest.version && ready.sha256 === manifest.sha256 && ready.size === manifest.size;
-  } catch (error) {
-    record(`runtime ready validation failed: ${describe(error as BusinessError)}`);
-    return false;
-  }
+function validCompatibility(manifest: DevelopmentKitManifest): boolean {
+  return manifest !== null && typeof manifest === 'object' && !Array.isArray(manifest) &&
+    manifest.schemaVersion === 1 && typeof manifest.engineVersion === 'string' && manifest.engineVersion.length > 0 &&
+    Number.isSafeInteger(manifest.hostAbiVersion) && manifest.hostAbiVersion > 0 &&
+    typeof manifest.managedVersion === 'string' && manifest.managedVersion.length > 0 &&
+    manifest.architecture === 'arm64-v8a' && typeof manifest.engineLibrarySha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(manifest.engineLibrarySha256);
 }
-
-function cleanupOwned(path: string): void {
-  try { removeTree(path); } catch (error) {
-    record(`runtime cleanup failed for own path ${path}: ${describe(error as BusinessError)}`);
-  }
+function compatible(expected: DevelopmentKitManifest, actual: DevelopmentKitManifest): boolean {
+  return validCompatibility(actual) && actual.schemaVersion === expected.schemaVersion &&
+    actual.engineVersion === expected.engineVersion && actual.hostAbiVersion === expected.hostAbiVersion &&
+    actual.managedVersion === expected.managedVersion && actual.architecture === expected.architecture &&
+    actual.engineLibrarySha256 === expected.engineLibrarySha256 && actual.managedRoot === 'share/godot' &&
+    actual.templatesRoot === 'share/godot/templates' && typeof actual.templateSetSha256 === 'string' &&
+    /^[a-f0-9]{64}$/.test(actual.templateSetSha256);
 }
-
-async function extractRuntime(context: common.UIAbilityContext): Promise<string> {
-  const data = await context.resourceManager.getRawFileContent('runtime-manifest.json');
-  const manifest = JSON.parse(new util.TextDecoder().decodeWithStream(data)) as RuntimeManifest;
-  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest) ||
-    typeof manifest.version !== 'string' || manifest.version.length === 0 ||
-    typeof manifest.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.sha256) ||
-    !Number.isSafeInteger(manifest.size) || manifest.size <= 0) {
-    throw new Error('Invalid runtime manifest');
+function assetFiles(root: string, manifest: DevelopmentKitManifest): boolean {
+  const runtime = `${root}/share/godot`;
+  if (!fs.statSync(`${root}/bin/libgodot.so`).isFile()) { return false; }
+  if (!fs.statSync(`${runtime}/GodotSharp/Api/Debug/GodotSharp.dll`).isFile()) { return false; }
+  for (const name of ['Godot.NET.Sdk', 'Godot.SourceGenerators', 'GodotSharp', 'GodotSharpEditor']) {
+    if (!fs.statSync(`${runtime}/GodotSharp/Tools/nupkgs/${name}.${manifest.managedVersion}.nupkg`).isFile()) { return false; }
   }
-  record(`runtime manifest: version=${manifest.version} size=${manifest.size} sha256=${manifest.sha256}`);
-  const parent = `${context.filesDir}/runtimes`;
-  ensureDirectory(parent);
-  // Version the publication protocol to avoid trusting the legacy empty .ready
-  // marker. The old tree is never removed: another process may still use it.
-  const destination = `${parent}/v1-${manifest.sha256}`;
-  if (readyRuntime(destination, manifest)) {
-    record(`runtime already extracted: ${destination}`);
-    return destination;
-  }
-  if (exists(destination)) {
-    // Another process may have published between the first ready check and stat.
-    if (readyRuntime(destination, manifest)) { return destination; }
-    throw new Error(`Invalid published runtime: ${destination}`);
-  }
-  const operation = `${plugin.processId()}-${Date.now()}-${extractionSequence++}-${util.generateRandomUUID(true)}`;
-  // Staging is a sibling of destination so publication is an atomic same-volume
-  // rename. Both staging and archive are private to this extraction, not merely
-  // to a digest or a PID (which can be reused on a later launch).
-  const staging = `${destination}.extracting-${operation}`;
-  const archive = `${context.tempDir}/godot-runtime-${operation}.zip`;
+  const ready = `${runtime}/templates/.ready`;
+  const info = fs.statSync(ready);
+  if (!info.isFile() || info.size !== 65 || fs.readTextSync(ready, { length: 65 }) !== `${manifest.templateSetSha256}\n`) { return false; }
+  return fs.statSync(`${runtime}/templates/openharmony_debug_arm64-v8a.zip`).isFile() &&
+    fs.statSync(`${runtime}/templates/openharmony_release_arm64-v8a.zip`).isFile();
+}
+async function discoverRuntime(context: common.UIAbilityContext): Promise<string> {
+  setStep('runtime:discover-development-kit');
   try {
-    setStep('runtime:prepare-staging');
-    ensureDirectory(staging);
-    setStep('runtime:write-archive');
-    const raw = await context.resourceManager.getRawFd('runtime.zip');
-    try {
-      if (raw.length !== manifest.size) { throw new Error('Runtime archive size mismatch'); }
-      const file = fs.openSync(archive, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
+    const bytes = await context.resourceManager.getRawFileContent('development-kit.json');
+    const expected = JSON.parse(new util.TextDecoder().decodeWithStream(bytes)) as DevelopmentKitManifest;
+    if (!validCompatibility(expected)) { throw new Error('Invalid application development-kit compatibility manifest'); }
+    const candidates = plugin.developmentKits();
+    for (const candidate of candidates) {
       try {
-        fs.lseek(raw.fd, raw.offset, fs.WhenceType.SEEK_SET);
-        const buffer = new ArrayBuffer(1024 * 1024);
-        let copied = 0;
-        while (copied < raw.length) {
-          const count = await fs.read(raw.fd, buffer, { length: Math.min(buffer.byteLength, raw.length - copied) });
-          if (count === 0) { throw new Error('Unexpected end of runtime archive'); }
-          let written = 0;
-          while (written < count) {
-            const size = await fs.write(file.fd, buffer.slice(written, count));
-            if (size === 0) { throw new Error('Unable to write runtime archive'); }
-            written += size;
-          }
-          copied += count;
+        if (!candidate.root.startsWith('/') || candidate.root.includes('\0') || candidate.manifest.length === 0) {
+          record(`development kit unavailable: ${candidate.root}`);
+          continue;
         }
-      } finally { fs.closeSync(file); }
-    } finally { await context.resourceManager.closeRawFd('runtime.zip'); }
-    if ((await hash.hash(archive, 'sha256')).toLowerCase() !== manifest.sha256) {
-      throw new Error('Runtime archive checksum mismatch');
+        const actual = JSON.parse(candidate.manifest) as DevelopmentKitManifest;
+        if (!compatible(expected, actual)) {
+          record(`development kit incompatible with this Editor: ${candidate.root}`);
+          continue;
+        }
+        if (!assetFiles(candidate.root, actual)) {
+          record(`development kit assets incomplete: ${candidate.root}`);
+          continue;
+        }
+        record(`using external development kit: ${candidate.root}`);
+        return `${candidate.root}/share/godot`;
+      } catch (error) {
+        record(`development kit rejected (${candidate.root}): ${describe(error as BusinessError)}`);
+      }
     }
-    setStep('runtime:decompress');
-    await zlib.decompressFile(archive, staging);
-    setStep('runtime:publish');
-    // The marker travels with the completed tree. Never delete destination to
-    // win a race: that can remove a runtime already used by a different process.
-    const marker = fs.openSync(`${staging}/.ready`, fs.OpenMode.CREATE | fs.OpenMode.WRITE_ONLY | fs.OpenMode.TRUNC);
-    try { fs.writeSync(marker.fd, JSON.stringify(manifest)); } finally { fs.closeSync(marker); }
-    try {
-      fs.renameSync(staging, destination);
-    } catch (error) {
-      if (!readyRuntime(destination, manifest)) { throw error as Error; }
-      record(`runtime publication won by another process: ${destination}`);
-    }
-    if (!readyRuntime(destination, manifest)) { throw new Error('Published runtime failed ready validation'); }
-    record(`runtime ready: ${destination}`);
-    return destination;
-  } finally {
-    cleanupOwned(staging);
-    cleanupOwned(archive);
+    record('No compatible godot-editor development kit found; starting the native Editor with development-kit features unavailable');
+  } catch (error) {
+    record(`Development-kit discovery unavailable; starting the native Editor: ${describe(error as BusinessError)}`);
   }
+  return '';
 }
 
 export async function prepareRuntime(context: common.UIAbilityContext): Promise<string> {
-  // Also coalesce concurrent callers in one process: raw resource descriptors
-  // may share an offset, so two local reads must not race each other.
   if (preparing !== undefined) { return preparing; }
-  const operation = extractRuntime(context);
+  const operation = discoverRuntime(context);
   preparing = operation;
   try { return await operation; } finally { preparing = undefined; }
 }

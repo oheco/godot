@@ -110,19 +110,22 @@ struct Index {
       if (this.instanceSupport) { this.crashTime = crashLogTime(); }
       this.message = localizedUIString(this.getUIContext(), packagedGame ?
         $r('app.string.host_starting_game') : $r('app.string.host_preparing_editor'));
-      let runtime: string = '';
-      if (!packagedGame && config.managed.mode === 'sdk') {
-        setStep('host:extract-runtime');
-        runtime = await prepareRuntime(context);
-        if (this.disposed) { return; }
-        record(`runtime directory: ${runtime}`);
-      }
       setStep('host:request-user-permissions');
       await requestUserPermissions(context);
       if (this.disposed) { return; }
+      let runtime: string = '';
+      let managedMode: string = 'none';
+      if (!packagedGame && config.managed.mode === 'sdk') {
+        setStep('host:discover-development-kit');
+        runtime = await prepareRuntime(context);
+        if (this.disposed) { return; }
+        if (runtime.length > 0) { managedMode = 'sdk'; }
+        record(`effective managed mode: ${managedMode}; external runtime: ${runtime}`);
+      }
       const permissions = grantedPermissions();
       setStep('host:configure');
-      plugin.configure(paths.filesDir, paths.cacheDir, runtime, config.managed.mode);
+      const configurationNotice = plugin.configure(paths.filesDir, paths.cacheDir, runtime, managedMode, paths.tempDir);
+      if (configurationNotice.length > 0) { record(`development-kit setup: ${configurationNotice}`); }
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);
       try {

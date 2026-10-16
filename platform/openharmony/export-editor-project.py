@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble a relocatable Godot .NET Editor project; export templates are separate downloads."""
+"""Assemble the thin Godot Editor project; development components are supplied by oo."""
 import argparse
 import hashlib
 import json
@@ -9,6 +9,7 @@ import stat
 import zipfile
 
 from project_config import EXCLUDED, HEADERS, HOST_ABI_VERSION, configuration, configure_project, read_document
+from development_kit import requirements as development_kit_requirements
 
 
 def sha256(path):
@@ -74,16 +75,13 @@ def zip_tree(archive, root, prefix='', project=False):
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__,
-        epilog='Download the debug/release export-template ZIPs separately from GitHub Releases. '
-               'Place them in Godot\'s versioned export templates directory or select their paths '
-               'in the export preset custom template options.')
+        epilog='Install the matching oo godot-editor development kit for C#, headless tools and '
+               'automatic game-template discovery. Separately downloaded template ZIPs can '
+               'still be selected in export preset custom template options.')
     parser.add_argument('--library', type=Path, required=True, help='Final ARM64 libgodot.so; do not strip after signing')
     parser.add_argument('--config', type=Path, help='JSON overrides of the editor profile; never modifies template sources')
     parser.add_argument('--sdk-root', type=Path, help='Selected complete HarmonyOS or versioned OpenHarmony SDK; runtimeOS is detected from metadata')
     parser.add_argument('--command-line-tools-root', type=Path, help='Official toolchain root; uses its bundled SDK unless --sdk-root is provided')
-    parser.add_argument('--godotsharp', type=Path, help='Required with managed.mode=sdk')
-    parser.add_argument('--dotnet-sdk', type=Path, help='Required with managed.mode=sdk: native SDK build input, not shipped')
-    parser.add_argument('--nuget-feed', type=Path, help='Required with managed.mode=sdk: verified pinned NuGet archives')
     parser.add_argument('--output', type=Path, required=True, help='DevEco project directory')
     parser.add_argument('--archive', type=Path, help='Optional project ZIP')
     parser.add_argument('--update', action='store_true',
@@ -114,8 +112,6 @@ def main():
     managed = config['managed']['mode'] == 'sdk'
     if config['build']['architectures'] != ['arm64-v8a']:
         raise SystemExit('The editor generator currently requires an ARM64 library')
-    if managed and not all((args.godotsharp, args.dotnet_sdk, args.nuget_feed)):
-        raise SystemExit('managed.mode=sdk requires --godotsharp, --dotnet-sdk and --nuget-feed')
     restricted = []
     if args.load_independent_library:
         restricted.append('ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY')
@@ -131,32 +127,7 @@ def main():
             raise SystemExit('Refusing to archive a project with personal signing settings; generate a fresh distributable project')
     required = [(args.library, 'native Godot editor'),
                 (args.library.parent / 'build-info.json', 'native build provenance from build-cli.py')]
-    dotnet_buildinfo = None
-    manifest = None
     binaries = [args.library]
-    if managed:
-        dotnet_buildinfo_path = next((p for p in (args.dotnet_sdk / 'BUILDINFO.json',
-                                                args.dotnet_sdk / 'BUILDINFO.aspnetcore.json') if p.is_file()), None)
-        if dotnet_buildinfo_path is None:
-            raise SystemExit('Missing native .NET SDK provenance')
-        dotnet_buildinfo = read_document(dotnet_buildinfo_path)
-        if dotnet_buildinfo.get('rid') != 'openharmony-arm64':
-            raise SystemExit('Expected .NET RID openharmony-arm64')
-        required.extend(((args.dotnet_sdk / 'dotnet', 'native .NET SDK host'),
-                         (args.godotsharp / 'Api/Debug/GodotSharp.dll', 'GodotSharp API'),
-                         (args.godotsharp / 'Tools/GodotTools.dll', 'Godot C# editor tools')))
-        for name in ('sdk', 'host/fxr', 'shared/Microsoft.NETCore.App',
-                     'packs/Microsoft.NETCore.App.Ref', 'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
-            if not (args.dotnet_sdk / name).is_dir():
-                raise SystemExit(f'Missing native SDK directory: {name}')
-        binaries.append(args.dotnet_sdk / 'dotnet')
-        manifest = read_document(source / 'platform/openharmony/dotnet/nuget-inputs.json')
-        for item in manifest['packages']:
-            path = args.nuget_feed / item['archive']
-            if not path.is_file() or path.stat().st_size != item['size'] or sha256(path) != item['sha256']:
-                raise SystemExit(f'NuGet input mismatch: {path}')
-        if not list((args.godotsharp / 'Tools/nupkgs').glob('Godot.NET.Sdk.*.nupkg')):
-            raise SystemExit('GodotSharp/Tools/nupkgs must contain the adapted Godot.NET.Sdk package')
     for path, description in required:
         if not path.is_file():
             raise SystemExit(f'Missing {description}: {path}')
@@ -229,44 +200,15 @@ def main():
     (raw / 'export-templates.json').unlink(missing_ok=True)
     if (raw / 'export-templates').is_dir():
         shutil.rmtree(raw / 'export-templates')
-    runtime_manifest = None
-    if managed:
-        runtime = raw / 'runtime.zip'
-        with zipfile.ZipFile(runtime, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-            # The .NET SDK is deliberately not shipped: the application resolves it
-            # from the oheco package installation so it stays decoupled from the
-            # SDK version. Only Godot's own managed assemblies and the pinned feed
-            # travel with the project.
-            zip_tree(archive, args.godotsharp, 'GodotSharp')
-            zip_tree(archive, source / 'platform/openharmony/tests/dotnet-smoke', 'Examples/CSharpSmoke')
-            for item in manifest['packages']:
-                archive.write(args.nuget_feed / item['archive'], 'nuget/' + item['archive'])
-            for package in sorted((args.godotsharp / 'Tools/nupkgs').glob('*.nupkg')):
-                archive.write(package, 'nuget/' + package.name)
-            # Pin the timestamp of the generated metadata entries too: writestr()
-            # would otherwise stamp the current time and make an otherwise identical
-            # runtime archive unreproducible.
-            requirement = {
-                'rid': dotnet_buildinfo.get('rid'),
-                'sdk_version': dotnet_buildinfo.get('sdk_version'),
-                'runtime_version': dotnet_buildinfo.get('runtime_version'),
-                'resolution': "oheco package directory ('oo install dotnet-sdk')",
-                'override_environment': 'GODOT_OHOS_DOTNET_ROOT',
-            }
-            metadata = (
-                ('NuGet.Config', '<configuration><packageSources><clear/><add key="bundled" value="nuget"/></packageSources></configuration>\n'),
-                ('nuget-inputs.json', json.dumps(manifest, indent=2) + '\n'),
-                ('dotnet-requirement.json', json.dumps(requirement, indent=2) + '\n'),
-            )
-            for name, text in metadata:
-                info = zipfile.ZipInfo(name, date_time=(2026, 9, 12, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
-                archive.writestr(info, text)
-        runtime_manifest = {'version': '4.7.2-ohos.3', 'sha256': sha256(runtime), 'size': runtime.stat().st_size}
-        (raw / 'runtime-manifest.json').write_text(json.dumps(runtime_manifest, indent=2) + '\n')
+    # The app starts independently. Managed components, headless CLI and game
+    # templates live in the optional oo development kit, never in the HAP.
+    for name in ('runtime.zip', 'runtime-manifest.json'):
+        (raw / name).unlink(missing_ok=True)
+    kit_requirement = development_kit_requirements(library_digest) if managed else None
+    if kit_requirement:
+        (raw / 'development-kit.json').write_text(json.dumps(kit_requirement, indent=2) + '\n')
     else:
-        for name in ('runtime.zip', 'runtime-manifest.json'):
-            (raw / name).unlink(missing_ok=True)
+        (raw / 'development-kit.json').unlink(missing_ok=True)
     notices = args.output / 'licenses'
     notices.mkdir(exist_ok=True)
     for name in ('LICENSE.txt', 'COPYRIGHT.txt', 'AUTHORS.md'):
@@ -283,10 +225,10 @@ def main():
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
     provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.6',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
-                  'runtime': runtime_manifest, 'export_templates': None,
-                  'dotnet_resolution': "oheco package installation; not shipped" if managed else None,
+                  'runtime': None, 'export_templates': None,
+                  'development_kit': kit_requirement,
+                  'dotnet_resolution': "optional oheco development kit and external dotnet-sdk; not shipped" if managed else None,
                   'host_configuration': config}
-    provenance['dotnet_buildinfo'] = dotnet_buildinfo
     provenance['native_build'] = native_info
     provenance['tool_execution'] = {
         'scope': 'in-process and direct child processes of the editor',

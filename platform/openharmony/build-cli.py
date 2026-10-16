@@ -28,10 +28,13 @@ source = Path(__file__).resolve().parents[2]
 args.output.mkdir(parents=True, exist_ok=False)
 output = args.output.resolve()
 with (output / 'build.log').open('w') as log:
+    runtime_source = source / 'misc/dist/openharmony_template/entry/src/main/cpp'
     commands = [
         [signer, 'sign', '-inFile', str(args.library.resolve()), '-outFile', str(output / 'libgodot.so'), '-selfSign', '1'],
         [compiler, '--target=aarch64-linux-ohos', '--sysroot=' + str(args.native_sdk.resolve() / 'sysroot'),
-         str(source / 'platform/openharmony/tools/cli.cpp'), '-L' + str(output), '-lgodot',
+         '-std=c++17', '-static-libstdc++', '-I' + str(runtime_source),
+         str(source / 'platform/openharmony/tools/cli.cpp'), str(runtime_source / 'runtime_paths.cpp'),
+         '-L' + str(output), '-lgodot', '-ldl',
          '-Wl,-rpath,$ORIGIN', '-o', str(output / 'godot.unsigned')],
         [signer, 'sign', '-inFile', str(output / 'godot.unsigned'), '-outFile', str(output / 'godot'), '-selfSign', '1'],
     ]

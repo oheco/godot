@@ -14,9 +14,12 @@ OpenHarmony SDK uses `OpenHarmony`. API26 and later use dotted strings such as
 templates retain an OpenHarmony baseline until a SDK is selected. The person
 installing the Editor supplies their own signing material.
 
-The Editor payload includes GodotSharp and an offline feed, **not a .NET SDK**.
-The installed oheco SDK is an external runtime dependency of the SDK-enabled
-Editor only; ordinary exported games have no such dependency.
+The thin Editor APP contains its native engine/host and startup resources. The
+optional oo `godot-editor` development kit provides the matching headless engine,
+GodotSharp components, four Godot build packages and both export templates.
+C# development uses the external oheco .NET SDK and normal NuGet restore; no
+complete SDK or general offline feed is shipped in the APP. Ordinary exported
+games retain their self-contained runtime and have no external SDK dependency.
 
 **Experimental.** Native/headless tests, mock boundary tests, compilation and
 signed HAP UI acceptance are separate validation scopes. A successful native C#
@@ -191,8 +194,9 @@ A native-only Editor override can be as small as:
 {"managed":{"mode":"none"}}
 ```
 
-Use a matching native editor library; GodotSharp, the .NET SDK and NuGet inputs
-are not required in this mode. Native-only Editors still need user-file/external
+Use a matching native editor library. APP generation never requires GodotSharp,
+the .NET SDK or a NuGet feed; SDK mode enables optional development-kit discovery,
+while none mode skips it. Native-only Editors still need user-file/external
 code access and the weak sandbox to run the oo export tools. C# games keep host
 managed.mode=none: the .NET export plugin embeds a signed self-contained runtime
 in the PCK, rather than adding another runtime ZIP or an external SDK dependency.
@@ -276,8 +280,9 @@ The managed build uses an empty private NuGet cache and locked dependencies.
 Godot managed package versions are pinned to **4.7.2-ohos.3** to avoid selecting upstream
 packages with different bindings. Godot API/tool assemblies retain their upstream
 .NET 8 target and run on .NET 10; newly created OpenHarmony C# projects target
-.NET 10. A project-local `NuGet.Config` uses the bundled feed through the
-`GODOT_NUGET_SOURCE` environment variable.
+.NET 10. A project-local `NuGet.Config` uses the engine-matched Godot packages
+through `GODOT_NUGET_SOURCE` and NuGet.org for normal dependency restoration.
+The fixed offline feed is a source-build input; it is not bundled into the Editor App.
 
 Run the native integration acceptance after the managed build:
 
@@ -370,12 +375,14 @@ standalone `tools/auto-sign` from existing vendored JsonCpp/mbedTLS sources; its
 C++ runtime is static so the terminal does not need the Editor App's libraries.
 
 Build both `module_mono_enabled=yes` templates with `generate_bundle=yes`.
-The Editor App does not bundle or extract export templates. Download
-`openharmony_debug_arm64-v8a.zip` and `openharmony_release_arm64-v8a.zip` from the
-matching [GitHub Release](https://github.com/oheco/godot/releases), then select
-the archives under **Export → OpenHarmony → Custom Template → Debug / Release**.
-Keep the ZIP files intact. The Editor's `runtime.zip` contains its managed tools
-and offline feed; it remains separate from these optional game export templates.
+The Editor App does not bundle or extract export templates. The matching oo
+development kit supplies both ZIPs, which the host exposes through the existing
+template pointer. Separately downloaded `openharmony_debug_arm64-v8a.zip` and
+`openharmony_release_arm64-v8a.zip` from the matching
+[GitHub Release](https://github.com/oheco/godot/releases) can still be selected
+under **Export → OpenHarmony → Custom Template → Debug / Release**. Explicit
+preset paths retain precedence. Keep the ZIP files intact; the APP has no
+managed runtime archive or general offline NuGet feed.
 
 - F5/F6 launch another attached UIAbility process with the project/scene/debugger
   arguments. F8 stops the recorded game PID; no HAP packaging or HDC is involved.
@@ -456,26 +463,41 @@ place on every later iteration:
 ```sh
 python3 platform/openharmony/export-editor-project.py \
   --library /path/to/new-cli-directory/libgodot.so \
-  --godotsharp bin/GodotSharp \
-  --dotnet-sdk "$DOTNET_SDK" \
-  --nuget-feed /path/to/pinned-nuget-feed \
   --output /path/to/GodotEditor
 
 # later iterations: same directory, no new copy to open
 python3 platform/openharmony/export-editor-project.py \
   --library /path/to/new-cli-directory/libgodot.so \
-  --godotsharp bin/GodotSharp \
-  --dotnet-sdk "$DOTNET_SDK" \
-  --nuget-feed /path/to/pinned-nuget-feed \
   --output /path/to/GodotEditor --update
 ```
 
-The script verifies the ARM64 inputs, the .NET SDK it was built against (RID,
-reference and runtime packs) and the fixed feed. It packages the signed editor
-library, Godot's managed assemblies and native tools, the pinned NuGet feed,
-native headers, licenses and a resource digest manifest — but **no .NET SDK**,
-which the application resolves from the `oo` installation at startup. Runtime
-extraction uses the application's private files and cache directories. Project
+The script verifies the signed ARM64 editor library and its shared-host ABI. The
+APP contains the native editor, HarmonyOS host, startup resources and a small
+development-kit compatibility record. It contains no GodotSharp payload, NuGet
+feed, headless launcher, .NET SDK or game-template archives. The native/GDScript
+editor starts when no development kit is installed; C# development requires the
+matching optional kit and external `dotnet-sdk`.
+
+The `godot-editor` oo development kit contains the signed headless launcher and
+its matching engine library, GodotSharp API and editor tools, exactly four
+engine-matched Godot NuGet packages and both game export templates. Third-party
+game packages use normal NuGet restore. Prepare its local archive separately:
+
+```sh
+python3 platform/openharmony/package-development-kit.py \
+  --cli /path/to/new-cli-directory --godotsharp bin/GodotSharp \
+  --dotnet-sdk "$DOTNET_SDK" \
+  --debug-template bin/openharmony_debug_arm64-v8a.zip \
+  --release-template bin/openharmony_release_arm64-v8a.zip \
+  --output /path/to/new-development-kit \
+  --archive /path/to/new-development-kit.tar.gz
+```
+
+The app discovers compatible kits from the active oo `godot` command and
+`OHECO_ROOT/packages/godot-editor`, or `GODOT_OHOS_DEVKIT_ROOT`. Managed components
+stay in the kit; template links and the existing template pointer are published
+in the app's own data directory without changing export presets. Existing custom
+NuGet settings and manually selected templates remain authoritative. Project
 files contain no maintainer signing profile, account or absolute SDK path.
 
 With `--update`, files DevEco owns after the first build are preserved:
