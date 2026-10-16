@@ -179,7 +179,10 @@ func audit() -> void:
     report["run_method_bound"] = platform.has_method("run")
     settings.set_setting("export/openharmony/hdc_path", OS.get_environment("GODOT_BROKER_AUDIT_FAKE_HDC"))
     settings.set_setting("export/openharmony/use_broker", true)
-    settings.set_setting("export/openharmony/hvigor_entry", OS.get_environment("GODOT_BROKER_AUDIT_FAKE_HVIGOR"))
+    # This case exercises ordinary manual-build routing with fake materials.
+    # Automatic signing has a separate native backend/receipt suite.
+    settings.set_setting("export/openharmony/auto_signing", false)
+    settings.set_setting("export/openharmony/command_line_tools_root", OS.get_environment("GODOT_BROKER_AUDIT_FAKE_CLT"))
     settings.set_setting("export/openharmony/sdk_root", OS.get_environment("GODOT_BROKER_AUDIT_SDK_ROOT"))
     settings.set_project_metadata("debug_options", "run_deploy_remote_debug", false)
     settings.set_project_metadata("debug_options", "run_file_server", false)
@@ -191,8 +194,10 @@ func audit() -> void:
     preset.set("sign/store_file", OS.get_environment("GODOT_BROKER_AUDIT_DUMMY_STORE"))
     preset.set("sign/key_alias", "synthetic-fixture-only")
     preset.set("sign/sign_alg", "SHA256withECDSA")
-    preset.set("sign/key_password", "synthetic-key-password")
-    preset.set("sign/store_password", "synthetic-store-password")
+    # Structurally valid encrypted frames for the fake CLT7 decryptor; no real key.
+    var synthetic_frame := "00000010" + "00".repeat(28)
+    preset.set("sign/key_password", synthetic_frame)
+    preset.set("sign/store_password", synthetic_frame)
     if not await wait_target("fake-broker-native-run", "godot-broker-probe:5555", "godot-direct-probe:5555"):
         return
     var selected_id := -1
@@ -230,6 +235,7 @@ func audit() -> void:
 
 FAKE_HDC = '''#!/system/bin/sh
 # Never forward to real HDC. Install only reads a synthetic file, then fails.
+printf '%s\\n' "$*" >> "${0%/*}/hdc-commands.log"
 if [ "$#" -eq 5 ] && [ "$1" = "-t" ] && [ "$3" = "install" ] && [ "$4" = "-r" ]; then
     exec @@NODE@@ @@INSPECT@@ "$@"
 fi
@@ -246,24 +252,63 @@ else
 fi
 '''
 
-# The build runner and C++ export are real; this adapter produces JSON bytes with
-# a -signed filename only to exercise result selection. It performs no signing.
-FAKE_HVIGOR = r'''const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+# The build runner, resolver and C++ export are real. Only installed CLT modules
+# are synthetic: the wrapper produces JSON bytes, never a build or signature.
+FAKE_HVIGOR = r'''const PNPM_VERSION = "10.28.2";
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const args=process.argv.slice(2),root=process.cwd();
-fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({args,cwd:root,synthetic:true,editorDirect:process.env.GODOT_HDC_PROBE_DIRECT==='1'})+'\n');
-if(args.length===1&&args[0]==='--adapter-info'){
-  console.log(JSON.stringify({adapter:'6.26.4-ohos.1',host:'openharmony',arch:'arm64',upstream:'6.26.4',pinnedInterfacesUnmodified:true}));
-}else{
-  if(!args.includes('assembleHap'))process.exit(64);
-  const pck=fs.readFileSync(path.join(root,'entry/src/main/resources/rawfile/template.pck'));
-  const out=path.join(root,'entry/build/default/outputs/default');fs.mkdirSync(out,{recursive:true});
-  fs.writeFileSync(path.join(out,'fixture-default-signed.hap'),JSON.stringify({fixture:'SYNTHETIC_NOT_A_SIGNED_HAP',pck_sha256:crypto.createHash('sha256').update(pck).digest('hex')})+'\n');
-}
+const profile=JSON.parse(fs.readFileSync(path.join(root,'build-profile.json5')));
+fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({event:'wrapper',args,cwd:root,entry:process.argv[1],execPath:process.execPath,
+  synthetic:true,editorDirect:process.env.GODOT_HDC_PROBE_DIRECT==='1',
+  signingConfigs:profile.app.signingConfigs.length,
+  hvigorUserHome:process.env.HVIGOR_USER_HOME,nodeHome:process.env.NODE_HOME,
+  devecoSdkHome:process.env.DEVECO_SDK_HOME,ohosSdkHome:process.env.OHOS_SDK_HOME,
+  offline:process.env.NPM_CONFIG_OFFLINE,nodeOptionsAbsent:process.env.NODE_OPTIONS===undefined})+'\n');
+if(!args.includes('assembleHap')||profile.app.signingConfigs.length!==1)process.exit(64);
+const pck=fs.readFileSync(path.join(root,'entry/src/main/resources/rawfile/template.pck'));
+const out=path.join(root,'entry/build/default/outputs/default');fs.mkdirSync(out,{recursive:true});
+fs.writeFileSync(path.join(out,'fixture-default-signed.hap'),JSON.stringify({fixture:'SYNTHETIC_NOT_A_SIGNED_HAP',pck_sha256:crypto.createHash('sha256').update(pck).digest('hex')})+'\n');
+'''
+
+FAKE_DECIPHER = r'''require('@ohos/hvigor');
+const fs=require('node:fs');
+exports.DecipherUtil={decryptPwd(materialDir,encrypted,profilePath){
+  if(encrypted!=='00000010'+'00'.repeat(28))throw new Error('Unexpected synthetic frame');
+  fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({event:'decryptPwd',cwd:process.cwd(),materialDir,profilePath,
+    synthetic:true,editorDirect:process.env.GODOT_HDC_PROBE_DIRECT==='1'})+'\n');
+  return 'SYNTHETIC_FIXTURE_PASSWORD_ONLY';
+}};
+'''
+
+# Passive, fixture-only audit of the ordinary OS.execute Node entry and its
+# private preflights. Calls, payloads, results and exit codes pass through intact;
+# the production runner removes NODE_OPTIONS from every child environment.
+BUILD_OBSERVER = r'''const fs=require('node:fs'),cp=require('node:child_process');
+function record(value){fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({synthetic:true,
+  editorDirect:process.env.GODOT_HDC_PROBE_DIRECT==='1',...value})+'\n');}
+record({event:'build-runner',entry:process.argv[1],args:process.argv.slice(2),cwd:process.cwd(),execPath:process.execPath});
+const spawn=cp.spawn;
+cp.spawn=function(file,args,options){
+  const child=Reflect.apply(spawn,this,arguments);
+  if(args[0]==='--eval'){
+    const end=child.stdin.end;
+    child.stdin.end=function(payload){
+      const input=JSON.parse(payload);
+      record({event:input.kind+'-probe',node:file,args:[args[0]],cwd:options.cwd,
+        editorDirect:options.env.GODOT_HDC_PROBE_DIRECT==='1',
+        nodeOptionsAbsent:options.env.NODE_OPTIONS===undefined,
+        ...(input.kind==='version'?{toolsDir:input.toolsDir}:{module:input.module,engine:input.engine})});
+      return Reflect.apply(end,this,arguments);
+    };
+  }
+  return child;
+};
 '''
 
 FAKE_HDC_INSPECT = r'''const fs=require('node:fs'),crypto=require('node:crypto');
 const argv=process.argv.slice(2),filename=argv[4];
-const record={argv,path:filename,read_ok:false,broker_route:process.env.GODOT_HDC_PROBE_DIRECT!=='1',real_installation:false};
+const record={argv,path:filename,read_ok:false,broker_route:!Object.hasOwn(process.env,'GODOT_HDC_PROBE_DIRECT'),
+  editor_direct_marker_present:Object.hasOwn(process.env,'GODOT_HDC_PROBE_DIRECT'),real_installation:false};
 try{
   const bytes=fs.readFileSync(filename),data=JSON.parse(bytes.toString('utf8'));
   record.read_ok=data.fixture==='SYNTHETIC_NOT_A_SIGNED_HAP';
@@ -414,14 +459,62 @@ build/sign=false
             build_log = root / 'fake-hvigor.jsonl'
             inspect_script = root / 'FakeHdcInspect.cjs'
             inspect_script.write_text(FAKE_HDC_INSPECT.replace('@@RUN_RECORD@@', json.dumps(str(run_record))))
-            fake_hvigor = root / 'FakeHvigor.cjs'
-            fake_hvigor.write_text(FAKE_HVIGOR.replace('@@BUILD_LOG@@', json.dumps(str(build_log))))
+            node_probe_env = dict(os.environ)
+            for key in ('NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD'):
+                node_probe_env.pop(key, None)
+            node_info = json.loads(subprocess.run(
+                [str(oheco_root / 'bin/node'), '-p', 'JSON.stringify({version:process.versions.node,execPath:process.execPath})'],
+                env=node_probe_env, check=True, capture_output=True, text=True, timeout=15).stdout)
+            real_node = Path(node_info['execPath']).resolve(strict=True)
+            fake_clt = root / 'fake official CLT7 with spaces'
+            fake_hvigor = fake_clt / 'hvigor/bin/hvigorw.js'
+            hvigor_home = root / 'prepared fake hvigor home'
+            tools_dir = hvigor_home / 'wrapper/tools/10.28.2'
+
+            def fixture_file(path, text):
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                path.write_text(text)
+                path.chmod(0o600)
+
+            def fixture_json(path, value):
+                fixture_file(path, json.dumps(value, indent=2) + '\n')
+
+            fixture_file(fake_hvigor, FAKE_HVIGOR.replace('@@BUILD_LOG@@', json.dumps(str(build_log))))
+            fixture_file(fake_hvigor.with_name('hvigorw'), 'SYNTHETIC SHELL LAUNCHER; MUST NOT EXECUTE\n')
+            selected_node = fake_clt / 'node/bin/node'
+            selected_node.parent.mkdir(parents=True, mode=0o700)
+            selected_node.symlink_to(real_node)
+            (fake_clt / 'sdk').symlink_to(sdk_root, target_is_directory=True)
+            fixture_json(fake_clt / 'hvigor/hvigor/package.json',
+                         {'name': '@ohos/hvigor', 'version': '7.26.8', 'main': 'index.cjs'})
+            fixture_file(fake_clt / 'hvigor/hvigor/index.cjs', 'module.exports = {};\n')
+            fixture_json(fake_clt / 'hvigor/hvigor-ohos-plugin/package.json',
+                         {'name': '@ohos/hvigor-ohos-plugin', 'version': '7.26.8',
+                          'peerDependencies': {'@ohos/hvigor': '7.26.8'}})
+            decipher = fake_clt / 'hvigor/hvigor-ohos-plugin/src/utils/decipher-util.js'
+            fixture_file(decipher, FAKE_DECIPHER.replace('@@BUILD_LOG@@', json.dumps(str(build_log))))
+            fixture_json(tools_dir / 'node_modules/pnpm/package.json',
+                         {'name': 'pnpm', 'version': '10.28.2', 'main': 'index.cjs'})
+            fixture_file(tools_dir / 'node_modules/pnpm/index.cjs', 'throw new Error("pnpm must not execute");\n')
+            fixture_file(tools_dir / 'node_modules/.bin/pnpm', 'SYNTHETIC PNPM LAUNCHER; MUST NOT EXECUTE\n')
+            observer = root / 'ObserveBuild.cjs'
+            observer.write_text(BUILD_OBSERVER.replace('@@BUILD_LOG@@', json.dumps(str(build_log))))
+            report['fake_toolchain'] = {
+                'command_line_tools_root': str(fake_clt), 'hvigor_version': '7.26.8',
+                'pnpm_version': '10.28.2', 'node_version': node_info['version'],
+                'selected_node': str(selected_node), 'real_node': str(real_node),
+                'sdk_root': str(sdk_root), 'sdk_read_only': True,
+                'hvigor_user_home': str(hvigor_home), 'production_runner_unmodified': True,
+            }
             dummy_material = {}
             for name in ('certificate', 'profile', 'store'):
                 path = root / ('synthetic-' + name + '.fixture')
                 path.write_text('NOT REAL SIGNING MATERIAL; DISPOSABLE TEST FIXTURE ONLY\n')
                 path.chmod(0o600)
                 dummy_material[name] = path
+            for name in ('fd', 'ac', 'ce'):
+                fixture_file(root / 'material' / name / 'component',
+                             'SYNTHETIC COMPANION MATERIAL; NO REAL KEY\n')
             fake = root / 'fake-hdc'
             fake.write_text(FAKE_HDC.replace('@@NODE@@', shlex.quote(str(oheco_root / 'bin/node')))
                             .replace('@@INSPECT@@', shlex.quote(str(inspect_script))))
@@ -440,7 +533,9 @@ build/sign=false
             env['GODOT_BROKER_AUDIT_TARGET'] = args.target
             env['GODOT_BROKER_AUDIT_TOGGLE'] = '0' if args.skip_routing_toggle else '1'
             env['GODOT_BROKER_AUDIT_FAKE_HDC'] = str(fake)
-            env['GODOT_BROKER_AUDIT_FAKE_HVIGOR'] = str(fake_hvigor)
+            env['GODOT_BROKER_AUDIT_FAKE_CLT'] = str(fake_clt)
+            env['HVIGOR_USER_HOME'] = str(hvigor_home)
+            env['NODE_OPTIONS'] = '--require=' + json.dumps(str(observer))
             env['GODOT_BROKER_AUDIT_SDK_ROOT'] = str(sdk_root)
             env['GODOT_BROKER_AUDIT_RUN_RECORD'] = str(run_record)
             for name, path in dummy_material.items():
@@ -485,7 +580,7 @@ build/sign=false
                     raise AssertionError('Exported GDScript project metadata differs from the preset')
                 with zipfile.ZipFile(template) as archive:
                     for name in archive.namelist():
-                        if name.endswith(('.ets', '.cpp', '.h', '.ts')) and (generated / name).read_bytes() != archive.read(name):
+                        if name.endswith(('.ets', '.cpp', '.h', '.ts', '.cjs')) and (generated / name).read_bytes() != archive.read(name):
                             raise AssertionError(f'Exporter altered shared template source: {name}')
                 pck = generated / 'entry/src/main/resources/rawfile/template.pck'
                 entries = pack_index(pck)
@@ -509,19 +604,48 @@ build/sign=false
                 if (not installed_path.is_absolute() or len(relative.parts) != 2
                         or not relative.parts[0].startswith('run_') or relative.parts[1] != 'project.hap'):
                     raise AssertionError(f'Actual Run install did not read project .godot HAP: {installed_path}')
-                if inspection.get('broker_route') is not True or inspection.get('read_ok') is not True:
-                    raise AssertionError('Fake HDC must successfully read the same HAP through the broker route')
+                if (inspection.get('broker_route') is not True or inspection.get('read_ok') is not True
+                        or inspection.get('editor_direct_marker_present') is not False):
+                    raise AssertionError('Fake HDC must read the same HAP through the broker with no direct Editor marker')
                 if inspection.get('payload', {}).get('fixture') != 'SYNTHETIC_NOT_A_SIGNED_HAP':
                     raise AssertionError('Run inspection must read the explicitly synthetic package')
                 if inspection['argv'] != ['-t', 'godot-broker-probe:5555', 'install', '-r', str(installed_path)]:
                     raise AssertionError('Actual Run install argv differs from the selected fake target and inspected path')
                 build_invocations = [json.loads(line) for line in build_log.read_text().splitlines()]
-                if (len(build_invocations) != 2 or build_invocations[0]['args'] != ['--adapter-info']
-                        or 'assembleHap' not in build_invocations[1]['args']
-                        or any(Path(item['cwd']) != installed_path.with_suffix('') for item in build_invocations)):
-                    raise AssertionError('Actual Run did not invoke the shared build runner and fake Hvigor in its generated project')
+                events = [item.get('event') for item in build_invocations]
+                if events != ['build-runner', 'version-probe', 'decrypt-probe', 'decryptPwd', 'decryptPwd', 'wrapper']:
+                    raise AssertionError(f'Actual Run must execute modern version/decrypt/wrapper preflights: {events}')
                 if any(item.get('editorDirect') is not True for item in build_invocations):
                     raise AssertionError('Ordinary build tools must execute directly in the Editor environment while HDC uses the broker')
+                run_project = installed_path.with_suffix('')
+                outer, version_probe, decrypt_probe, *decrypt_calls, wrapper = build_invocations
+                if (Path(outer['entry']) != run_project / 'tools/build.cjs'
+                        or outer['args'][0] != '--request' or len(outer['args']) != 2
+                        or not Path(outer['args'][1]).is_absolute() or Path(outer['cwd']) != project
+                        or Path(outer['execPath']) != real_node):
+                    raise AssertionError('Native Run did not OS.execute the real build runner using the selected Node')
+                for probe in (version_probe, decrypt_probe):
+                    if (probe['args'] != ['--eval'] or Path(probe['node']) != selected_node
+                            or Path(probe['cwd']) != run_project or probe.get('nodeOptionsAbsent') is not True):
+                        raise AssertionError('Private preflights must use selected Node in the generated project with isolated child options')
+                if (Path(version_probe['toolsDir']) != tools_dir or Path(decrypt_probe['module']) != decipher
+                        or Path(decrypt_probe['engine']) != fake_clt / 'hvigor/hvigor'
+                        or any(Path(call['cwd']) != run_project or Path(call['materialDir']) != root
+                               or Path(call['profilePath']) != run_project / 'build-profile.json5' for call in decrypt_calls)):
+                    raise AssertionError('Modern preflights did not resolve the prepared pnpm/engine/decrypt fixture')
+                expected_build_args = ['--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default',
+                                       '-p', 'buildMode=debug', 'assembleHap', '--no-daemon', '--no-incremental']
+                if (wrapper['args'] != expected_build_args or Path(wrapper['cwd']) != run_project
+                        or Path(wrapper['entry']) != fake_hvigor or Path(wrapper['execPath']) != real_node
+                        or wrapper.get('signingConfigs') != 1 or Path(wrapper['hvigorUserHome']) != hvigor_home
+                        or Path(wrapper['nodeHome']) != selected_node.parent
+                        or Path(wrapper.get('devecoSdkHome', wrapper.get('ohosSdkHome', ''))) != sdk_root
+                        or wrapper.get('offline') != 'true' or wrapper.get('nodeOptionsAbsent') is not True):
+                    raise AssertionError('Actual Run did not invoke the prepared CLT7 wrapper with exact offline assembleHap arguments')
+                commands = (root / 'hdc-commands.log').read_text().splitlines()
+                rejected_install = '-t godot-broker-probe:5555 install -r ' + str(installed_path)
+                if commands.count(rejected_install) != 1 or any(command not in ('list targets', rejected_install) for command in commands):
+                    raise AssertionError(f'Fake HDC must only discover and reject one install, with no AA or port commands: {commands}')
                 if not all(native_run.get(key) is True for key in ('hap_removed_after_run',
                         'generated_project_removed_after_run', 'run_directory_removed_after_run')):
                     raise AssertionError('Native Run did not clean its owned HAP/project/run directory after fake install rejection')
@@ -532,11 +656,15 @@ build/sign=false
                 report['native_run_audit'] = {
                     'trigger': native_run['trigger'], 'run_method_bound': editor_audit['run_method_bound'],
                     'hdc_read_path': str(installed_path), 'project_godot_path': str(project / '.godot'),
-                    'read_from_broker_route': True, 'synthetic_bytes': inspection['bytes'],
+                    'read_from_broker_route': True, 'hdc_editor_direct_marker_present': False,
+                    'synthetic_bytes': inspection['bytes'],
                     'synthetic_sha256': inspection['sha256'], 'synthetic_payload': inspection['payload'],
                     'actual_cpp_run_and_build_runner': True, 'mock_hvigor': True, 'mock_hdc': True,
                     'real_hap_build': False, 'real_signing': False, 'real_installation': False,
                     'owned_run_directory_removed': True,
+                    'ordinary_tools_editor_direct': True, 'modern_build_events': events,
+                    'fake_hdc_only_discovery_and_rejected_install': True,
+                    'aa_or_port_commands': False,
                 }
                 text = run('pck', [str(editor), '--headless', '--main-pack', str(pck)])
                 if 'BROKER_EDITOR_PCK_PASS' not in text:
@@ -546,7 +674,7 @@ build/sign=false
                 editor_report = root / 'editor-report.json'
                 if editor_report.is_file():
                     shutil.copyfile(editor_report, output / 'editor-report.json')
-                for fixture_log in (run_record, build_log):
+                for fixture_log in (run_record, build_log, root / 'hdc-commands.log'):
                     if fixture_log.is_file():
                         shutil.copyfile(fixture_log, output / fixture_log.name)
                 route_log = root / 'route.log'

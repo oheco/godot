@@ -127,9 +127,13 @@ void audit_case(EditorExportPlatformOpenHarmony *p_platform, const Dictionary &p
 	} else {
 		Dictionary expected_request = context_before.duplicate(true);
 		expected_request["projectDir"] = project;
+		// Godot parses JSON numbers as FLOAT, while the in-memory context uses
+		// INT for schemaVersion. Compare both exact objects after the same JSON
+		// conversion so the wire representation, keys and values stay strict.
+		const Dictionary expected_audit_request = JSON::parse_string(JSON::stringify(expected_request));
 		const Variant request_value = audit.get("request", Variant());
 		const bool public_request_preserved = request_value.get_type() == Variant::DICTIONARY &&
-				Dictionary(request_value).recursive_equal(expected_request, 0);
+				Dictionary(request_value).recursive_equal(expected_audit_request, 0);
 		const Variant pid = audit.get("pid", Variant());
 		check(helper_ran && number_equals(audit.get("schemaVersion", Variant()), 1) && audit.get("case", "") == name &&
 						audit.get("backend", "") == "native" &&
