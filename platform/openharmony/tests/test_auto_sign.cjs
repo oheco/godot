@@ -38,7 +38,31 @@ function json(file,data){write(file,JSON.stringify(data));}
 console.log('SENTINEL_secret_token_and_password_never_print');console.error('SENTINEL_secret_token_and_password_never_print');
 `;
 const CLI = COMMON + String.raw`
-const args=process.argv.slice(2);log('cli',{args,home:process.env.HOME,data:process.env.DEVECO_CLI_DATA_DIR,cwd:process.cwd(),clt:process.env.COMMAND_LINE_TOOL_PATH,noColor:process.env.NO_COLOR,authSource:process.env.DEVECO_CLI_AUTH_SOURCE,codeAuthDir:process.env.DEVECO_CODE_AUTH_DIR});
+(async()=>{
+const args=process.argv.slice(2),preload=process.execArgv[process.execArgv.indexOf('--import')+1];
+const preloadFile=preload&&require('node:url').fileURLToPath(preload);
+log('cli',{args,home:process.env.HOME,data:process.env.DEVECO_CLI_DATA_DIR,cwd:process.cwd(),clt:process.env.COMMAND_LINE_TOOL_PATH,noColor:process.env.NO_COLOR,authSource:process.env.DEVECO_CLI_AUTH_SOURCE,codeAuthDir:process.env.DEVECO_CODE_AUTH_DIR,nodeOptions:process.env.NODE_OPTIONS,nodePath:process.env.NODE_PATH,nodeOpts:process.env.NODE_OPTS,execArgv:process.execArgv,preloadMode:preloadFile&&fs.statSync(preloadFile).mode&0o7777,preloadParentMode:preloadFile&&fs.statSync(path.dirname(preloadFile)).mode&0o7777});
+async function probeChildren(){
+  const cp=require('node:child_process'),bin=control.cliUseSDK?path.join(process.env.COMMAND_LINE_TOOL_PATH,'sdk/default/openharmony/toolchains/hdc'):(control.cliHdcPath||process.env.FIXTURE_HDC_PATH);
+  const childArgs=['-t','serial-is-not-udid','shell','bm','get','-u'];
+  const env=Object.freeze({...process.env,HDC_SERVER:'cli-override-must-not-replace-host',OHOS_HDC_SERVER_PORT:'1'}),options=Object.freeze({encoding:'utf8',env});
+  const collect=child=>new Promise((resolve,reject)=>{let stdout='';child.stdout.on('data',bytes=>stdout+=bytes);child.on('error',reject);child.on('close',code=>code===0?resolve(stdout):reject(new Error('fake HDC spawn failed')));});
+  for(const mode of ['spawn','spawnSync','execFile','execFileSync','promisify','esm']){
+    let stdout;
+    if(mode==='spawn')stdout=await collect(cp.spawn(bin,childArgs,options));
+    if(mode==='spawnSync'){const result=cp.spawnSync(bin,childArgs,options);if(result.status!==0)throw new Error('fake HDC spawnSync failed');stdout=result.stdout;}
+    if(mode==='execFile')stdout=await new Promise((resolve,reject)=>cp.execFile(bin,childArgs,(error,out)=>error?reject(error):resolve(out)));
+    if(mode==='execFileSync')stdout=cp.execFileSync(bin,childArgs,options);
+    if(mode==='promisify')stdout=(await require('node:util').promisify(cp.execFile)(bin,childArgs,options)).stdout;
+    if(mode==='esm')stdout=(await import('node:child_process')).execFileSync(bin,childArgs,options);
+    if(!String(stdout).includes('a'.repeat(64)))throw new Error('CLI HDC did not return the actual UDID');
+    log('cli-hdc-probe',{mode});
+  }
+  if(!cp.execFileSync(bin,['list','targets'],options).includes('serial-is-not-udid'))throw new Error('CLI HDC target list failed');
+  const other=cp.execFileSync(path.join(root,'unrelated tools/hdc'),[],options);
+  if(!other.includes('OTHER_CHILD_OK'))throw new Error('non-HDC child changed');
+  if(env.HOME!==process.env.HOME||env.HDC_SERVER!=='cli-override-must-not-replace-host')throw new Error('caller environment was mutated');
+}
 if(args.join(' ')==='auth status'){
   const calls=fs.readFileSync(path.join(root,'events.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(event=>event.kind==='cli'&&event.args.join(' ')==='auth status').length;
   if(calls===2){
@@ -58,6 +82,7 @@ if(args.join(' ')==='auth status'){
   console.log('Id'.padEnd(width)+'  Name');console.log('-'.repeat(width)+'  ----');
   for(const id of teams)console.log(id.padEnd(width)+'  Local Team Name With Spaces');
 }else if(args[0]==='signature'&&args[1]==='generate'){
+  if(control.cliHdcProbe)await probeChildren();
   log('generate',{locks:fs.readdirSync(path.join(process.env.FIXTURE_SIGNING_ROOT,'locks')).sort()});
   if(!args.includes('--team-id')||args.includes('--force'))throw new Error('invalid generate arguments');
   const materialDir=path.join(process.env.HOME,'.ohos/config');
@@ -75,9 +100,12 @@ if(args.join(' ')==='auth status'){
   const config={name:'fixture-signing',type:'HarmonyOS',material:{certpath:path.join(materialDir,'cert.cer'),profile:path.join(materialDir,'profile.p7b'),storeFile:path.join(materialDir,'store.p12'),keyAlias:'fixture-private-alias',signAlg:'SHA256withECDSA',keyPassword:frame.toString('hex'),storePassword:frame.toString('hex')}};
   const file=path.join(process.cwd(),'build-profile.json5'),doc=JSON.parse(fs.readFileSync(file));doc.app.signingConfigs=[config];doc.app.products.find(p=>p.name==='default').signingConfig=config.name;json(file,control.malformedGenerated?{app:{products:{},signingConfigs:{}}}:doc);
 }else throw new Error('unexpected command: '+args.join(' '));
+})().catch(error=>{console.error(error.message);process.exitCode=12;});
 `;
 const HDC = COMMON + String.raw`
-const args=process.argv.slice(2);log('hdc',{args,home:process.env.HOME,server:process.env.HDC_SERVER});
+const args=process.argv.slice(2);log('hdc',{args,file:process.argv[1],home:process.env.HOME,server:process.env.HDC_SERVER,port:process.env.OHOS_HDC_SERVER_PORT});
+if(process.env.HOME!==process.env.FIXTURE_ORIGINAL_HOME)throw new Error('private HOME would replace the shared HDC service');
+if(args.join(' ')==='list targets'){console.log('serial-is-not-udid');process.exit(0);}
 if(control.unauthorized){console.error('device unauthorized');process.exit(0);}
 if(control.deviceFail){console.error('device disconnected');process.exit(3);}
 if(args.slice(2).join(' ')!=='shell bm get -u')throw new Error('unexpected hdc command');
@@ -134,7 +162,13 @@ function fixture(t, initial = {}) {
   const controlFile=path.join(root,'control.json');
   let control={cert:CERT,...initial};json(controlFile,control);
   const cli=path.join(root,'official fake CLI.cjs'),hdc=path.join(root,'hdc with spaces');
-  write(cli,CLI);executable(hdc,HDC);executable(path.join(sdk,'default/openharmony/toolchains/lib/hap-sign-tool'),VERIFIER);
+  write(cli,CLI);executable(hdc,HDC);executable(path.join(sdk,'default/openharmony/toolchains/hdc'),HDC);
+  executable(path.join(root,'unrelated tools/hdc'),COMMON+String.raw`
+log('other-child',{home:process.env.HOME,server:process.env.HDC_SERVER});
+if(process.env.HOME===process.env.FIXTURE_ORIGINAL_HOME)throw new Error('unrelated child received host HOME');
+console.log('OTHER_CHILD_OK');
+`);
+  executable(path.join(sdk,'default/openharmony/toolchains/lib/hap-sign-tool'),VERIFIER);
   write(path.join(project,'tools/build.cjs'),BUILD);
   const original=Buffer.from('// preserve exported bytes\r\n'+JSON.stringify({app:{signingConfigs:[],products:[{name:'default',runtimeOS:'OpenHarmony'}]},modules:[{name:'entry',srcPath:'./entry'}]},null,3)+'\r\n');
   write(path.join(project,'build-profile.json5'),original);
@@ -145,13 +179,13 @@ function fixture(t, initial = {}) {
   const login=path.join(home,'.config/deveco-cli');
   write(path.join(login,'token.enc'),'original-token');write(path.join(login,'token.dek'),'original-dek');
   for(const n of [1,2,3])write(path.join(home,`.local/share/deveco-cli/keys/kek-v${n}.bin`),'original-kek-'+n);
-  write(path.join(home,'.harmony/hdckey'),'original-hdc-private');write(path.join(home,'.harmony/hdckey.pub'),'original-hdc-public');
+  write(path.join(home,'.harmony/hdckey'),'original-hdc-private');write(path.join(home,'.harmony/hdckey.key'),'original-hdc-component');write(path.join(home,'.harmony/hdckey.pub'),'original-hdc-public');
   const identity=path.join(home,'source project/project.godot'),preset=path.join(path.dirname(identity),'export_presets.cfg');
   const originalPreset='[preset.0.options]\nbuild/sign=false\nsign/key_alias="manual-unchanged"\n';
   write(identity,'[application]\nconfig/name="Original source"\n');write(preset,originalPreset);
   const request={schemaVersion:1,projectDir:project,projectIdentity:identity,nodePath:process.execPath,
     commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999'};
+  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_HDC_PATH:hdc};
   function run(changes={}, envChanges={}){
     const child=spawnSync(process.execPath,[HELPER,'--request-json',JSON.stringify({...request,...changes})],{encoding:'utf8',env:{...env,...envChanges},timeout:20000,maxBuffer:1024*1024});
     assert.equal(child.status,0,child.stderr+'\n'+child.stdout);assert.equal(child.stderr,'');
@@ -172,7 +206,9 @@ function fixture(t, initial = {}) {
     assert.deepEqual(fs.readFileSync(path.join(project,'build-profile.json5')),original,'public build profile changed');
     assert.equal(fs.readFileSync(preset,'utf8'),originalPreset,'source export preset changed');
     assert.equal(fs.readFileSync(path.join(login,'token.enc'),'utf8'),'original-token');
-    assert.equal(fs.readFileSync(path.join(home,'.harmony/hdckey'),'utf8'),'original-hdc-private');
+    assert.equal(fs.readFileSync(path.join(login,'token.dek'),'utf8'),'original-dek');
+    for(const n of [1,2,3])assert.equal(fs.readFileSync(path.join(home,`.local/share/deveco-cli/keys/kek-v${n}.bin`),'utf8'),'original-kek-'+n);
+    for(const [name,value] of [['hdckey','original-hdc-private'],['hdckey.key','original-hdc-component'],['hdckey.pub','original-hdc-public']])assert.equal(fs.readFileSync(path.join(home,'.harmony',name),'utf8'),value);
   }
   return {root,home,config,tmp,project,clt,sdk,cli,hdc,login,request,env,run,events,update,cache,profileEdit,assertClean,original,module};
 }
@@ -195,7 +231,7 @@ test('first request without a token generates once automatically; matching cache
   assert.ok(generate.home.startsWith(f.config+path.sep));assert.equal(generate.clt,f.clt);assert.equal(generate.noColor,'1');
   const held=f.events().find(event=>event.kind==='generate').locks;
   assert.equal(held.length,3);assert.ok(held.includes('cli'));assert.ok(held.some(name=>name.startsWith('project-')));assert.ok(held.some(name=>name.startsWith('team-')));
-  const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
+  const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,f.home);assert.notEqual(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
   const build=f.events().find(e=>e.kind==='build');assert.equal(build.requestMode,0o600);assert.equal(build.parentMode,0o700);assert.equal(build.request.hvigorUserHome,path.join(f.home,'.hvigor'));
   for(const key of ['certificate','profile','storeFile'])assert.ok(build.request.signing[key].startsWith(f.cache()+path.sep));
   assert.ok(!JSON.stringify(build.args).includes(build.request.signing.keyPasswordEncrypted));assert.ok(!fs.existsSync(build.requestFile));
@@ -210,6 +246,41 @@ test('inherited DevEco Code authentication cannot redirect the private CLI login
   assert.ok(events.length>=2);
   for(const event of events){assert.equal(event.authSource,undefined);assert.equal(event.codeAuthDir,undefined);assert.ok(event.home.startsWith(f.config+path.sep));}
   f.assertClean();
+});
+test('CLI HDC children share host HOME through CJS, ESM and promisified subprocess APIs only for known tools',t=>{
+  const f=fixture(t,{cliHdcProbe:true});assert.equal(f.run().status,'ok');
+  const events=f.events(),home=path.join(f.config,'godot-openharmony-signing/cli-home');
+  assert.deepEqual(events.filter(e=>e.kind==='cli-hdc-probe').map(e=>e.mode),['spawn','spawnSync','execFile','execFileSync','promisify','esm']);
+  const hdcs=events.filter(e=>e.kind==='hdc');assert.equal(hdcs.length,9);
+  for(const event of hdcs){assert.equal(event.home,f.home);assert.equal(event.server,f.env.HDC_SERVER);assert.equal(event.port,f.env.OHOS_HDC_SERVER_PORT);}
+  for(const event of events.filter(e=>e.kind==='cli')){
+    assert.equal(event.home,home);assert.equal(event.preloadMode,0o600);assert.equal(event.preloadParentMode,0o700);
+    assert.equal(event.execArgv[0],'--import');assert.equal(event.execArgv.length,2);
+    assert.ok(require('node:url').fileURLToPath(event.execArgv[1]).startsWith(f.tmp+path.sep));
+    assert.equal(fs.existsSync(require('node:url').fileURLToPath(event.execArgv[1])),false,'preload must be cleaned');
+  }
+  const other=events.find(e=>e.kind==='other-child');assert.equal(other.home,home);assert.equal(other.server,'cli-override-must-not-replace-host');
+  assert.equal(fs.readFileSync(path.join(home,'.harmony/hdckey.key'),'utf8'),'original-hdc-component');
+  f.assertClean();
+});
+test('official SDK fixed HDC path is allowed while the extra HDC key component remains optional',t=>{
+  const f=fixture(t,{cliHdcProbe:true,cliUseSDK:true}),key=path.join(f.home,'.harmony/hdckey.key');
+  fs.unlinkSync(key);
+  assert.equal(f.run().status,'ok');
+  const hdcs=f.events().filter(e=>e.kind==='hdc');
+  assert.equal(hdcs.filter(e=>e.file===path.join(f.sdk,'default/openharmony/toolchains/hdc')).length,7);
+  assert.equal(hdcs.filter(e=>e.file===f.hdc).length,2);
+  assert.ok(hdcs.every(e=>e.home===f.home));assert.equal(fs.existsSync(key),false);
+  assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/cli-home/.harmony/hdckey.key')),false);
+  write(key,'original-hdc-component');f.assertClean();
+});
+test('trusted HDC preload does not revive inherited Node injection options',async t=>{
+  const f=fixture(t,{cliHdcProbe:true}),marker=path.join(f.home,'untrusted-import-ran'),bad=path.join(f.home,'untrusted.cjs');
+  write(bad,"require('node:fs').writeFileSync("+JSON.stringify(marker)+",'bad');");
+  const result=await api.run(f.request,{...f.env,NODE_OPTIONS:'--import '+require('node:url').pathToFileURL(bad).href,NODE_PATH:f.home,NODE_OPTS:'untrusted'});
+  assert.equal(result.status,'ok');assert.equal(fs.existsSync(marker),false);
+  for(const event of f.events().filter(e=>e.kind==='cli')){assert.equal(event.nodeOptions,undefined);assert.equal(event.nodePath,undefined);assert.equal(event.nodeOpts,undefined);assert.equal(event.home,path.join(f.config,'godot-openharmony-signing/cli-home'));}
+  assert.ok(f.events().filter(e=>e.kind==='hdc').every(e=>e.home===f.home));f.assertClean();
 });
 test('CER bundles match the developer certificate without assuming the first entry',t=>{
   // A different parseable public certificate models an unrelated chain entry.

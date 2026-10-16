@@ -7,10 +7,58 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 const KEYS = ['schemaVersion', 'projectDir', 'projectIdentity', 'nodePath', 'commandLineToolsRoot', 'sdkRoot',
   'hdcPath', 'target', 'format', 'buildMode', 'cliPath', 'teamId', 'loginDataDir'];
 const MATERIAL_KEYS = ['certpath', 'profile', 'storeFile', 'keyAlias', 'signAlg', 'keyPassword', 'storePassword'];
 const LIMIT = 4 * 1024 * 1024;
+// A fixed preload, never project-supplied code or NODE_OPTIONS. Only the two
+// explicitly selected HDC executables may use the host's shared HDC namespace.
+const HDC_HOME_PRELOAD = String.raw`
+import fs from 'node:fs';
+import path from 'node:path';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { promisify } from 'node:util';
+const config = JSON.parse(fs.readFileSync(new URL('./hdc-host.json', import.meta.url), 'utf8'));
+const allowed = new Set(config.hdcPaths);
+function isHDC(file) {
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return false;
+  try { return allowed.has(fs.realpathSync(file)); } catch { return false; }
+}
+function hostOptions(rest) {
+  const args = rest.slice();
+  const index = args.length && (Array.isArray(args[0]) || args[0] == null) ? 1 : 0;
+  const previous = args[index];
+  if (previous != null && typeof previous !== 'function' && (typeof previous !== 'object' || Array.isArray(previous))) return args;
+  const options = previous && typeof previous === 'object' ? previous : {};
+  const env = { ...(options.env || process.env) };
+  for (const key of ['HOME', 'HDC_SERVER', 'OHOS_HDC_SERVER_PORT']) {
+    if (Object.hasOwn(config.hostEnvironment, key)) env[key] = config.hostEnvironment[key];
+    else delete env[key];
+  }
+  const replacement = { ...options, env };
+  if (typeof previous === 'function') args.splice(index, 0, replacement);
+  else args[index] = replacement;
+  return args;
+}
+for (const name of ['spawn', 'spawnSync', 'execFile', 'execFileSync']) {
+  const original = childProcess[name];
+  const wrapped = function(file, ...args) {
+    return Reflect.apply(original, this, [file, ...(isHDC(file) ? hostOptions(args) : args)]);
+  };
+  // execFile's custom promisifier returns {stdout, stderr} and a child handle.
+  // Passing adjusted options to it preserves that contract and the HOME fix.
+  const custom = original[promisify.custom];
+  if (typeof custom === 'function') Object.defineProperty(wrapped, promisify.custom, {
+    value: function(file, ...args) {
+      return Reflect.apply(custom, this, [file, ...(isHDC(file) ? hostOptions(args) : args)]);
+    }, configurable: true,
+  });
+  childProcess[name] = wrapped;
+}
+syncBuiltinESMExports();
+`;
 class SigningError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
@@ -232,7 +280,7 @@ function syncLogin(ctx) {
   const files = [
     ...['token.enc', 'token.dek'].map(name => [path.join(login, name), path.join(ctx.cliData, name)]),
     ...[1, 2, 3].map(n => [path.join(ctx.originalHome, `.local/share/deveco-cli/keys/kek-v${n}.bin`), path.join(ctx.cliHome, `.local/share/deveco-cli/keys/kek-v${n}.bin`)]),
-    ...['hdckey', 'hdckey.pub'].map(name => [path.join(ctx.originalHome, '.harmony', name), path.join(ctx.cliHome, '.harmony', name)]),
+    ...['hdckey', 'hdckey.key', 'hdckey.pub'].map(name => [path.join(ctx.originalHome, '.harmony', name), path.join(ctx.cliHome, '.harmony', name)]),
   ];
   const metadata = { source: login, originalHome: ctx.originalHome, files: files.map(([source]) => sourceFingerprint(source)) };
   const metaPath = path.join(ctx.root, 'login-source.json');
@@ -252,10 +300,30 @@ function cliEnvironment(ctx) {
     TMPDIR: ctx.work, TMP: ctx.work, TEMP: ctx.work, COMMAND_LINE_TOOL_PATH: ctx.request.commandLineToolsRoot,
     PATH: path.dirname(ctx.request.nodePath) + path.delimiter + (ctx.env.PATH || '') };
 }
+function cliHDCPreload(ctx) {
+  if (ctx.hdcPreload) return ctx.hdcPreload;
+  const hdcPaths = [];
+  for (const filename of [ctx.request.hdcPath, path.join(ctx.request.commandLineToolsRoot, 'sdk/default/openharmony/toolchains/hdc')]) {
+    try {
+      const resolved = fs.realpathSync(filename);
+      if (fs.statSync(resolved).isFile()) hdcPaths.push(resolved);
+    } catch { /* An absent alternate SDK HDC is not a selected executable. */ }
+  }
+  const hostEnvironment = { HOME: ctx.originalHome };
+  for (const key of ['HDC_SERVER', 'OHOS_HDC_SERVER_PORT']) {
+    if (Object.hasOwn(ctx.env, key)) hostEnvironment[key] = ctx.env[key];
+  }
+  writeJSON(path.join(ctx.work, 'hdc-host.json'), { hdcPaths: [...new Set(hdcPaths)], hostEnvironment });
+  const filename = path.join(ctx.work, 'hdc-host.mjs');
+  fs.writeFileSync(filename, HDC_HOME_PRELOAD, { flag: 'wx', mode: 0o600 });
+  privateMode(filename, 0o600, false);
+  ctx.hdcPreload = pathToFileURL(filename).href;
+  return ctx.hdcPreload;
+}
 async function cli(ctx, args) {
   // Public JS entrypoints and devecocli symlinks are interpreted by selected Node.
   try {
-    return await execute(ctx.request.nodePath, [ctx.cli, ...args], { cwd: ctx.minimal || ctx.request.projectDir,
+    return await execute(ctx.request.nodePath, ['--import', cliHDCPreload(ctx), ctx.cli, ...args], { cwd: ctx.minimal || ctx.request.projectDir,
       env: cliEnvironment(ctx), signal: ctx.signal, timeout: args[0] === 'signature' ? 120000 : 20000 });
   } finally { hardenTree(ctx.cliHome); }
 }
@@ -290,10 +358,9 @@ async function selectTeam(ctx) {
   return teams[0];
 }
 async function deviceUDID(ctx) {
-  let result;
-  try {
-    result = await execute(ctx.request.hdcPath, ['-t', ctx.request.target, 'shell', 'bm', 'get', '-u'], { env: cliEnvironment(ctx), signal: ctx.signal });
-  } finally { hardenTree(ctx.cliHome); }
+  // HDC's shared service identity depends on the host HOME, even when keys have
+  // been copied. Never run this host tool in the CLI's private HOME.
+  const result = await execute(ctx.request.hdcPath, ['-t', ctx.request.target, 'shell', 'bm', 'get', '-u'], { env: ctx.env, signal: ctx.signal });
   if (/unauthori[sz]ed|not authori[sz]ed|authorize|authentication fail/i.test(result.stdout + result.stderr)) {
     fail('DEVICE_UNAUTHORIZED', 'Authorize the selected HDC device and retry.');
   }
