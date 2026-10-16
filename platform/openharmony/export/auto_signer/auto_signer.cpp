@@ -445,19 +445,28 @@ void validateRequest(const JSON &request) {
 	directory(field(request, "commandLineToolsRoot"), "CLT_MISSING");
 	directory(real(field(request, "sdkRoot"), "CLT_MISSING"), "CLT_MISSING");
 }
-Env nodeEnvironment(const JSON &request, Env env) {
-	const std::string libraries = join(field(request, "commandLineToolsRoot"), "sdk/default/openharmony/native/llvm/lib/aarch64-linux-ohos");
-	// The broker's App namespace cannot resolve the selected CLT Node's libc++
-	// dependency. This change is confined to this Node child and its descendants.
+Env nodeEnvironment(const JSON &request, Env env, const std::string &workDir) {
+	const std::string source = join(field(request, "commandLineToolsRoot"), "sdk/default/openharmony/native/llvm/lib/aarch64-linux-ohos/libc++_shared.so");
 	struct stat st{};
-	if (::stat(join(libraries, "libc++_shared.so").c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+	if (::stat(source.c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
+		// Node needs only this SONAME. Exposing the compiler library directory also
+		// shadows the system libc++.so used by HDC and other SDK descendants.
+		const std::string target = real(source, "CLT_MISSING");
+		const std::string runtime = privateDir(join(workDir, "node-runtime"));
+		const std::string link = join(runtime, "libc++_shared.so");
+		if (!exists(link)) need(::symlink(target.c_str(), link.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Node runtime.");
+		std::vector<char> linked(target.size() + 1);
+		const ssize_t length = ::readlink(link.c_str(), linked.data(), linked.size());
+		need(::lstat(link.c_str(), &st) == 0 && S_ISLNK(st.st_mode) && st.st_uid == ::getuid() && length >= 0 && size_t(length) == target.size() &&
+			std::string(linked.data(), size_t(length)) == target && entries(runtime) == std::vector<std::string>{"libc++_shared.so"},
+			"PRIVATE_STORAGE_REQUIRED", "The private Node runtime must contain only the selected Command Line Tools runtime link.");
 		const std::string old = envValue(env, "LD_LIBRARY_PATH");
-		env["LD_LIBRARY_PATH"] = libraries + (old.empty() ? "" : ":" + old);
+		env["LD_LIBRARY_PATH"] = runtime + (old.empty() ? "" : ":" + old);
 	}
 	return env;
 }
-void nodeCheck(const JSON &request, const Env &env) {
-	const Result result = execute(field(request, "nodePath"), {"--version"}, nodeEnvironment(request, env));
+void nodeCheck(const JSON &request, const Env &env, const std::string &workDir) {
+	const Result result = execute(field(request, "nodePath"), {"--version"}, nodeEnvironment(request, env, workDir));
 	need(!result.missing, "NODE_MISSING", "Select an installed Node.js 22 or newer in the editor toolchain settings.");
 	std::smatch match;
 	need(result.ok && result.out.size() <= 128 && std::regex_match(result.out, match, std::regex("v([0-9]+)\\.[0-9]+\\.[0-9]+[\\r\\n\\t ]*")), "NODE_MISSING", "The selected Node.js executable cannot report its version.");
@@ -708,7 +717,7 @@ Env cliEnvironment(Context &ctx) {
 Result cli(Context &ctx, const std::vector<std::string> &args) {
 	std::vector<std::string> argv{ctx.cli}; argv.insert(argv.end(), args.begin(), args.end());
 	try {
-		Result result = execute(field(ctx.request, "nodePath"), argv, nodeEnvironment(ctx.request, cliEnvironment(ctx)), ctx.minimal.empty() ? field(ctx.request, "projectDir") : ctx.minimal, !args.empty() && args[0] == "signature" ? 120000 : 20000);
+		Result result = execute(field(ctx.request, "nodePath"), argv, nodeEnvironment(ctx.request, cliEnvironment(ctx), ctx.work), ctx.minimal.empty() ? field(ctx.request, "projectDir") : ctx.minimal, !args.empty() && args[0] == "signature" ? 120000 : 20000);
 		hardenTree(ctx.cliHome);
 		return result;
 	} catch (...) { hardenTree(ctx.cliHome); throw; }
@@ -1019,7 +1028,7 @@ JSON build(Context &ctx, const JSON &material) {
 	request["signing"] = signing;
 	const std::string filename = join(workDir, "request.json"); writeJSON(filename, request);
 	Result result; std::exception_ptr executionError;
-	Env buildEnv = nodeEnvironment(ctx.request, ctx.env);
+	Env buildEnv = nodeEnvironment(ctx.request, ctx.env, ctx.work);
 	buildEnv["COMMAND_LINE_TOOL_PATH"] = field(ctx.request, "commandLineToolsRoot");
 	try { result = execute(field(ctx.request, "nodePath"), {runner, "--request", filename}, buildEnv, project, 10 * 60 * 1000); }
 	catch (...) { executionError = std::current_exception(); }
@@ -1041,7 +1050,6 @@ JSON build(Context &ctx, const JSON &material) {
 JSON perform(const JSON &request, const Env &originalEnv) {
 	validateRequest(request);
 	Context ctx; ctx.request = request; ctx.originalEnv = originalEnv; ctx.env = cleanEnvironment(originalEnv);
-	nodeCheck(request, ctx.env);
 	ctx.originalHome = envValue(originalEnv, "HOME");
 	need(absolute(ctx.originalHome), "PRIVATE_STORAGE_REQUIRED", "An absolute original HOME is required to copy the existing CLI login.");
 	ctx.originalHome = normalized(ctx.originalHome);
@@ -1055,6 +1063,7 @@ JSON perform(const JSON &request, const Env &originalEnv) {
 	ctx.root = privateDir(signingRoot); privateDir(join(ctx.root, "locks"));
 	ctx.cliHome = privateDir(join(ctx.root, "cli-home")); ctx.cliData = privateDir(join(ctx.cliHome, ".config/deveco-cli"));
 	Temporary temporary(tempHome); ctx.work = temporary.path; ctx.temporary = &temporary;
+	nodeCheck(request, ctx.env, ctx.work);
 	ctx.cli = discoverCLI(request, ctx.env); ctx.verifier = discoverVerifier(request); ctx.metadata = projectMetadata(request);
 	{
 		Lock cliLock(join(ctx.root, "locks/cli"));
