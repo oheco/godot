@@ -250,7 +250,7 @@ fi
 # a -signed filename only to exercise result selection. It performs no signing.
 FAKE_HVIGOR = r'''const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const args=process.argv.slice(2),root=process.cwd();
-fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({args,cwd:root,synthetic:true})+'\n');
+fs.appendFileSync(@@BUILD_LOG@@,JSON.stringify({args,cwd:root,synthetic:true,editorDirect:process.env.GODOT_HDC_PROBE_DIRECT==='1'})+'\n');
 if(args.length===1&&args[0]==='--adapter-info'){
   console.log(JSON.stringify({adapter:'6.26.4-ohos.1',host:'openharmony',arch:'arm64',upstream:'6.26.4',pinnedInterfacesUnmodified:true}));
 }else{
@@ -520,6 +520,8 @@ build/sign=false
                         or 'assembleHap' not in build_invocations[1]['args']
                         or any(Path(item['cwd']) != installed_path.with_suffix('') for item in build_invocations)):
                     raise AssertionError('Actual Run did not invoke the shared build runner and fake Hvigor in its generated project')
+                if any(item.get('editorDirect') is not True for item in build_invocations):
+                    raise AssertionError('Ordinary build tools must execute directly in the Editor environment while HDC uses the broker')
                 if not all(native_run.get(key) is True for key in ('hap_removed_after_run',
                         'generated_project_removed_after_run', 'run_directory_removed_after_run')):
                     raise AssertionError('Native Run did not clean its owned HAP/project/run directory after fake install rejection')

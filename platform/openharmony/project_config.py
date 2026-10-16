@@ -299,7 +299,7 @@ def stage_template(destination):
         if source.is_symlink():
             raise ValueError(f'Template symlinks are not supported: {relative}')
         name = relative.as_posix()
-        if not source.is_file() or name in ('.gitignore', 'local.properties'):
+        if not source.is_file() or name in ('.gitignore', 'local.properties', 'tools/auto-sign.cjs', 'tools/hdc-broker.cjs'):
             continue
         if name.startswith(('entry/libs/', 'entry/src/main/cpp/libs/', 'entry/src/main/cpp/include/')):
             continue

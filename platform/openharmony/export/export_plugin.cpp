@@ -706,23 +706,70 @@ Error EditorExportPlatformOpenHarmony::build_auto_signed(bool p_debug, const Str
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("Automatic signing requires external Node.js 22 or newer. Select an official Command Line Tools directory with Node.js in Editor Settings."));
 		return ERR_UNCONFIGURED;
 	}
-	const String runner = p_project.path_join("tools/auto-sign.cjs");
+	const String runner = p_project.path_join("tools/auto-sign");
 	if (!FileAccess::exists(runner)) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("The game template has no automatic signing helper. Rebuild or install the updated OpenHarmony game templates."));
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("The game template has no native automatic signing backend. Rebuild or install the updated OpenHarmony game templates."));
 		return ERR_FILE_NOT_FOUND;
+	}
+	// ZIP extraction creates regular data files. Restore executable permissions
+	// before launching the already signed native backend (not a Node script).
+	if (FileAccess::set_unix_permissions(runner, 0755) != OK) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("Could not make the native automatic signing backend executable."));
+		return ERR_FILE_NO_PERMISSION;
 	}
 	Dictionary request = p_auto_signing.duplicate();
 	request["projectDir"] = p_project;
-	// Only public context crosses argv. The helper creates secret requests and
-	// stores signing/login material in the executing host's private directories.
-	List<String> args{ runner, "--request-json", JSON::stringify(request) };
+	// The native backend owns CLI, cache validation and build in one namespace.
+	// Only public request metadata and the public HAP receipt cross the broker.
+	const String request_json = JSON::stringify(request);
+	List<String> args{ "--request-json", request_json };
 	String output;
 	int exit_code = -1;
-	Error err = execute_tool(node, args, output, &exit_code, false, 600000);
+	Error err = OK;
+#ifdef OPENHARMONY_ENABLED
+	if (use_broker()) {
+		const CharString command = runner.utf8();
+		const CharString encoded_request = request_json.utf8();
+		// Only the signing operation needs the Editor's explicit network proxy.
+		// Preserve the terminal's HOME/XDG/cwd/loader and HDC service identity.
+		std::vector<std::pair<std::string, std::string>> environment;
+		bool has_proxy = false;
+		for (const char *name : { "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy" }) {
+			if (OS::get_singleton()->has_environment(name)) {
+				const String value = OS::get_singleton()->get_environment(name);
+				environment.emplace_back(name, value.utf8().get_data());
+				if (String(name).to_lower() != "no_proxy" && !value.is_empty()) {
+					has_proxy = true;
+				}
+			}
+		}
+		const String proxy_host = String(EDITOR_GET("network/http_proxy/host")).strip_edges();
+		if (!has_proxy && !proxy_host.is_empty()) {
+			const int proxy_port = EDITOR_GET("network/http_proxy/port");
+			const bool loopback = proxy_host == "127.0.0.1" || proxy_host == "localhost" || proxy_host == "::1" || proxy_host == "[::1]";
+			const String host = proxy_host.contains(":") && !proxy_host.begins_with("[") ? "[" + proxy_host + "]" : proxy_host;
+			// CLI 1.3.5's Axios proxy adapter mishandles empty credentials. An
+			// unauthenticated loopback proxy accepts this process-only placeholder.
+			const String proxy = "http://" + String(loopback ? "anonymous:anonymous@" : "") + host + ":" + itos(proxy_port);
+			environment.emplace_back("HTTP_PROXY", proxy.utf8().get_data());
+			environment.emplace_back("HTTPS_PROXY", proxy.utf8().get_data());
+			environment.emplace_back("http_proxy", proxy.utf8().get_data());
+			environment.emplace_back("https_proxy", proxy.utf8().get_data());
+		}
+		const auto result = OpenHarmonyBroker::execute(get_broker_endpoint().utf8().get_data(), std::string(command.get_data(), command.length()),
+				{ "--request-json", std::string(encoded_request.get_data(), encoded_request.length()) }, false, 900000, environment);
+		output = String::utf8(result.output.data(), result.output.size());
+		exit_code = result.exit_code;
+		err = result.error == 0 ? OK : ERR_CANT_CONNECT;
+	} else
+#endif
+	{
+		err = execute_tool(runner, args, output, &exit_code, false, 900000);
+	}
 	Ref<JSON> parser;
 	parser.instantiate();
 	if (err != OK || output.length() > 65536 || parser->parse(output) != OK || parser->get_data().get_type() != Variant::DICTIONARY) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("The automatic signing helper could not return a valid result. Check the external tools and broker configuration."));
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), vformat(TTR("The automatic signing helper could not return a valid result (tool error %d, exit %d). Check the external tools and broker configuration."), int(err), exit_code));
 		return err == OK ? ERR_INVALID_DATA : err;
 	}
 	const Dictionary result = parser->get_data();
@@ -789,11 +836,21 @@ String EditorExportPlatformOpenHarmony::get_broker_endpoint() const {
 	return home.path_join(".oheco/broker/endpoint");
 }
 
-Error EditorExportPlatformOpenHarmony::execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode, bool p_read_stderr, int p_timeout_ms, const String *p_broker_endpoint) {
+Error EditorExportPlatformOpenHarmony::execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode, bool p_read_stderr, int p_timeout_ms) {
+	// General external tools execute directly in the Editor's App namespace.
+	// HDC and the dedicated native signing operation select their broker paths
+	// explicitly at their own call sites; this function never chooses a proxy.
 	r_output = String();
 	if (r_exitcode) {
 		*r_exitcode = -1;
 	}
+	return OS::get_singleton()->execute(p_command, p_arguments, &r_output, r_exitcode, p_read_stderr);
+}
+
+Error EditorExportPlatformOpenHarmony::execute_hdc(const String &p_hdc, const List<String> &p_arguments, String &r_output, const String *p_broker_endpoint, bool p_read_stderr, int p_timeout_ms) {
+	int exit_code = -1;
+	Error err = OK;
+	r_output = String();
 #ifdef OPENHARMONY_ENABLED
 	const String endpoint = p_broker_endpoint ? *p_broker_endpoint : (use_broker() ? get_broker_endpoint() : String());
 	if (!endpoint.is_empty()) {
@@ -802,25 +859,19 @@ Error EditorExportPlatformOpenHarmony::execute_tool(const String &p_command, con
 			const CharString encoded = argument.utf8();
 			arguments.emplace_back(encoded.get_data(), encoded.length());
 		}
-		const CharString command = p_command.utf8();
+		const CharString command = p_hdc.utf8();
 		const auto result = OpenHarmonyBroker::execute(endpoint.utf8().get_data(), std::string(command.get_data(), command.length()), arguments, p_read_stderr, p_timeout_ms);
 		r_output = String::utf8(result.output.data(), result.output.size());
-		if (r_exitcode) {
-			*r_exitcode = result.exit_code;
-		}
+		exit_code = result.exit_code;
 		if (result.error != 0) {
 			r_output += "\noheco broker: " + String::utf8(result.diagnostic.c_str());
-			return ERR_CANT_CONNECT;
+			err = ERR_CANT_CONNECT;
 		}
-		return OK;
-	}
+	} else
 #endif
-	return OS::get_singleton()->execute(p_command, p_arguments, &r_output, r_exitcode, p_read_stderr);
-}
-
-Error EditorExportPlatformOpenHarmony::execute_hdc(const String &p_hdc, const List<String> &p_arguments, String &r_output, const String *p_broker_endpoint) {
-	int exit_code = -1;
-	Error err = execute_tool(p_hdc, p_arguments, r_output, &exit_code, true, 120000, p_broker_endpoint);
+	{
+		err = execute_tool(p_hdc, p_arguments, r_output, &exit_code, p_read_stderr, p_timeout_ms);
+	}
 	const String lower = r_output.to_lower();
 	if (err == OK && (exit_code != 0 || lower.contains("[fail]") || lower.contains("[error]") || lower.contains("error:") || lower.contains("failed to ") || lower.contains("install failed") || lower.contains("ability failed") || lower.contains("process failed"))) {
 		err = ERR_CANT_CONNECT;
@@ -1265,9 +1316,8 @@ void EditorExportPlatformOpenHarmony::_check_for_changes_poll_thread(void *p_ud)
 		if (ea->has_runnable_preset.is_set() && FileAccess::exists(hdc) && EditorNode::get_singleton()->is_editor_ready()) {
 			String devices_output;
 			List<String> args{ "list", "targets" };
-			int ec = -1;
-			Error error = ea->execute_tool(hdc, args, devices_output, &ec, false, 10000);
-			if (error != OK || ec != 0) {
+			Error error = ea->execute_hdc(hdc, args, devices_output, nullptr, false, 10000);
+			if (error != OK) {
 				devices_output = "";
 			}
 

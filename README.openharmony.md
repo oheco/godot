@@ -347,7 +347,7 @@ continue to use the preset's Build > Sign and sign/* fields. A complete manual
 configuration whose files disappeared remains a manual error when Always Auto
 Sign is off; the Editor does not silently change that configured identity.
 
-The helper queries the selected HDC target's actual UDID and checks the verified
+The native C++ signing backend queries the selected HDC target's actual UDID and checks the verified
 debug profile's bundle, device list, ACL permissions, validity and matching
 certificate. An HDC serial or network address is not a signing UDID. Matching
 cached materials are reused. Missing or mismatched materials are regenerated
@@ -356,14 +356,18 @@ cloud certificate when regenerating for a new device, changed permissions or exp
 is reported, and local previous materials are retained. Existing applications are
 never automatically uninstalled to bypass a signature mismatch.
 
-Signing materials and the helper's working copy of the existing CLI login stay
+Signing materials and the backend's working copy of the existing CLI login stay
 in permission-checked private storage in the executing host's `XDG_CONFIG_HOME`.
-The original CLI login and export preset are preserved. On HarmonyOS, the broker
-owns this host namespace; its `XDG_CONFIG_HOME` and `TMPDIR` must support real
-0700/0600 permissions. Missing tools, logged-out or expired sessions, ambiguous
-teams, unavailable devices, invalid profiles and build failures produce actionable
-errors. See the [helper contract](<misc/dist/openharmony_template/tools/AUTO_SIGNING.md>)
-for automatic generation and cache details.
+The original CLI login and export preset are preserved. With the broker enabled,
+only the explicit native signing operation owns this terminal namespace; its
+`XDG_CONFIG_HOME` and `TMPDIR` must support real 0700/0600 permissions. Missing tools,
+logged-out or expired sessions, ambiguous teams, unavailable devices, invalid
+profiles and build failures produce actionable errors. See the [backend contract](<misc/dist/openharmony_template/tools/AUTO_SIGNING.md>)
+and [native implementation](<platform/openharmony/export/auto_signer/README.md>)
+for cache, rollback and child-process details. There is no automatic-signing JS
+entrypoint, Node preload or JavaScript HDC broker. SCons builds and signs the
+standalone `tools/auto-sign` from existing vendored JsonCpp/mbedTLS sources; its
+C++ runtime is static so the terminal does not need the Editor App's libraries.
 
 Build both `module_mono_enabled=yes` templates with `generate_bundle=yes`.
 The Editor App does not bundle or extract export templates. Download
@@ -389,11 +393,17 @@ and offline feed; it remains separate from these optional game export templates.
   enabled by default. Start `oheco-broker shell serve` in the terminal (`oo install
   oheco-broker` if needed). The editor reads `~/.oheco/broker/endpoint`, independently
   of the SDK/tool root, and connects to its numeric loopback endpoint;
-  there is no port setting. Device discovery, HDC installation, ability start/stop,
-  debugger/file-server port forwarding, forwarding cleanup and the automatic
-  debug-signing/build helper use that service.
+  there is no port setting. Only explicit HDC operations (discovery, deployment,
+  ability start/stop and debugger/file-server forwarding/cleanup) and the native
+  automatic-signing operation use that service. The signing operation needs the
+  terminal because official DevEco CLI queries HDC internally; its private
+  credential validation and signing build remain in that same filesystem namespace.
+  Ordinary Node.js/build tools, manual exports and unrelated external programs
+  execute directly. The general tool executor never applies the broker implicitly.
   Commands keep their executable and argument arrays; they are never shell strings.
   Broker failures are reported without retrying or falling back to direct HDC.
+  Only explicit network proxy variables, or the Editor's HTTP proxy setting, are
+  forwarded to signing; terminal HOME/XDG/cwd/loader and HDC identity are retained.
 - The native HDC socket at `/data/hdc/hdc_debug/hdc_server` is absent from the
   inspected editor application's sandbox: direct `hdc -v` works, but `hdc list
   targets` retries `ENOENT` and returns exit code 0 with empty output. The broker
@@ -406,8 +416,9 @@ and offline feed; it remains separate from these optional game export templates.
   the editor and the terminal running the broker. The owned run directory is
   removed after deployment.
   Ordinary manual exports and local UIAbility F5/F6/F8 execution retain their
-  existing toolchain. Turning Use Broker off invokes HDC and the automatic signing
-  helper directly in the Editor's namespace.
+  existing toolchain. Turning Use Broker off invokes HDC and the native automatic
+  signing backend directly in the Editor's namespace. Native signing is currently
+  packaged for OpenHarmony arm64 hosts; other hosts retain manual exports.
 - Debug templates support GDScript breakpoints, stack/locals, step/continue and
   Remote SceneTree. Release templates intentionally reject remote debugging.
 - C# ARM64 games use .NET 10 NativeAOT Shared for `openharmony-arm64` in both

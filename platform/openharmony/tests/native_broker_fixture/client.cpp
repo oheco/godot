@@ -27,12 +27,27 @@ int main(int argc, char **argv) {
 	} else if (mode == "bad-utf8") {
 		args.emplace_back("\xed\xa0\x80", 3);
 	}
+	std::vector<std::pair<std::string, std::string>> environment;
+	if (mode == "env" || mode == "env-startup-keepalive") {
+		environment.emplace_back("HTTPS_PROXY", "http://proxy.invalid:10808/with space/中文");
+		environment.emplace_back("NO_PROXY", "localhost,127.0.0.1");
+	} else if (mode == "nul-env-key") {
+		environment.emplace_back(std::string("A\0B", 3), "value");
+	} else if (mode == "nul-env-value") {
+		environment.emplace_back("HTTPS_PROXY", std::string("A\0B", 3));
+	} else if (mode == "bad-utf8-env") {
+		environment.emplace_back("HTTPS_PROXY", std::string("\xed\xa0\x80", 3));
+	} else if (mode == "empty-env-key") {
+		environment.emplace_back("", "value");
+	} else if (mode == "equals-env-key") {
+		environment.emplace_back("A=B", "value");
+	}
 	const auto begin = std::chrono::steady_clock::now();
-	const auto result = OpenHarmonyBroker::execute(endpoint, command, args, read_stderr, timeout);
+	const auto result = OpenHarmonyBroker::execute(endpoint, command, args, read_stderr, timeout, environment);
 	const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - begin).count();
 	// Keep the host alive so peer EOF must come from late SDK release, rather
 	// than process teardown hiding a dangling startup handle.
-	if (mode == "startup-keepalive") {
+	if (mode == "startup-keepalive" || mode == "env-startup-keepalive") {
 		std::this_thread::sleep_for(std::chrono::milliseconds(600));
 	}
 	std::cout << result.error << '\n' << result.exit_code << '\n' << elapsed << '\n'

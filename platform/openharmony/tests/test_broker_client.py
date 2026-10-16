@@ -79,7 +79,7 @@ def decode_start(payload):
 
 
 class Fixture:
-    def __init__(self, directory, name, handler, expected, handshake=None, ack=True):
+    def __init__(self, directory, name, handler, expected, handshake=None, ack=True, expected_env=()):
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen(4)
@@ -104,7 +104,7 @@ class Fixture:
                         kind, payload = receive(connection)
                         assert kind == 1
                         start = decode_start(payload)
-                        assert start == {"command": expected[0], "cwd": "", "args": expected[1], "env": [], "stdin": 0}, start
+                        assert start == {"command": expected[0], "cwd": "", "args": expected[1], "env": list(expected_env), "stdin": 0}, start
                         if ack:
                             connection.sendall(frame(2))
                         handler(connection, self)
@@ -224,9 +224,9 @@ def main():
                         "output": pieces[5][:size], "diagnostic": pieces[5][size:].decode("utf-8", "strict")}
 
             def check(name, handler, expected_error=0, code=0, expected_output=None, mode="call", timeout=10000,
-                      read_stderr=True, argv=None, handshake=None, ack=True, max_elapsed=None):
+                      read_stderr=True, argv=None, handshake=None, ack=True, max_elapsed=None, expected_env=()):
                 fixture = Fixture(directory, name, handler, ("/fixture/hdc", argv or []),
-                                  handshake=handshake, ack=ack)
+                                  handshake=handshake, ack=ack, expected_env=expected_env)
                 result = run(fixture.endpoint, mode=mode, timeout=timeout, read_stderr=read_stderr, argv=argv)
                 try:
                     fixture.finish()
@@ -252,6 +252,8 @@ def main():
                 fragmented(connection, exit_frame(), width=1)
             check("fragmented-header-payload-across-read-timeouts", fragments, expected_output="fragment中文\nstderr\n".encode(),
                   handshake=lambda connection: fragmented(connection, MAGIC, width=1))
+            proxy_env = [("HTTPS_PROXY", "http://proxy.invalid:10808/with space/中文"), ("NO_PROXY", "localhost,127.0.0.1")]
+            check("explicit-proxy-overrides-preserve-terminal-home-and-cwd", lambda connection, _: connection.sendall(exit_frame()), mode="env", expected_env=proxy_env)
             check("nonzero-exit", lambda connection, _: connection.sendall(exit_frame(37)), code=37)
             check("signal-exit", lambda connection, _: connection.sendall(exit_frame(0xffffffff, 1, 15)), code=143)
             check("cancelled-exit-is-error", lambda connection, _: connection.sendall(exit_frame(0, 2)), expected_error=7, code=-1)
@@ -280,6 +282,7 @@ def main():
                     pass
                 fixture.cancelled = True
             check("startup-included-in-total-deadline", late_start, expected_error=6, code=-1, mode="startup-keepalive", ack=False, timeout=100, max_elapsed=700)
+            check("proxy-overrides-owned-through-late-startup-cleanup", late_start, expected_error=6, code=-1, mode="env-startup-keepalive", ack=False, timeout=100, max_elapsed=700, expected_env=proxy_env)
             check("disconnect-after-ACK-no-retry", lambda connection, _: connection.shutdown(socket.SHUT_RDWR), expected_error=4, code=-1)
             check("disconnect-after-START-before-ACK-no-retry", lambda connection, _: connection.shutdown(socket.SHUT_RDWR), expected_error=4, code=-1, ack=False)
             check("invalid-EXIT-is-protocol-error", lambda connection, fixture: (connection.sendall(exit_frame(300)), cancel_or_disconnect(connection, fixture)), expected_error=2, code=-1)
@@ -296,7 +299,7 @@ def main():
                 except (BrokenPipeError, ConnectionResetError):
                     fixture.cancelled = True
             check("64MiB-limit-includes-discarded-stderr", limit, expected_error=8, code=-1, read_stderr=False, expected_output=b"")
-            for mode in ("nul-command", "nul-arg", "bad-utf8"):
+            for mode in ("nul-command", "nul-arg", "bad-utf8", "nul-env-key", "nul-env-value", "bad-utf8-env", "empty-env-key", "equals-env-key"):
                 result = run(directory / "does-not-exist", mode=mode)
                 assert result["error"] == 5 and result["exitCode"] == -1, result
                 results.append({"name": mode + "-rejected-before-connect", "passed": True, **{k: v for k, v in result.items() if k != "output"}})

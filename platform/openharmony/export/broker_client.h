@@ -11,6 +11,7 @@
 #include <mutex>
 #include <pthread.h>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace OpenHarmonyBroker {
@@ -30,6 +31,7 @@ struct Start {
 	std::string endpoint;
 	std::string command;
 	std::vector<std::string> args;
+	std::vector<std::pair<std::string, std::string>> environment;
 	std::mutex mutex;
 	std::condition_variable changed;
 	bool done = false;
@@ -45,7 +47,13 @@ inline void *start(void *p_context) {
 	for (const auto &arg : state->args) {
 		args.push_back(arg.c_str());
 	}
+	std::vector<ob_env> environment;
+	for (const auto &entry : state->environment) {
+		environment.push_back({ entry.first.c_str(), entry.second.c_str() });
+	}
 	ob_options options{};
+	options.env = environment.data();
+	options.envc = environment.size();
 	options.executable = state->command.c_str();
 	options.args = args.data();
 	options.argc = args.size();
@@ -77,14 +85,19 @@ inline void *start(void *p_context) {
 // The command has no stdin. Shared project HAPs are passed as paths in argv;
 // HDC performs its own device-side transfer during installation.
 // Errors cancel the managed request; the original SDK owns transport cleanup.
+// Optional environment overrides are per command and owned through late startup;
+// an empty list preserves the terminal namespace and original environment.
 inline Result execute(const std::string &p_endpoint_file, const std::string &p_command,
 		const std::vector<std::string> &p_args, bool p_read_stderr = true,
-		int p_timeout_ms = 120000) {
+		int p_timeout_ms = 120000, const std::vector<std::pair<std::string, std::string>> &p_environment = {}) {
 	Result result;
 	const auto end = Detail::Clock::now() + std::chrono::milliseconds(p_timeout_ms > 0 ? p_timeout_ms : 0);
 	bool embedded_nul = p_endpoint_file.find('\0') != std::string::npos || p_command.find('\0') != std::string::npos;
 	for (const auto &arg : p_args) {
 		embedded_nul = embedded_nul || arg.find('\0') != std::string::npos;
+	}
+	for (const auto &entry : p_environment) {
+		embedded_nul = embedded_nul || entry.first.find('\0') != std::string::npos || entry.second.find('\0') != std::string::npos;
 	}
 	// C strings cannot represent embedded NUL; all other strict UTF-8 and START
 	// size validation is delegated to the unchanged SDK before connecting.
@@ -97,6 +110,7 @@ inline Result execute(const std::string &p_endpoint_file, const std::string &p_c
 	starting->endpoint = p_endpoint_file;
 	starting->command = p_command;
 	starting->args = p_args;
+	starting->environment = p_environment;
 	auto *start_context = new std::shared_ptr<Detail::Start>(starting);
 	pthread_t start_thread;
 	if (pthread_create(&start_thread, nullptr, Detail::start, start_context) != 0) {

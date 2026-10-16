@@ -66,8 +66,8 @@ class EditorExportPlatformOpenHarmony : public EditorExportPlatform {
 	Error build_auto_signed(bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing);
 	bool use_broker() const;
 	String get_broker_endpoint() const;
-	Error execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000, const String *p_broker_endpoint = nullptr);
-	Error execute_hdc(const String &p_hdc, const List<String> &p_arguments, String &r_output, const String *p_broker_endpoint = nullptr);
+	Error execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000);
+	Error execute_hdc(const String &p_hdc, const List<String> &p_arguments, String &r_output, const String *p_broker_endpoint = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000);
 	void clear_remote_run(bool p_stop);
 	void remote_debugger_stopped();
 	std::unique_ptr<DeviceRunSession> remote_run;

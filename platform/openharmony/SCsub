@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 from misc.utility.scons_hints import *
 
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import tempfile
 
 from methods import print_warning
@@ -18,10 +21,36 @@ def generate_bundle(target, source, env):
     )
     project_config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(project_config)
+    # Automatic signing needs a host executable, independent of the game .so.
+    # Build/sign it offline from the same source tree, with a static C++ runtime
+    # so the terminal broker does not depend on the Editor App's linker namespace.
+    signer = None
+    if sys.platform == "ohos" and env["arch"] == "arm64":
+        cache = Path(os.environ["XDG_CACHE_HOME"]).resolve()
+        source_root = Path(Dir("#").abspath)
+        key = hashlib.sha256(str(source_root).encode()).hexdigest()[:16]
+        signer_output = cache / "godot-openharmony-native-signer" / key
+        subprocess.run([
+            sys.executable, str(source_root / "platform/openharmony/build-auto-signer.py"),
+            "--native-sdk", env["OPENHARMONY_NATIVE_SDK"], "--output", str(signer_output),
+        ], check=True)
+        signer = signer_output / "auto-sign"
+    else:
+        print_warning("Native automatic signing is currently built for OpenHarmony arm64 hosts; manual exports remain available.")
     # Never mutate the source template or package IDE caches/stale binaries.
     with tempfile.TemporaryDirectory(prefix="godot-ohos-template-", dir=os.environ.get("TMPDIR")) as staging:
         project = Path(staging)
         project_config.stage_template(project)
+        if signer:
+            shutil.copyfile(signer, project / "tools/auto-sign")
+            (project / "tools/auto-sign").chmod(0o755)
+            licenses = project / "tools/licenses"
+            licenses.mkdir(exist_ok=True)
+            for original, name in (
+                ("thirdparty/openxr/src/external/jsoncpp/LICENSE", "JsonCpp-LICENSE.txt"),
+                ("thirdparty/mbedtls/LICENSE", "mbedTLS-LICENSE.txt"),
+            ):
+                shutil.copyfile(source_root / original, licenses / name)
         config = project_config.configuration(overrides={
             "build": {"architectures": [lib_arch_dir]}, "engine": {"target": env["target"]}
         })
@@ -39,6 +68,11 @@ def generate_bundle(target, source, env):
             "nativeAotEnabled": bool(env["module_mono_enabled"]),
             "architecture": lib_arch_dir,
             "target": env["target"],
+            "automaticSigningBackend": {
+                "type": "native" if signer else "unavailable",
+                "protocolVersion": 1,
+                "sha256": hashlib.sha256(signer.read_bytes()).hexdigest() if signer else "",
+            },
         })
         shutil.make_archive(Dir(f"#bin/openharmony_{lib_type_dir}_{lib_arch_dir}").abspath, "zip", root_dir=project)
 

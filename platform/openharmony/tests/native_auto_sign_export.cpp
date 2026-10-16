@@ -1,6 +1,6 @@
 // Godot Engine contributors. SPDX-License-Identifier: MIT
 // Link to the real Editor library; export, process capture and protocol validation
-// remain production code. The Node backend creates fake HAP bytes, not signatures.
+// remain production code. The native fixture creates fake HAP bytes, not signatures.
 // clang-format off
 #include <native_window/external_window.h>
 // clang-format on
@@ -120,14 +120,24 @@ void audit_case(EditorExportPlatformOpenHarmony *p_platform, const Dictionary &p
 	Dictionary audit;
 	const bool helper_ran = read_document(project.path_join("fixture-audit.json"), audit);
 	if (expected == "old_template") {
-		check(!helper_ran && !FileAccess::exists(project.path_join("tools/auto-sign.cjs")), "old template never executes a signing backend");
-		check(messages_contain(p_platform, "template") && messages_contain(p_platform, "helper") && messages_contain(p_platform, "updated"), "missing helper requests updated game templates");
+		check(!helper_ran && !FileAccess::exists(project.path_join("tools/auto-sign")) &&
+				!FileAccess::exists(project.path_join("tools/auto-sign.cjs")) && !FileAccess::exists(project.path_join("tools/auto-sign-fixture.json")),
+				"old template never executes a signing backend");
+		check(messages_contain(p_platform, "template") && messages_contain(p_platform, "backend") && messages_contain(p_platform, "updated"), "missing native backend requests updated game templates");
 	} else {
+		Dictionary expected_request = context_before.duplicate(true);
+		expected_request["projectDir"] = project;
+		const Variant request_value = audit.get("request", Variant());
+		const bool public_request_preserved = request_value.get_type() == Variant::DICTIONARY &&
+				Dictionary(request_value).recursive_equal(expected_request, 0);
+		const Variant pid = audit.get("pid", Variant());
 		check(helper_ran && number_equals(audit.get("schemaVersion", Variant()), 1) && audit.get("case", "") == name &&
+						audit.get("backend", "") == "native" &&
 						audit.get("requestValidated", false).get_type() == Variant::BOOL && bool(audit.get("requestValidated", false)) &&
 						number_equals(audit.get("requestSchemaVersion", Variant()), 1) && audit.get("projectDir", "") == project &&
-						double(audit.get("nodeMajor", 0)) >= 22 && double(audit.get("pid", 0)) > 0,
-				"external CLT Node backend ran and accepted only the exact public request metadata");
+						(pid.get_type() == Variant::INT || pid.get_type() == Variant::FLOAT) && double(pid) > 0 && public_request_preserved,
+				"native ELF backend ran and accepted only the unmodified public request metadata");
+		check(!FileAccess::exists(project.path_join("tools/auto-sign.cjs")), "native template has no JavaScript signing helper");
 	}
 	if (expected == "ok") {
 		Ref<FileAccess> artifact = FileAccess::open(output, FileAccess::READ);

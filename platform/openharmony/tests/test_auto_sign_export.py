@@ -4,10 +4,12 @@
 
 Requires a newly rebuilt, already signed Editor library with the Dictionary
 export_project_helper signature. Only the disposable fixture/bridge executable
-is self-signed; --library is read and reused without copying or changing it.
-Each case copies a real debug template ZIP and replaces/adds only tools/auto-sign.cjs
-(or omits that helper for the old-template case). The real Editor exports a
-project/PCK, invokes real external CLT Node, validates its JSON and copies or
+and native fake backend are self-signed; --library is read and reused unchanged.
+The native fake backend is compiled and self-signed once. Each case copies a real
+debug template ZIP, removes tools/auto-sign.cjs, and adds the same tools/auto-sign
+ELF plus tools/auto-sign-fixture.json (both omitted for old_template). All other
+entries retain their bytes and ZIP provenance. The real Editor exports a
+project/PCK, invokes the fake ELF directly, validates its JSON and copies or
 rejects fake HAP bytes. This does not prove real signing or device installation.
 No SCons, real CLI/HDC invocation, login, cloud issuance, certificates or release.
 
@@ -51,93 +53,12 @@ CASES = (
     ('old_template', 'old_template'),
 )
 
-# Deliberately no child_process, CLI/HDC, networking or signing imports. Each
-# generated ZIP contains a different fixed CASE constant, never a test-only
-# private field smuggled into the production request schema.
-BACKEND = r'''"use strict";
-const fs = require("node:fs");
-const path = require("node:path");
-const CASE = __CASE__;
-const EXPECTED = __EXPECTED__;
-const SECRET_PREFIX = __SECRET_PREFIX__;
-function requireThat(value) {
-  if (!value) throw new Error("public fixture request mismatch");
-}
-try {
-  requireThat(process.argv.length === 4 && process.argv[2] === "--request-json");
-  const raw = process.argv[3];
-  requireThat(!raw.includes(SECRET_PREFIX));
-  const request = JSON.parse(raw);
-  requireThat(request && typeof request === "object" && !Array.isArray(request));
-  requireThat(JSON.stringify(Object.keys(request).sort()) === JSON.stringify(Object.keys(EXPECTED).sort()));
-  requireThat(typeof request.schemaVersion === "number" && request.schemaVersion === 1);
-  for (const [key, value] of Object.entries(EXPECTED)) requireThat(request[key] === value);
-  requireThat(path.isAbsolute(request.projectIdentity) && fs.statSync(request.projectIdentity).isFile());
-  requireThat(path.isAbsolute(request.projectDir) && fs.statSync(request.projectDir).isDirectory());
-  requireThat(fs.existsSync(path.join(request.projectDir, "entry/src/main/resources/rawfile/template.pck")));
-  requireThat(fs.realpathSync(process.execPath) === fs.realpathSync(request.nodePath));
-  const major = Number(process.versions.node.split(".")[0]);
-  requireThat(major >= 22);
-  const project = request.projectDir;
-  fs.writeFileSync(path.join(project, "fixture-audit.json"), JSON.stringify({
-    schemaVersion: 1, case: CASE, requestValidated: true,
-    requestSchemaVersion: request.schemaVersion, projectDir: project,
-    nodeMajor: major, pid: process.pid
-  }));
-  const hap = path.join(project, "fake.hap");
-  fs.writeFileSync(hap, "FAKE HAP protocol fixture: " + CASE + "\n");
-  let result = {schemaVersion: 1, status: "ok", signed: true,
-    profileValidated: true, format: "hap", mode: "debug", outputPath: hap};
-  let exitCode = 0;
-  switch (CASE) {
-    case "ok": break;
-    case "auth_required":
-      result = {schemaVersion: 1, status: "error", code: "AUTH_REQUIRED",
-        message: __AUTH_MESSAGE__, diagnostic: SECRET_PREFIX + "backend_diagnostic"};
-      exitCode = 3;
-      break;
-    case "confirmation_required": {
-      const token = "0123456789abcdef".repeat(4);
-      requireThat(/^[0-9a-f]{64}$/.test(token));
-      result = {schemaVersion: 1, status: "confirmation_required", confirmationToken: token,
-        reason: "CACHE_MISSING", message: "Confirm creation of local fixture signing material in the Editor."};
-      break;
-    }
-    case "invalid_json":
-      process.stdout.write("not-json " + SECRET_PREFIX + "malformed_stdout\n");
-      process.exit(0);
-      break;
-    case "schema_number": result.schemaVersion = 2; break;
-    case "schema_string": result.schemaVersion = "1"; break;
-    case "signed_false": result.signed = false; break;
-    case "signed_string": result.signed = "true"; break;
-    case "profile_false": result.profileValidated = false; break;
-    case "profile_string": result.profileValidated = "true"; break;
-    case "wrong_format": result.format = "app"; break;
-    case "wrong_mode": result.mode = "release"; break;
-    case "outside_project":
-      result.outputPath = path.join(path.dirname(project), "outside-artifact.hap");
-      fs.writeFileSync(result.outputPath, "FAKE outside-project HAP\n");
-      break;
-    case "path_traversal":
-      fs.mkdirSync(path.join(project, "nested"));
-      // Preserve literal /../ rather than letting path.join normalize it away.
-      result.outputPath = project + "/nested/../fake.hap";
-      requireThat(fs.existsSync(result.outputPath));
-      break;
-    case "nonzero_exit": exitCode = 23; break;
-    case "missing_artifact": result.outputPath = path.join(project, "absent.hap"); break;
-    default: throw new Error("unknown public fixture case");
-  }
-  process.stdout.write(JSON.stringify(result) + "\n");
-  process.exitCode = exitCode;
-} catch (_) {
-  // Never echo request contents, parser errors or private marker values.
-  process.stdout.write(JSON.stringify({schemaVersion: 1, status: "error", code: "FIXTURE_REQUEST_INVALID",
-    message: "The local regression backend rejected the public fixture request."}) + "\n");
-  process.exitCode = 81;
-}
-'''
+# Case selection and expected public metadata live beside the ELF, never in a
+# private field smuggled into the production request schema. No Node is executed
+# by this frontend fixture; real Node version enforcement belongs to backend tests.
+NATIVE_HELPER = 'tools/auto-sign'
+FIXTURE_CONFIG = 'tools/auto-sign-fixture.json'
+HELPER_PATHS = frozenset(('tools/auto-sign.cjs', NATIVE_HELPER, FIXTURE_CONFIG))
 
 
 def digest(path):
@@ -175,7 +96,7 @@ def collect_cases(root, summary):
 
 
 def run_native(command, root, environment):
-    # Own a distinct session/process group so a hung Node descendant cannot
+    # Own a distinct session/process group so a hung backend descendant cannot
     # outlive a timed-out fixture and continue touching its deleted directory.
     with subprocess.Popen(command, cwd=root, env=environment, text=True,
                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -229,13 +150,30 @@ def make_metadata(root):
                                          version='26.0.0.105', releaseType='Release', path=component)))
     metadata = root / 'metadata'
     metadata.mkdir()
-    # Public placeholders must never be executed. Real Node is the sole tool.
+    # Public placeholders must never be executed. The native fake uses neither.
     (metadata / 'hdc-do-not-execute').write_text('Fixture public HDC placeholder. Never execute.\n')
     (metadata / 'cli-do-not-execute.cjs').write_text('throw new Error("Fixture CLI must never execute");\n')
     (root / 'login-unused').mkdir(mode=0o700)
 
 
-def prepare_fixtures(root, template, tools):
+def zip_provenance(archive, item):
+    with archive.open(item) as stream:
+        sha256 = hashlib.file_digest(stream, 'sha256').hexdigest()
+    metadata = tuple(getattr(item, key) for key in (
+        'date_time', 'compress_type', 'comment', 'extra', 'create_system',
+        'create_version', 'extract_version', 'external_attr', 'internal_attr'))
+    return sha256, metadata
+
+
+def fixture_entry(name, data, executable=False):
+    item = zipfile.ZipInfo(name)
+    item.create_system = 3
+    item.external_attr = (0o100755 if executable else 0o100644) << 16
+    item.compress_type = zipfile.ZIP_DEFLATED
+    return item, data
+
+
+def prepare_fixtures(root, template, tools, backend):
     project = root / 'project'
     project.mkdir()
     (project / 'project.godot').write_text(
@@ -252,7 +190,8 @@ def prepare_fixtures(root, template, tools):
                     cliPath=str(root / 'metadata/cli-do-not-execute.cjs'), teamId='public-fixture-team',
                     loginDataDir=str(root / 'login-unused'))
     cases = []
-    scripts = []
+    binary = backend.read_bytes()
+    binary_sha256 = hashlib.sha256(binary).hexdigest()
     with zipfile.ZipFile(template) as source:
         names = source.namelist()
         if len(set(names)) != len(names):
@@ -261,43 +200,70 @@ def prepare_fixtures(root, template, tools):
                     'entry/src/main/resources/rawfile/godot_template.json', 'tools/build.cjs')
         if any(name not in names for name in required):
             raise ValueError('Select a real current OpenHarmony DebugTemplate ZIP')
-        helper = 'tools/auto-sign.cjs'
+        baseline = {item.filename: zip_provenance(source, item) for item in source.infolist()
+                    if item.filename not in HELPER_PATHS}
         for name, expected_result in CASES:
             case_expected = dict(expected, projectDir=str(root / 'exports' / name))
-            script = (BACKEND.replace('__CASE__', json.dumps(name))
-                      .replace('__EXPECTED__', json.dumps(case_expected))
-                      .replace('__SECRET_PREFIX__', json.dumps(SECRET_PREFIX))
-                      .replace('__AUTH_MESSAGE__', json.dumps(AUTH_MESSAGE)))
+            config = dict(schemaVersion=1, case=name, expected=case_expected)
             destination = root / 'templates' / (name + '.zip')
             with zipfile.ZipFile(destination, 'w') as target:
+                target.comment = source.comment
                 for item in source.infolist():
-                    if item.filename == helper:
-                        if name != 'old_template':
-                            target.writestr(copy.copy(item), script)
-                    else:
-                        # Preserve non-helper contents, permissions and
-                        # compression settings while streaming the real ZIP.
+                    if item.filename not in HELPER_PATHS:
+                        # Preserve non-helper bytes and ZIP provenance while
+                        # streaming the real template. Never alter its source.
                         with source.open(item) as before, target.open(copy.copy(item), 'w') as after:
                             shutil.copyfileobj(before, after, length=1024 * 1024)
-                # Older real debug templates can be used as the baseline too:
-                # only this helper path differs, and old_template omits it.
-                if helper not in names and name != 'old_template':
-                    target.writestr(helper, script, compress_type=zipfile.ZIP_DEFLATED)
+                if name != 'old_template':
+                    target.writestr(*fixture_entry(NATIVE_HELPER, binary, executable=True))
+                    target.writestr(*fixture_entry(FIXTURE_CONFIG, json.dumps(config) + '\n'))
             with zipfile.ZipFile(destination) as copied:
-                copied_info = {item.filename: (item.CRC, item.file_size) for item in copied.infolist()}
-                baseline = {item.filename: (item.CRC, item.file_size) for item in source.infolist()
-                            if item.filename != helper}
-                if {key: value for key, value in copied_info.items() if key != helper} != baseline:
-                    raise ValueError('Template copy unexpectedly changed a non-helper entry')
-                if (helper in copied_info) != (name != 'old_template'):
-                    raise ValueError('Template helper replacement failed')
-            if name != 'old_template':
-                check_script = root / 'templates' / (name + '.cjs')
-                check_script.write_text(script)
-                scripts.append(check_script)
+                copied_names = copied.namelist()
+                copied_info = {item.filename: zip_provenance(copied, item) for item in copied.infolist()
+                               if item.filename not in HELPER_PATHS}
+                if copied_info != baseline:
+                    raise ValueError('Template copy unexpectedly changed non-helper bytes or provenance')
+                if ('tools/auto-sign.cjs' in copied_names or
+                        (NATIVE_HELPER in copied_names) != (name != 'old_template') or
+                        (FIXTURE_CONFIG in copied_names) != (name != 'old_template')):
+                    raise ValueError('Template native helper replacement failed')
+                if name != 'old_template':
+                    if hashlib.sha256(copied.read(NATIVE_HELPER)).hexdigest() != binary_sha256:
+                        raise ValueError('Cases must contain the same signed native fake backend')
+                    if not copied.getinfo(NATIVE_HELPER).external_attr >> 16 & 0o111:
+                        raise ValueError('Native fake backend ZIP entry is not executable')
+                    if json.loads(copied.read(FIXTURE_CONFIG)) != config:
+                        raise ValueError('Native fake backend public configuration changed')
             cases.append(dict(name=name, expected=expected_result, template=str(destination)))
     (root / 'manifest.json').write_text(json.dumps(dict(schemaVersion=1, commandLineToolsRoot=str(tools), cases=cases)))
-    return project, scripts
+    return project
+
+
+def build_backend(repo, sdk, root, signer, run):
+    source = repo / 'platform/openharmony/tests/native_auto_sign_fixture/backend.cpp'
+    jsoncpp = repo / 'thirdparty/openxr/src/external/jsoncpp'
+    dependencies = sorted((jsoncpp / 'src/lib_json').glob('*.cpp'))
+    if not dependencies:
+        raise RuntimeError('Vendored JsonCpp sources are required for the native fake backend')
+    unsigned, binary = root / 'auto-sign.unsigned', root / 'auto-sign'
+    run([sdk / 'llvm/bin/clang++', '--target=aarch64-linux-ohos', '--sysroot=' + str(sdk / 'sysroot'),
+         '-std=c++17', '-O2', '-pthread', '-static-libstdc++', '-I' + str(jsoncpp / 'include'),
+         source, *dependencies, '-Wl,--no-code-sign', '-o', unsigned], timeout=120)
+    header = run([sdk / 'llvm/bin/llvm-readelf', '--file-header', unsigned]).stdout
+    dynamic = run([sdk / 'llvm/bin/llvm-readelf', '--dynamic', unsigned]).stdout
+    if 'AArch64' not in header or 'libc++_shared.so' in dynamic:
+        raise RuntimeError('Native fake backend must be ARM64 ELF with a static C++ runtime')
+    run([sdk / 'llvm/bin/llvm-objcopy', '--remove-section=.codesign', unsigned])
+    run([signer, 'sign', '-selfSign', '1', '-inFile', unsigned, '-outFile', binary])
+    binary.chmod(0o755)
+    sections = run([sdk / 'llvm/bin/llvm-readelf', '--sections', binary]).stdout
+    if not re.search(r'\s\.codesign\s', sections):
+        raise RuntimeError('Self-signed native fake backend has no .codesign section')
+    metadata = dict(source=str(source.relative_to(repo)), sourceSha256=digest(source),
+                    binarySha256=digest(binary), signed=True, staticCppRuntime=True, machine='AArch64',
+                    dependencies=[dict(source=str(path.relative_to(repo)), sha256=digest(path))
+                                  for path in dependencies])
+    return binary, metadata
 
 
 def build_objects(repo, sdk, root, environment, run):
@@ -322,7 +288,7 @@ def main():
     parser.add_argument('--library', type=Path, required=True, help='Final already signed Editor libgodot.so; never modified')
     parser.add_argument('--template', type=Path, required=True, help='Real current OpenHarmony debug game template ZIP')
     parser.add_argument('--command-line-tools-root', type=Path, required=True, help='Official API26 CLT root with real native Node')
-    parser.add_argument('--output', type=Path, help='New evidence directory; records logs and each case result')
+    parser.add_argument('--output', type=Path, help='New directory inside TMPDIR; records source, binary, logs and case results')
     parser.add_argument('--compile-only', action='store_true', help='Compile/check fixtures without linking or running the Editor')
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[3]
@@ -335,23 +301,25 @@ def main():
         if not (sdk / 'llvm/bin' / tool).is_file():
             parser.error('Selected independent native SDK must provide clang++, llvm-objcopy and llvm-readelf')
     if not signer:
-        parser.error('PATH binary-sign-tool is required to sign only the disposable fixture/bridge')
+        parser.error('PATH binary-sign-tool is required to sign the disposable fixture/bridge and fake backend')
     if not (tools / 'node/bin/node').is_file() or not (tools / 'hvigor/bin/hvigorw.js').is_file():
         parser.error('Select the official API26 command-line-tools root with native Node and Hvigor metadata')
     if not library.is_file() or not template.is_file():
         parser.error('--library and --template must be existing files')
+    temporary_root = Path(os.environ['TMPDIR']).resolve(strict=True)
     if args.output:
         evidence = args.output.resolve()
+        if evidence == temporary_root or not evidence.is_relative_to(temporary_root):
+            parser.error('--output evidence must be a new directory inside TMPDIR')
         if evidence.exists():
             parser.error('--output must be a new directory to avoid overwriting prior evidence')
         evidence.mkdir(parents=True)
     else:
         evidence = None
-    temporary_root = Path(os.environ['TMPDIR']).resolve(strict=True)
     summary = dict(schemaVersion=1, compileOnly=args.compile_only, runtimeExecuted=False,
                    library=str(library), librarySha256=digest(library), template=str(template),
                    templateSha256=digest(template), sdk=str(sdk), commandLineToolsRoot=str(tools),
-                   cases=[], passed=False)
+                   cases=[], passed=False, buildCommands=[])
     build_log = []
     native_stdout = native_stderr = ''
     exit_code = 1
@@ -365,12 +333,18 @@ def main():
                 environment['GODOT_AUTO_SIGN_EXPORT_LIBRARY'] = str(library)
 
                 def run(command, timeout=60):
+                    command = [str(part) for part in command]
+                    record = dict(command=command, timeoutSeconds=timeout)
+                    summary['buildCommands'].append(record)
+                    build_log.append(json.dumps(command) + '\n')
                     try:
-                        result = subprocess.run([str(part) for part in command], cwd=root, env=environment,
+                        result = subprocess.run(command, cwd=root, env=environment,
                                                 text=True, capture_output=True, timeout=timeout)
                     except subprocess.TimeoutExpired as error:
+                        record['timedOut'] = True
                         build_log.append(safe_log(text_output(error.stdout) + text_output(error.stderr)))
                         raise RuntimeError('Native fixture build/check timed out') from None
+                    record['exitCode'] = result.returncode
                     build_log.append(safe_log(result.stdout + result.stderr))
                     if result.returncode:
                         raise RuntimeError('Native fixture build/check failed (exit %d)' % result.returncode)
@@ -382,14 +356,18 @@ def main():
                 if not re.search(r'\s\.codesign\s', sections):
                     raise RuntimeError('--library must already be signed (.codesign section missing)')
                 flags, objects = build_objects(repo, sdk, root, environment, run)
-                project, scripts = prepare_fixtures(root, template, tools)
-                for script in scripts:
-                    run([tools / 'node/bin/node', '--check', script])
+                backend, summary['fakeBinary'] = build_backend(repo, sdk, root, signer, run)
+                if evidence:
+                    shutil.copyfile(repo / summary['fakeBinary']['source'], evidence / 'fake-backend.cpp')
+                    shutil.copyfile(backend, evidence / 'fake-auto-sign')
+                    summary['fakeBinary']['evidenceBinary'] = str(evidence / 'fake-auto-sign')
+                    summary['fakeBinary']['evidenceSource'] = str(evidence / 'fake-backend.cpp')
+                project = prepare_fixtures(root, template, tools, backend)
                 summary['fixturesPrepared'] = len(CASES)
                 summary['objectsCompiled'] = len(objects)
                 if args.compile_only:
                     summary['passed'] = True
-                    print('AUTO_SIGN_EXPORT_COMPILE_ONLY objects=2 fixtures=%d runtime=not-executed' % len(CASES))
+                    print('AUTO_SIGN_EXPORT_COMPILE_ONLY objects=2 native-backend=signed fixtures=%d runtime=not-executed' % len(CASES))
                     exit_code = 0
                 else:
                     unsigned, executable = root / 'fixture.unsigned', root / 'fixture'
