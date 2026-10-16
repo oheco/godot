@@ -64,7 +64,8 @@ static Step start(bool p_ok = true) {
 	return { { "shell", "aa", "start", "-b", BUNDLE, "-a", "EntryAbility" }, p_ok, p_ok ? "start ok" : "start failed" };
 }
 static Step stop(bool p_ok = true) {
-	return { { "shell", "aa", "force-stop", "-b", BUNDLE }, p_ok, p_ok ? "stop ok" : "stop failed" };
+	// Native `aa help`: force-stop takes a positional bundle, unlike aa start -b.
+	return { { "shell", "aa", "force-stop", BUNDLE }, p_ok, p_ok ? "stop ok" : "stop failed" };
 }
 static unsigned scenarios = 0;
 static void passed(const std::string &p_name) {

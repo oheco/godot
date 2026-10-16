@@ -375,7 +375,7 @@ private:
 			return true;
 		}
 		std::string output;
-		if (!execute({ "shell", "aa", "force-stop", "-b", bundle_ }, output, r_output)) {
+		if (!execute({ "shell", "aa", "force-stop", bundle_ }, output, r_output)) {
 			return false;
 		}
 		running_ = false;

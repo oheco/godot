@@ -510,9 +510,12 @@ async function inspectSigning(ctx, config) {
   // profiles; unrecognized all-device policies require manual signing instead.
   if (!object(debug) || String(debug['device-id-type']).toLowerCase() !== 'udid' || !Array.isArray(debug['device-ids']) ||
     !debug['device-ids'].every(item => typeof item === 'string' && /^[0-9a-fA-F]{64}$/.test(item)) || !debug['device-ids'].some(item => item.toLowerCase() === ctx.udid)) return { ready: false, reason: 'PROFILE_DEVICE_MISMATCH' };
-  const acls = profile.acls?.['allowed-acls'] ?? (profile.acls === undefined ? [] : null);
-  if (!Array.isArray(acls) || !acls.every(item => typeof item === 'string') ||
-    ctx.metadata.requiredACL.some(permission => !acls.includes(permission))) return { ready: false, reason: 'PROFILE_ACL_MISMATCH' };
+  const requiredACL = ctx.metadata.requiredACL;
+  const acls = profile.acls?.['allowed-acls'];
+  // Without requested ACLs, the SDK's optional ACL representation grants nothing.
+  // Actual ACL requirements still need an explicit, complete string array.
+  if (requiredACL.length && (!Array.isArray(acls) || !acls.every(item => typeof item === 'string') ||
+    requiredACL.some(permission => !acls.includes(permission)))) return { ready: false, reason: 'PROFILE_ACL_MISMATCH' };
   const certificateError = certificateCheck(material, profile, now);
   if (certificateError) return { ready: false, reason: certificateError };
   return { ready: true, material };
@@ -590,7 +593,7 @@ async function generate(ctx) {
     const config = importGenerated(ctx);
     const checked = await inspectSigning(ctx, config);
     need(checked.ready, checked.reason === 'PROFILE_DEVICE_MISMATCH' ? 'PROFILE_DEVICE_MISMATCH' : 'PROFILE_INVALID',
-      'The generated profile did not pass bundle, device, permission, validity and certificate checks. Old local files were retained; check the official CLI account/device setup.');
+      `The generated profile did not pass bundle, device, permission, validity and certificate checks. Validation reason: ${checked.reason}. Old local files were retained; check the official CLI account/device setup.`);
     return checked;
   } catch (error) {
     if (backedUp) {

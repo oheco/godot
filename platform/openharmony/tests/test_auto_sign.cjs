@@ -93,6 +93,8 @@ if(args.join(' ')==='auth status'){
     validity:{'not-before':now-60,'not-after':control.expired?now-1:now+86400},
     'debug-info':{'device-id-type':'udid','device-ids':control.generatedDevices||['a'.repeat(64)]},
     acls:{'allowed-acls':control.generatedACL||mod.requestPermissions.map(p=>p.name)}};
+  if(control.omitProfileACL)delete profile.acls;
+  else if(Object.hasOwn(control,'profileACLPolicy'))profile.acls=control.profileACLPolicy;
   write(path.join(materialDir,'cert.cer'),control.certBundle||control.cert);json(path.join(materialDir,'profile.p7b'),profile);write(path.join(materialDir,'store.p12'),'old-key-material');
   for(const name of ['fd','ac','ce'])write(path.join(materialDir,'material',name,'component'),name+' local component');
   if(control.generateFail){write(path.join(materialDir,'store.p12'),'damaged-key');console.error(control.network?'ECONNRESET network proxy':'generation failed');process.exit(9);}
@@ -320,6 +322,81 @@ test('expired profiles update once; mismatching generated devices are rejected w
   const rejected=f.run({target:'second-serial'});assert.equal(rejected.code,'PROFILE_DEVICE_MISMATCH');
   assert.deepEqual(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')),old,'failed generation must restore previous app material');
   assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
+});
+const OPTIONAL_ACL_FORMS = [
+  ['missing', undefined], ['null', null], ['empty object', {}], ['empty array', []],
+  ['null allowed-acls', {'allowed-acls':null}], ['empty allowed-acls', {'allowed-acls':[]}],
+  ['unknown policy', {policy:'all',account:SECRET}],
+  ['object allowed-acls', {'allowed-acls':{all:true}}],
+  ['non-string grant', {'allowed-acls':['ohos.permission.TEST_ACL',null]}],
+  ['unknown grant', {'allowed-acls':[SECRET]}],
+];
+function setProfileACL(profile, value) {
+  if(value===undefined)delete profile.acls;
+  else profile.acls=structuredClone(value);
+}
+test('normal API26 INTERNET accepts optional ACL forms and reuses cache without granting permissions or tokens',t=>{
+  const f=fixture(t,{profileACLPolicy:null});
+  f.module.module.requestPermissions=[{name:'ohos.permission.INTERNET'}];
+  json(path.join(f.project,'entry/src/main/module.json5'),f.module);
+  const metadataFile=path.join(f.sdk,'default/openharmony/toolchains/lib/permissionDefinitions.json');
+  const definitions=JSON.parse(fs.readFileSync(metadataFile));
+  definitions.definePermissions.find(p=>p.name==='ohos.permission.INTERNET').provisionEnable=true;
+  json(metadataFile,definitions);
+  assert.equal(f.run().status,'ok','generated null ACL representation must be accepted');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.cache(),'signing-context.json'))).requiredACL,[]);
+  for(const [label,value] of OPTIONAL_ACL_FORMS){
+    f.profileEdit(profile=>setProfileACL(profile,value));
+    assert.equal(f.run().status,'ok',label);
+  }
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,1,'ACL form changes must not cause cloud regeneration');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.project,'entry/src/main/module.json5'))).module.requestPermissions,[{name:'ohos.permission.INTERNET'}]);
+  assert.equal(fs.existsSync(path.join(f.cache(),'pending-confirmation.json')),false);
+  f.module.module.requestPermissions.push({name:'ohos.permission.UNKNOWN_PERMISSION'});
+  json(path.join(f.project,'entry/src/main/module.json5'),f.module);
+  assert.equal(f.run().code,'ACL_METADATA_INVALID','optional ACL forms cannot authorize an unknown requested permission');
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,1);
+  f.assertClean();
+});
+test('actual ACL requirements reject every absent or malformed policy and require explicit string grants',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');
+  let generations=1;
+  for(const [label,value] of OPTIONAL_ACL_FORMS){
+    f.profileEdit(profile=>setProfileACL(profile,value));
+    f.update({omitProfileACL:value===undefined,profileACLPolicy:value===undefined?null:value});
+    const result=f.run();
+    assert.equal(result.code,'PROFILE_INVALID',label);
+    assert.ok(result.message.includes('Validation reason: PROFILE_ACL_MISMATCH.'),label);
+    assert.ok(!JSON.stringify(result).includes(f.root),'safe reasons must not expose private paths');
+    assert.equal(f.events().filter(e=>e.kind==='generate').length,++generations,'one attempt per invalid policy');
+  }
+  f.update({omitProfileACL:false,profileACLPolicy:{'allowed-acls':['ohos.permission.TEST_ACL']}});
+  assert.equal(f.run().status,'ok','explicit required grant must succeed');
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,++generations);
+  assert.equal(f.run().status,'ok');
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,generations,'valid granted cache must be reused');
+  f.assertClean();
+});
+test('ACL-free profiles still require native trust, bundle, device, validity and matching certificate',t=>{
+  const bytes=Buffer.from(new (require('node:crypto').X509Certificate)(CERT).raw);bytes[bytes.length-1]^=1;
+  const other='-----BEGIN CERTIFICATE-----\n'+bytes.toString('base64').match(/.{1,64}/g).join('\n')+'\n-----END CERTIFICATE-----\n';
+  for(const [control,code,reason] of [
+    [{verifyFail:true},'PROFILE_INVALID','PROFILE_UNVERIFIED'],
+    [{wrongBundle:true},'PROFILE_INVALID','PROFILE_BUNDLE_MISMATCH'],
+    [{generatedDevices:[UDID_B]},'PROFILE_DEVICE_MISMATCH','PROFILE_DEVICE_MISMATCH'],
+    [{expired:true},'PROFILE_INVALID','PROFILE_EXPIRED'],
+    [{certBundle:other},'PROFILE_INVALID','CERTIFICATE_MISMATCH'],
+  ]){
+    const f=fixture(t,{profileACLPolicy:null,...control});
+    f.module.module.requestPermissions=[{name:'ohos.permission.INTERNET'}];
+    json(path.join(f.project,'entry/src/main/module.json5'),f.module);
+    const result=f.run();assert.equal(result.code,code);
+    assert.ok(result.message.includes('Validation reason: '+reason+'.'));
+    assert.ok(!JSON.stringify(result).includes(f.root));
+    assert.equal(f.events().filter(e=>e.kind==='generate').length,1);
+    assert.equal(f.events().filter(e=>e.kind==='build').length,0);
+    f.assertClean();
+  }
 });
 test('new ACL permissions and missing profile ACLs update automatically exactly once per request',t=>{
   const f=fixture(t);assert.equal(f.run().status,'ok');f.module.module.requestPermissions.push({name:'ohos.permission.NEW_ACL'});json(path.join(f.project,'entry/src/main/module.json5'),f.module);
