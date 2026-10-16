@@ -27,9 +27,19 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
-## Editor updates in 4.7.2-ohos.6 (development)
+## Editor updates in 4.7.2-ohos.6
 
-This revision is a local candidate; it has not been tagged or published.
+This revision separates the thin Editor APP from its optional oo development kit.
+See [release validation](<platform/openharmony/tests/release-validation-ohos6.md>)
+for native, managed, packaging and deferred device-validation scopes.
+
+Install the development kit with `oo update && oo install godot-editor`. Export
+an editable Editor project with `oo export godot-editor app -o ./GodotEditor`.
+The kit depends on `dotnet-sdk` **10.0.401-ohos.2**; the APP and kit do not contain
+a complete SDK. The APP and new headless launcher discover compatible installed
+kits automatically. C# projects use the four matching local Godot NuGet packages
+plus normal NuGet.org restore for other dependencies. A standalone `dotnet build`
+outside these hosts needs `GODOT_NUGET_SOURCE` or an equivalent local NuGet source.
 
 - Mouse selection in Output/error logs no longer triggers touchscreen panning.
   Dragging above/below the log scrolls and extends the selection; holding the
@@ -38,9 +48,10 @@ This revision is a local candidate; it has not been tagged or published.
 - HDC deployments reserve device-side debug/file-server ports separately from
   Editor listeners and write those mapped ports into the game's arguments.
   Existing rules are preserved and only this deployment's rules are removed.
-- Export templates are separate Release downloads. The Editor App and its
-  startup no longer carry or install their ZIP files. Select the downloaded
-  Debug/Release ZIPs in the OpenHarmony preset's Custom Template fields.
+- Export templates are included in the optional development kit and are also
+  separate Release downloads. The Editor APP carries neither template ZIP.
+  Compatible kit templates are located automatically; OpenHarmony preset Custom
+  Template fields remain available and take precedence over the automatic choice.
 - Remote Deploy supports DevEco CLI automatic debug signing. Auto Signing and
   Always Auto Sign default to enabled. Matching private cached materials are reused;
   missing, expired or mismatched materials are generated automatically without
@@ -53,7 +64,8 @@ This revision is a local candidate; it has not been tagged or published.
 - The Editor project's staged HAP stripping, numeric application version name
   and CUSTOM_SANDBOX permission selection are recovered in the generator.
 - The Editor and both export templates include the accepted ABI-4 window-mode
-  and mouse-capture host changes. The managed API/feed remains 4.7.2-ohos.3.
+  and mouse-capture host changes. The managed API and four local Godot packages
+  remain 4.7.2-ohos.3.
 
 ## Desktop integration in 4.7.2-ohos.5
 
