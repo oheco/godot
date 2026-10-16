@@ -26,7 +26,11 @@ def managed_inputs(godotsharp, dotnet_sdk):
         'Api/Debug/GodotSharp.dll', 'Api/Release/GodotSharp.dll', 'Tools/GodotTools.dll')]
     packages = [godotsharp / 'Tools/nupkgs' / f'{name}.{MANAGED_VERSION}.nupkg' for name in GODOT_PACKAGES]
     required.extend(packages)
-    required.extend(dotnet_sdk / name for name in ('dotnet', 'BUILDINFO.json'))
+    required.append(dotnet_sdk / 'dotnet')
+    buildinfo_path = next((dotnet_sdk / name for name in ('BUILDINFO.json', 'BUILDINFO.aspnetcore.json')
+                           if (dotnet_sdk / name).is_file()), None)
+    if buildinfo_path is None:
+        raise ValueError(f'Missing external .NET SDK build provenance: {dotnet_sdk}')
     for path in required:
         if not path.is_file():
             raise ValueError(f'Missing development-kit input: {path}')
@@ -34,7 +38,7 @@ def managed_inputs(godotsharp, dotnet_sdk):
                  'packs/Microsoft.NETCore.App.Ref', 'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
         if not (dotnet_sdk / name).is_dir():
             raise ValueError(f'Missing external OpenHarmony .NET SDK component: {name}')
-    buildinfo = read_document(dotnet_sdk / 'BUILDINFO.json')
+    buildinfo = read_document(buildinfo_path)
     if buildinfo.get('rid') != 'openharmony-arm64':
         raise ValueError('Expected an OpenHarmony ARM64 .NET SDK')
     return packages, buildinfo

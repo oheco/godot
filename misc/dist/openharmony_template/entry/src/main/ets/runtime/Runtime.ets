@@ -3,7 +3,7 @@ import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { util } from '@kit.ArkTS';
-import plugin from 'libentry.so';
+import plugin, { DevelopmentKitCandidate } from 'libentry.so';
 import { describe, record, setStep } from './Diagnostics';
 
 interface DevelopmentKitManifest {
@@ -54,7 +54,7 @@ async function discoverRuntime(context: common.UIAbilityContext): Promise<string
     const bytes = await context.resourceManager.getRawFileContent('development-kit.json');
     const expected = JSON.parse(new util.TextDecoder().decodeWithStream(bytes)) as DevelopmentKitManifest;
     if (!validCompatibility(expected)) { throw new Error('Invalid application development-kit compatibility manifest'); }
-    const candidates = plugin.developmentKits();
+    const candidates: DevelopmentKitCandidate[] = plugin.developmentKits();
     for (const candidate of candidates) {
       try {
         if (!candidate.root.startsWith('/') || candidate.root.includes('\0') || candidate.manifest.length === 0) {

@@ -124,7 +124,7 @@ struct Index {
       }
       const permissions = grantedPermissions();
       setStep('host:configure');
-      const configurationNotice = plugin.configure(paths.filesDir, paths.cacheDir, runtime, managedMode, paths.tempDir);
+      const configurationNotice: string = plugin.configure(paths.filesDir, paths.cacheDir, runtime, managedMode, paths.tempDir);
       if (configurationNotice.length > 0) { record(`development-kit setup: ${configurationNotice}`); }
       plugin.setResourceManager(context.resourceManager);
       plugin.setWindowId(AppStorage.get<number>('godotWindowId') ?? -1);

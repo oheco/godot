@@ -13,11 +13,30 @@ import zipfile
 
 PLATFORM = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLATFORM))
-from development_kit import GODOT_PACKAGES, MANAGED_VERSION
+from development_kit import GODOT_PACKAGES, MANAGED_VERSION, managed_inputs
 from project_config import HOST_ABI_VERSION, read_document, write_document
 
 
 class DevelopmentKitPackagingTest(unittest.TestCase):
+    def test_sdk_provenance_accepts_standard_and_aspnetcore_builds(self):
+        for filename in ('BUILDINFO.json', 'BUILDINFO.aspnetcore.json'):
+            with self.subTest(filename=filename), tempfile.TemporaryDirectory(prefix='godot-kit-sdk-', dir=os.environ['TMPDIR']) as directory:
+                root = Path(directory)
+                sharp, sdk = root / 'GodotSharp', root / 'sdk'
+                for name in ('Api/Debug/GodotSharp.dll', 'Api/Release/GodotSharp.dll', 'Tools/GodotTools.dll',
+                             *('Tools/nupkgs/' + package + '.' + MANAGED_VERSION + '.nupkg' for package in GODOT_PACKAGES)):
+                    path = sharp / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b'input fixture')
+                for name in ('sdk', 'host/fxr', 'shared/Microsoft.NETCore.App',
+                             'packs/Microsoft.NETCore.App.Ref', 'packs/Microsoft.NETCore.App.Runtime.openharmony-arm64'):
+                    (sdk / name).mkdir(parents=True, exist_ok=True)
+                (sdk / 'dotnet').write_bytes(b'input fixture')
+                write_document(sdk / filename, {'rid': 'openharmony-arm64', 'sdk_version': '10.0.401'})
+                packages, provenance = managed_inputs(sharp, sdk)
+                self.assertEqual(len(packages), 4)
+                self.assertEqual(provenance['sdk_version'], '10.0.401')
+
     def test_kit_keeps_complete_development_assets_and_only_four_godot_packages(self):
         with tempfile.TemporaryDirectory(prefix='godot-kit-package-test-', dir=os.environ['TMPDIR']) as directory:
             root = Path(directory)
