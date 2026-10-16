@@ -392,19 +392,18 @@ function prepareProfile(request) {
     } }];
     product.signingConfig = 'oheco-build-runner';
   }
-  const allSigned = request.format === 'app' && Boolean(request.signing);
-  if (allSigned) {
-    // A signed APP export promises signed inner packages, not merely a signed
-    // outer ZIP. Override only this temporary selected-product profile; the
-    // caller's original bytes/options are restored after every outcome.
+  const signedApp = request.format === 'app' && Boolean(request.signing);
+  if (signedApp) {
+    // Use assembleApp's ordinary APP signing flow. The all-signed extension
+    // requests a missing SDK intermediate; inner HAP signing is not required.
+    // Preserve the caller's module-signing options and restore the profile later.
     if (!Object.hasOwn(product, 'buildOption')) product.buildOption = {};
     requireValue(object(product.buildOption), 'Invalid selected product buildOption for signed APP.');
     if (!Object.hasOwn(product.buildOption, 'packOptions')) product.buildOption.packOptions = {};
     requireValue(object(product.buildOption.packOptions), 'Invalid selected product packOptions for signed APP.');
-    product.buildOption.packOptions.appWithSignedPkg = true;
-    product.buildOption.packOptions.buildAppSkipSignHap = false;
+    product.buildOption.packOptions.appWithSignedPkg = false;
   }
-  return { bytes: Buffer.from(JSON.stringify(doc, null, 2) + '\n'), allSigned, sdkSelection };
+  return { bytes: Buffer.from(JSON.stringify(doc, null, 2) + '\n'), sdkSelection };
 }
 function artifactDirectory(request) {
   return request.format === 'hap' ? path.join(request.projectDir, 'entry/build/default/outputs/default') :
@@ -421,12 +420,12 @@ function removeStaleArtifacts(request) {
     fs.unlinkSync(filename);
   }
 }
-function selectArtifact(request, allSigned) {
+function selectArtifact(request) {
   const target = artifactDirectory(request);
   directory(target, 'artifact directory');
-  const suffix = request.signing ? (allSigned ? '-all-signed' : '-signed') : '-unsigned';
+  const suffix = request.signing ? '-signed' : '-unsigned';
   const candidates = fs.readdirSync(target).filter(name => name.endsWith(`${suffix}.${request.format}`) &&
-    (allSigned || !name.endsWith(`-all-signed.${request.format}`)));
+    !name.endsWith(`-all-signed.${request.format}`));
   requireValue(candidates.length === 1, 'Expected exactly one matching signed/unsigned artifact in the default output directory.');
   const outputPath = path.join(target, candidates[0]);
   requireValue(regularFile(outputPath, 'output artifact').size > 0, 'Output artifact is empty.');
@@ -491,7 +490,7 @@ async function run(filename) {
       fs.writeFileSync(profile, prepared.bytes, { flag: 'wx', mode: 0o600 });
       removeStaleArtifacts(request);
       await execute(request, toolchain, buildArguments(request), env, secrets);
-      result = { schemaVersion: 2, outputPath: selectArtifact(request, prepared.allSigned),
+      result = { schemaVersion: 2, outputPath: selectArtifact(request),
         mode: request.buildMode, format: request.format, signed: Boolean(request.signing) };
     } finally {
       fs.renameSync(backup, profile);

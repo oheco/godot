@@ -40,8 +40,9 @@ This revision is a local candidate; it has not been tagged or published.
   Debug/Release ZIPs in the OpenHarmony preset's Custom Template fields.
 - Remote Deploy supports DevEco CLI automatic debug signing. Auto Signing and
   Always Auto Sign default to enabled. Matching private cached materials are reused;
-  new or replacement materials require confirmation before the CLI can replace a
-  team certificate. All OpenHarmony Editor Settings have native help tooltips.
+  missing, expired or mismatched materials are generated automatically without
+  changing export presets. The CLI may update a team-wide cloud certificate.
+  All OpenHarmony Editor Settings have native help tooltips.
 - Game export presets expose **Build > Device Types** as checkboxes, defaulting
   to phone. Select any combination of phone, tablet, 2in1, tv, wearable and car.
   The OpenHarmony SDK spells the phone type `default`; the HarmonyOS SDK uses
@@ -341,9 +342,9 @@ Sign is off; the Editor does not silently change that configured identity.
 The helper queries the selected HDC target's actual UDID and checks the verified
 debug profile's bundle, device list, ACL permissions, validity and matching
 certificate. An HDC serial or network address is not a signing UDID. Matching
-cached materials are reused. Before requesting new or replacement materials, the
-Editor asks for confirmation: CLI 1.3.5 can replace its team-wide cloud certificate
-when regenerating for a new device, changed permissions or expiry. Failed signing
+cached materials are reused. Missing or mismatched materials are regenerated
+automatically without a confirmation dialog. CLI 1.3.5 can replace its team-wide
+cloud certificate when regenerating for a new device, changed permissions or expiry. Failed signing
 is reported, and local previous materials are retained. Existing applications are
 never automatically uninstalled to bypass a signature mismatch.
 
@@ -354,7 +355,7 @@ owns this host namespace; its `XDG_CONFIG_HOME` and `TMPDIR` must support real
 0700/0600 permissions. Missing tools, logged-out or expired sessions, ambiguous
 teams, unavailable devices, invalid profiles and build failures produce actionable
 errors. See the [helper contract](<misc/dist/openharmony_template/tools/AUTO_SIGNING.md>)
-for cache and confirmation details.
+for automatic generation and cache details.
 
 Build both `module_mono_enabled=yes` templates with `generate_bundle=yes`.
 The Editor App does not bundle or extract export templates. Download

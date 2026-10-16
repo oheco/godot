@@ -57,7 +57,6 @@
 #include "editor/settings/editor_settings.h"
 #include "editor/themes/editor_scale.h"
 #include "main/splash.gen.h"
-#include "scene/gui/dialogs.h"
 #include "scene/resources/image_texture.h"
 #include "servers/display/display_server.h"
 
@@ -613,7 +612,7 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 
 Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, bool p_sign, const Dictionary &p_auto_signing) {
 	if (!p_auto_signing.is_empty()) {
-		return build_auto_signed(p_preset, p_debug, p_project, p_output, p_auto_signing);
+		return build_auto_signed(p_debug, p_project, p_output, p_auto_signing);
 	}
 	const String node = get_node_path();
 	const String hvigor = get_hvigor_path();
@@ -697,7 +696,7 @@ Error EditorExportPlatformOpenHarmony::build_project(const Ref<EditorExportPrese
 	return err;
 }
 
-Error EditorExportPlatformOpenHarmony::build_auto_signed(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing) {
+Error EditorExportPlatformOpenHarmony::build_auto_signed(bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing) {
 	if (!p_debug || p_output.get_extension().to_lower() != "hap" || String(p_auto_signing.get("target", "")).is_empty()) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("Automatic signing is only available for a debug HAP deployed to a selected device."));
 		return ERR_INVALID_PARAMETER;
@@ -734,7 +733,8 @@ Error EditorExportPlatformOpenHarmony::build_auto_signed(const Ref<EditorExportP
 		return ERR_INVALID_DATA;
 	}
 	if (status == "confirmation_required") {
-		return request_auto_signing_confirmation(p_preset, request["target"], result);
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("The automatic signing helper uses the old confirmation protocol. Update the OpenHarmony game templates."));
+		return ERR_INVALID_DATA;
 	}
 	if (status == "error") {
 		const String code = result.get("code", "");
@@ -760,101 +760,6 @@ Error EditorExportPlatformOpenHarmony::build_auto_signed(const Ref<EditorExportP
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("Could not copy the automatically signed debug HAP to the deployment output."));
 	}
 	return err;
-}
-
-Error EditorExportPlatformOpenHarmony::request_auto_signing_confirmation(const Ref<EditorExportPreset> &p_preset, const String &p_target, const Dictionary &p_result) {
-	cancel_auto_signing();
-	const String token = p_result.get("confirmationToken", "");
-	const String reason = p_result.get("reason", "");
-	const String message = p_result.get("message", "");
-	if (token.is_empty() || token.length() > 4096 || reason.is_empty() || reason.length() > 128 || message.is_empty() || message.length() > 4096) {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("The automatic signing helper returned an invalid confirmation request."));
-		return ERR_INVALID_DATA;
-	}
-	EditorNode *editor = EditorNode::get_singleton();
-	if (!editor || !editor->get_gui_base() || !DisplayServer::get_singleton() || DisplayServer::get_singleton()->get_name() == "headless") {
-		add_message(EXPORT_MESSAGE_ERROR, TTR("Automatic Signing"), TTR("Automatic signing confirmation_required: run Remote Deploy in the Editor and confirm before creating or replacing team signing material."));
-		return ERR_SKIP;
-	}
-	auto_signing_pending_preset = p_preset;
-	auto_signing_pending_target = p_target;
-	auto_signing_pending_token = token;
-	ConfirmationDialog *dialog = Object::cast_to<ConfirmationDialog>(ObjectDB::get_instance(auto_signing_confirmation));
-	if (!dialog) {
-		dialog = memnew(ConfirmationDialog);
-		auto_signing_confirmation = dialog->get_instance_id();
-		dialog->set_title(TTR("Confirm Automatic Signing"));
-		dialog->set_autowrap(true);
-		dialog->set_ok_button_text(TTR("Update Signing Material and Run"));
-		dialog->set_cancel_button_text(TTR("Cancel"));
-		dialog->connect("confirmed", callable_mp(this, &EditorExportPlatformOpenHarmony::confirm_auto_signing));
-		dialog->connect("canceled", callable_mp(this, &EditorExportPlatformOpenHarmony::cancel_auto_signing));
-		editor->get_gui_base()->add_child(dialog);
-	}
-	dialog->set_text(TTR("DevEco CLI will generate or rebuild signing material for this team and device. It may replace existing cloud certificates with the same team name, including certificates used by other projects. Continue only if you agree to this update.") + "\n\n" + message);
-	dialog->popup_centered_clamped(Size2(620, 260) * EDSCALE);
-	// run() releases this attempt's mappings/project. The run bar then stops its
-	// debugger; stop_remote_run() must leave this pending confirmation intact.
-	return ERR_SKIP;
-}
-
-void EditorExportPlatformOpenHarmony::cancel_auto_signing() {
-	auto_signing_pending_preset.unref();
-	auto_signing_pending_target = String();
-	auto_signing_pending_token = String();
-	auto_signing_consent_preset.unref();
-	auto_signing_consent_target = String();
-	auto_signing_consent_token = String();
-	ConfirmationDialog *dialog = Object::cast_to<ConfirmationDialog>(ObjectDB::get_instance(auto_signing_confirmation));
-	if (dialog) {
-		dialog->hide();
-	}
-}
-
-void EditorExportPlatformOpenHarmony::confirm_auto_signing() {
-	const Ref<EditorExportPreset> preset = auto_signing_pending_preset;
-	const String target = auto_signing_pending_target;
-	const String token = auto_signing_pending_token;
-	cancel_auto_signing();
-	EditorExport *exports = EditorExport::get_singleton();
-	EditorRunBar *run_bar = EditorRunBar::get_singleton();
-	if (preset.is_null() || token.is_empty() || !exports || !run_bar) {
-		return;
-	}
-	int platform_index = -1;
-	for (int i = 0; i < exports->get_export_platform_count(); i++) {
-		const Ref<EditorExportPlatform> platform = exports->get_export_platform(i);
-		if (platform.ptr() == this) {
-			if (!preset->is_runnable() || exports->get_runnable_preset_for_platform(platform) != preset) {
-				if (EditorNode::get_singleton()) {
-					EditorNode::get_singleton()->show_warning(TTR("The runnable export preset changed. Start Remote Deploy again to request confirmation for the current preset."));
-				}
-				return;
-			}
-			platform_index = i;
-			break;
-		}
-	}
-	int device_index = -1;
-	{
-		MutexLock lock(device_lock);
-		device_index = devices.find(target);
-	}
-	if (platform_index < 0 || device_index < 0) {
-		if (EditorNode::get_singleton()) {
-			EditorNode::get_singleton()->show_warning(TTR("The selected device is no longer available. Reconnect it and start Remote Deploy again."));
-		}
-		return;
-	}
-	auto_signing_consent_preset = preset;
-	auto_signing_consent_target = target;
-	auto_signing_consent_token = token;
-	// Re-enter the native run UI so its debugger starts before ports are read.
-	// Never call run() directly from the confirmation dialog.
-	run_bar->start_native_device(EditorExport::encode_platform_device_id(platform_index, device_index));
-	auto_signing_consent_preset.unref();
-	auto_signing_consent_target = String();
-	auto_signing_consent_token = String();
 }
 
 void EditorExportPlatformOpenHarmony::_remove_dir_recursive(const String &p_dir) {
@@ -939,8 +844,6 @@ void EditorExportPlatformOpenHarmony::clear_remote_run(bool p_stop) {
 }
 
 void EditorExportPlatformOpenHarmony::stop_remote_run() {
-	// The run bar also stops after ERR_SKIP. A signing confirmation must survive
-	// that stop; only cancellation, a new run or destruction clears it.
 	clear_remote_run(true);
 }
 
@@ -951,19 +854,12 @@ void EditorExportPlatformOpenHarmony::remote_debugger_stopped() {
 }
 
 Error EditorExportPlatformOpenHarmony::run(const Ref<EditorExportPreset> &p_preset, int p_device, BitField<EditorExportPlatform::DebugFlags> p_debug_flags) {
-	// Consume consent before validation, including an invalid device selection.
-	const Ref<EditorExportPreset> consent_preset = auto_signing_consent_preset;
-	const String consent_target = auto_signing_consent_target;
-	const String consent_token = auto_signing_consent_token;
-	cancel_auto_signing();
 	String device_id;
 	{
 		MutexLock lock(device_lock);
 		ERR_FAIL_INDEX_V(p_device, devices.size(), ERR_INVALID_PARAMETER);
 		device_id = devices[p_device];
 	}
-	// A different preset or serial never receives the confirmed token.
-	const String confirmation_token = consent_preset == p_preset && consent_target == device_id ? consent_token : String();
 	stop_remote_run();
 	if (remote_run && remote_run->active()) {
 		add_message(EXPORT_MESSAGE_ERROR, TTR("Run"), TTR("Previous deployment cleanup failed. Reconnect that device and stop it before deploying again."));
@@ -1039,7 +935,6 @@ Error EditorExportPlatformOpenHarmony::run(const Ref<EditorExportPreset> &p_pres
 		auto_signing["cliPath"] = EDITOR_GET("export/openharmony/devecocli_path");
 		auto_signing["teamId"] = EDITOR_GET("export/openharmony/auto_signing_team_id");
 		auto_signing["loginDataDir"] = EDITOR_GET("export/openharmony/auto_signing_data_dir");
-		auto_signing["confirmationToken"] = confirmation_token;
 	}
 	const String endpoint = use_broker() ? get_broker_endpoint() : String();
 	auto session = std::make_unique<DeviceRunSession>(device_id.utf8().get_data(), bundle.utf8().get_data(),
@@ -1451,11 +1346,6 @@ void EditorExportPlatformOpenHarmony::_notification(int p_what) {
 }
 
 EditorExportPlatformOpenHarmony::~EditorExportPlatformOpenHarmony() {
-	cancel_auto_signing();
-	ConfirmationDialog *dialog = Object::cast_to<ConfirmationDialog>(ObjectDB::get_instance(auto_signing_confirmation));
-	if (dialog) {
-		dialog->queue_free();
-	}
 	stop_remote_run();
 	quit_request.set();
 	if (check_for_changes_thread.is_started()) {

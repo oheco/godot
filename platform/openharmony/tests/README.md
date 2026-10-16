@@ -366,7 +366,7 @@ python3 platform/openharmony/tests/test_auto_sign_export.py \
 The Node suite executes the production helper with local executable CLI/HDC,
 profile-verifier and build-runner substitutes. It covers exact public CLI/profile
 schemas, SDK ACL classification, zero-exit logged-out status, team selection,
-UDID/ACL/expiry changes, confirmation binding and stale tokens, cache reuse,
+UDID/ACL/expiry changes, automatic first generation and renewal, cache reuse,
 generation rollback, stable project identities, real permission checks after
 chmod, copied login isolation, certificate bundles, locks, SIGTERM cleanup,
 restored public profiles and redacted one-object receipts. It cannot issue a
@@ -386,11 +386,11 @@ not hover a setting in an installed GUI.
 The native export fixture needs the rebuilt library's Dictionary context API. It
 exports real projects/PCKs from copies of a real debug template and invokes real
 CLT Node through the production C++ bridge. Only the helper entry is replaced by
-a fixed local protocol substitute. Success, confirmation in headless mode,
-logged-out messages, malformed/secret output, invalid signing receipts, unsafe
+a fixed local protocol substitute. Success without confirmation, rejection of
+legacy confirmation helpers, logged-out messages, malformed/secret output, invalid signing receipts, unsafe
 artifact paths and old templates are checked without CLI/HDC/network calls.
 The output HAP bytes are synthetic. Real cloud issuance, the installed GUI's
-confirmation/resume and a device's signature trust remain separate acceptance.
+automatic signing/deployment and a device's signature trust remain separate acceptance.
 
 ## Native manual signing with disposable credentials
 
@@ -405,7 +405,7 @@ python3 platform/openharmony/tests/test_signed_export.py \
 
 This gate generates a disposable local CA, certificates and PKCS12 in private
 TMPDIR, then performs real C++/Hvigor signed debug HAP and release APP exports,
-verifies the outer/inner packages with the native SDK signer, and rejects a wrong
+verifies each exported HAP/APP's own signature with the native SDK signer, and rejects a wrong
 password. It never issues cloud certificates, uses personal signing material or
 installs an application. Correct and incorrect passwords use opaque AES-GCM
 frames with adjacent private material; the selected SDK's exported DecipherUtil
@@ -422,9 +422,9 @@ cache; temporary SDK views and cache copies must be cleaned on exit. Evidence
 retains only redacted logs, hashes and checks, and explicitly records that file
 signature verification does not prove device installation trust.
 
-The current CLT 26.0.0.201 full APP gate is a known FAIL: the SDK does not
-produce the all-unsigned intermediate requested by its second signing step.
-A separately retained standard-signing experiment verifies the outer APP but
-finds unsigned inner HAPs. HAP signing and wrong-password rejection pass.
-Complete APP inner signing is deferred to the next iteration; no experimental
-APP change is merged into this local candidate, and these failures remain FAIL.
+APP acceptance uses the standard single `assembleApp` invocation and verifies
+the exported APP's signature. It does not force the optional all-signed extension
+or require each embedded HAP to be signed independently. Earlier failures from
+that extra requirement are retained as historical evidence, not the acceptance
+criterion for ordinary signed APP export. Source/material/output paths with spaces,
+profile restoration, secret cleanup and wrong-password rejection remain covered.

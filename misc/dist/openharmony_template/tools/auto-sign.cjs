@@ -8,7 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const KEYS = ['schemaVersion', 'projectDir', 'projectIdentity', 'nodePath', 'commandLineToolsRoot', 'sdkRoot',
-  'hdcPath', 'target', 'format', 'buildMode', 'cliPath', 'teamId', 'loginDataDir', 'confirmationToken'];
+  'hdcPath', 'target', 'format', 'buildMode', 'cliPath', 'teamId', 'loginDataDir'];
 const MATERIAL_KEYS = ['certpath', 'profile', 'storeFile', 'keyAlias', 'signAlg', 'keyPassword', 'storePassword'];
 const LIMIT = 4 * 1024 * 1024;
 class SigningError extends Error {
@@ -88,7 +88,6 @@ function validateRequest(request) {
   need(request.target.length > 0 && !/[\r\n]/.test(request.target), 'INVALID_REQUEST', 'Select a target device.');
   need(request.format === 'hap' && request.buildMode === 'debug', 'INVALID_REQUEST', 'Automatic signing supports debug HAP builds only.');
   need(!request.teamId || /^[A-Za-z0-9_-]{1,256}$/.test(request.teamId), 'INVALID_REQUEST', 'The selected team ID is invalid.');
-  need(!request.confirmationToken || /^[0-9a-f]{64}$/.test(request.confirmationToken), 'INVALID_REQUEST', 'The confirmation token is invalid.');
   directory(request.projectDir, 'INVALID_PROJECT');
   directory(request.commandLineToolsRoot, 'CLT_MISSING');
   try { directory(fs.realpathSync(request.sdkRoot), 'CLT_MISSING'); }
@@ -365,12 +364,8 @@ function prepareMinimal(ctx) {
   const profile = structuredClone(ctx.metadata.rootProfile);
   profile.app.signingConfigs = [];
   for (const product of profile.app.products) delete product.signingConfig;
-  const currentPath = path.join(ctx.cache, 'signing-config.json');
-  if (fs.existsSync(currentPath)) {
-    const current = readJSON(currentPath);
-    profile.app.signingConfigs = [current];
-    profile.app.products.find(item => item.name === 'default').signingConfig = current.name;
-  }
+  // Only an invalid/missing cache reaches generation. Do not hand stale or
+  // malformed cached signing paths back to the CLI; it writes a fresh config.
   writeJSON(path.join(target, 'build-profile.json5'), profile);
   writeJSON(path.join(target, 'AppScope/app.json5'), ctx.metadata.app);
   writeJSON(path.join(target, 'entry/src/main/module.json5'), ctx.metadata.module);
@@ -390,31 +385,6 @@ function configMaterial(config) {
     frame(material.keyPassword) && frame(material.storePassword) && ['SHA256withECDSA', 'SHA384withECDSA'].includes(material.signAlg),
   'CACHE_INVALID', 'The CLI signing configuration does not contain supported encrypted signing material.');
   return material;
-}
-function treeDigest(root) {
-  const hash = crypto.createHash('sha256');
-  let count = 0;
-  function visit(dir) {
-    if (!fs.existsSync(dir)) { hash.update('missing'); return; }
-    directory(dir, 'CACHE_INVALID');
-    for (const name of fs.readdirSync(dir).sort()) {
-      need(++count <= 4096, 'CACHE_INVALID', 'Signing cache contains too many files.');
-      const filename = path.join(dir, name);
-      hash.update(path.relative(root, filename));
-      const stat = fs.lstatSync(filename);
-      if (stat.isDirectory() && !stat.isSymbolicLink()) visit(filename);
-      else { regular(filename); hash.update(fs.readFileSync(filename)); }
-    }
-  }
-  visit(root);
-  return hash.digest('hex');
-}
-function cacheState(ctx) {
-  const config = path.join(ctx.cache, 'signing-config.json');
-  const context = path.join(ctx.cache, 'signing-context.json');
-  return digest(JSON.stringify({ config: fs.existsSync(config) ? digest(fs.readFileSync(config)) : null,
-    context: fs.existsSync(context) ? digest(fs.readFileSync(context)) : null,
-    material: treeDigest(path.join(ctx.cache, 'materials')), cli: treeDigest(path.join(ctx.cliHome, '.ohos')) }));
 }
 function certificateCheck(material, profile, now) {
   let cert;
@@ -480,33 +450,19 @@ async function inspectSigning(ctx, config) {
   if (certificateError) return { ready: false, reason: certificateError };
   return { ready: true, material };
 }
-function confirmation(ctx, reason) {
-  const context = { identity: ctx.request.projectIdentity, bundle: ctx.metadata.bundle,
-    target: ctx.request.target, udid: ctx.udid, team: ctx.team, permissions: ctx.metadata.permissions,
-    requiredACL: ctx.metadata.requiredACL, aclMetadata: ctx.metadata.aclMetadata, cache: cacheState(ctx), reason };
-  const contextHash = digest(JSON.stringify(context));
-  const pendingPath = path.join(ctx.cache, 'pending-confirmation.json');
-  let pending;
-  try { if (fs.existsSync(pendingPath)) pending = readJSON(pendingPath); } catch {}
-  const valid = object(pending) && pending.contextHash === contextHash && pending.expires > Date.now() &&
-    /^[a-f0-9]{64}$/.test(pending.token || '');
-  if (valid && ctx.request.confirmationToken === pending.token) {
-    fs.unlinkSync(pendingPath); // One attempt per confirmation, including failures.
-    ctx.confirmedCacheState = context.cache;
-    ctx.confirmationReason = reason;
-    return null;
+function refreshMetadata(ctx) {
+  const current = projectMetadata(ctx.request);
+  need(current.bundle === ctx.metadata.bundle, 'PROJECT_CHANGED', 'The project bundle changed during automatic signing. Retry with the current project configuration.');
+  ctx.metadata = current;
+}
+async function cachedSigning(ctx) {
+  const filename = path.join(ctx.cache, 'signing-config.json');
+  if (!fs.existsSync(filename)) return { ready: false, reason: 'CACHE_MISSING' };
+  try { return await inspectSigning(ctx, readJSON(filename)); }
+  catch (error) {
+    if (ctx.signal.aborted || ['PRIVATE_STORAGE_REQUIRED', 'CLT_MISSING'].includes(error.code)) throw error;
+    return { ready: false, reason: 'CACHE_INVALID' };
   }
-  if (!valid) {
-    const secretPath = path.join(ctx.root, 'confirmation.key');
-    if (!fs.existsSync(secretPath)) privateWrite(secretPath, crypto.randomBytes(32));
-    privateMode(secretPath, 0o600, false);
-    const nonce = crypto.randomBytes(32).toString('hex');
-    pending = { contextHash, expires: Date.now() + 10 * 60 * 1000,
-      token: crypto.createHmac('sha256', fs.readFileSync(secretPath)).update(contextHash + nonce).digest('hex') };
-    writeJSON(pendingPath, pending);
-  }
-  return { schemaVersion: 1, status: 'confirmation_required', confirmationToken: pending.token, reason,
-    message: 'The official CLI may replace all signing certificates for this team. Confirm this update in the editor before continuing; other applications may need new signing materials.' };
 }
 function importGenerated(ctx) {
   const profile = readJSON(path.join(ctx.minimal, 'build-profile.json5'), true);
@@ -545,17 +501,19 @@ async function generate(ctx) {
   let backedUp = false, hadOhos = false;
   try {
     releaseCLI = acquire(path.join(ctx.root, 'locks', 'cli'));
-    const currentUDID = await deviceUDID(ctx);
-    if (currentUDID !== ctx.udid || cacheState(ctx) !== ctx.confirmedCacheState) {
-      ctx.udid = currentUDID;
-      return confirmation(ctx, ctx.confirmationReason);
-    }
+    // The project lock is already held. Re-read live request context under the
+    // team/CLI locks rather than binding generation to an earlier snapshot.
+    syncLogin(ctx);
+    await authenticate(ctx);
+    need(await selectTeam(ctx) === ctx.team, 'TEAM_REQUIRED', 'The available signing team changed. Select the intended team ID in EditorSettings and retry.');
+    ctx.udid = await deviceUDID(ctx);
+    refreshMetadata(ctx);
+    const current = await cachedSigning(ctx);
+    if (current.ready) return current;
     copyTree(ctx.cache, cacheBackup);
     hadOhos = fs.existsSync(ohos);
     if (hadOhos) copyTree(ohos, ohosBackup);
     backedUp = true;
-    syncLogin(ctx);
-    await authenticate(ctx);
     prepareMinimal(ctx);
     const result = await cli(ctx, ['signature', 'generate', '--team-id', ctx.team, '--product', 'default']);
     if (!result.ok) {
@@ -653,21 +611,9 @@ async function perform(request, originalEnv, signal) {
     releaseProject = acquire(path.join(root, 'locks', 'project-' + key));
     ctx.cache = privateDir(path.join(root, 'projects', key));
     hardenTree(ctx.cache);
-    let checked = { ready: false, reason: 'CACHE_MISSING' };
-    const configPath = path.join(ctx.cache, 'signing-config.json');
-    if (fs.existsSync(configPath)) {
-      try { checked = await inspectSigning(ctx, readJSON(configPath)); }
-      catch (error) {
-        if (signal.aborted || ['PRIVATE_STORAGE_REQUIRED', 'CLT_MISSING'].includes(error.code)) throw error;
-        checked = { ready: false, reason: 'CACHE_INVALID' };
-      }
-    }
-    if (!checked.ready) {
-      const response = confirmation(ctx, checked.reason);
-      if (response) return response;
-      checked = await generate(ctx);
-      if (checked?.status === 'confirmation_required') return checked;
-    }
+    refreshMetadata(ctx);
+    let checked = await cachedSigning(ctx);
+    if (!checked.ready) checked = await generate(ctx);
     return await build(ctx, checked.material);
   } finally {
     try { releaseProject?.(); }

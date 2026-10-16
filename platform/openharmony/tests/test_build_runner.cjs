@@ -32,8 +32,16 @@ fs.writeFileSync(path.join(work, 'invocation.json'), JSON.stringify({
 const format = args.includes('assembleHap') ? 'hap' : 'app';
 const out = format === 'hap' ? path.join(root, 'entry/build/default/outputs/default') : path.join(root, 'build/outputs/default');
 const signed = Boolean(material);
-const all = format === 'app' && doc.app.products[0].buildOption?.packOptions?.appWithSignedPkg === true;
-const suffix = signed ? (all ? '-all-signed' : '-signed') : '-unsigned';
+// CLT 26.0.0.201: SignPackagesFromApp's getter is hardcoded false, independently
+// of the profile flag that SignApp reads before attempting a second signature.
+const signPackagesFromApp = { get appWithSignedPkg() { return false; } };
+const allUnsignedProduced = format === 'app' && signed && signPackagesFromApp.appWithSignedPkg;
+const secondAppSignature = format === 'app' && signed && doc.app.products[0].buildOption?.packOptions?.appWithSignedPkg === true;
+if (secondAppSignature && !allUnsignedProduced) {
+  console.error('FILE_NOT_FOUND -102: all-unsigned.app (SDK fixture)');
+  process.exit(7);
+}
+const suffix = signed ? '-signed' : '-unsigned';
 if (control.failure) {
   const secrets = JSON.parse(fs.readFileSync(path.join(path.dirname(material.storeFile),'fixture-secrets.json')));
   const a = 'wrong key password: ' + secrets.plaintext[0] + '\ncipher: ' + material.keyPassword + '\n';
@@ -46,7 +54,7 @@ if (control.failure) {
 } else {
   fs.mkdirSync(out,{recursive:true});
   if (!control.missing) {
-    const name='fixture-default'+(control.wrongSuffix?'-unsigned':suffix)+'.'+format;
+    const name='fixture-default'+(control.allSignedOnly?'-all-signed':control.wrongSuffix?'-unsigned':suffix)+'.'+format;
     const file=path.join(out,name);
     if(control.symlink) fs.symlinkSync(path.join(root,'fixture-control.json'),file);
     else fs.writeFileSync(file,control.empty?'':'SYNTHETIC PACKAGE, NOT A REAL HAP/APP');
@@ -307,10 +315,10 @@ for (const format of ['hap','app']) for (const mode of ['debug','release']) for 
       assert.ok(calls.every(call=>call.materialDir===path.dirname(f.request.signing.storeFile)&&call.profilePath===path.join(f.project,'build-profile.json5')));
     }
     if (signed && format === 'app') {
-      assert.equal(generated.app.products[0].buildOption.packOptions.appWithSignedPkg,true);
-      assert.equal(generated.app.products[0].buildOption.packOptions.buildAppSkipSignHap,false);
+      assert.equal(generated.app.products[0].buildOption.packOptions.appWithSignedPkg,false);
+      assert.equal(generated.app.products[0].buildOption.packOptions.buildAppSkipSignHap,undefined);
     }
-    const expectedName = `fixture-default-${signed?(format==='app'?'all-signed':'signed'):'unsigned'}.${format}`;
+    const expectedName = `fixture-default-${signed?'signed':'unsigned'}.${format}`;
     const outDir = format === 'hap' ? 'entry/build/default/outputs/default' : 'build/outputs/default';
     assert.deepEqual(JSON.parse(fs.readFileSync(f.resultPath)), {schemaVersion:2,
       outputPath:path.join(f.project,outDir,expectedName), mode, format, signed});
@@ -324,19 +332,23 @@ for (const format of ['hap','app']) for (const mode of ['debug','release']) for 
 }
 
 for (const [label,packOptions] of [['missing',undefined],['false',{appWithSignedPkg:false,buildAppSkipSignHap:true}],
-  ['true',{appWithSignedPkg:true,buildAppSkipSignHap:true}],['already enabled',{appWithSignedPkg:true,buildAppSkipSignHap:false}]]) {
-  test(`signed APP overrides ${label} options for inner signing, selects all-signed, then restores bytes`, t => {
+  ['true',{appWithSignedPkg:true,buildAppSkipSignHap:true}],['module signing enabled',{appWithSignedPkg:true,buildAppSkipSignHap:false}]]) {
+  test(`signed APP selects ordinary signing with ${label} options and preserves module signing, then restores bytes`, t => {
     const options={format:'app',signed:true};
     if(packOptions!==undefined) options.packOptions=packOptions;
     const f=fixture(t,options);
     assert.equal(f.run().status,0);
     const generated=JSON.parse(fs.readFileSync(path.join(f.work,'generated-profile.json')));
-    assert.equal(generated.app.products[0].buildOption.packOptions.appWithSignedPkg,true);
-    assert.equal(generated.app.products[0].buildOption.packOptions.buildAppSkipSignHap,false);
-    assert.match(JSON.parse(fs.readFileSync(f.resultPath)).outputPath,/-all-signed\.app$/);
+    assert.equal(generated.app.products[0].buildOption.packOptions.appWithSignedPkg,false);
+    assert.equal(generated.app.products[0].buildOption.packOptions.buildAppSkipSignHap,packOptions?.buildAppSkipSignHap);
+    assert.match(JSON.parse(fs.readFileSync(f.resultPath)).outputPath,/(?<!-all)-signed\.app$/);
     f.restored();
   });
 }
+test('signed APP rejects an all-signed output instead of accepting it as the ordinary signed APP',t=>{
+  const f=fixture(t,{format:'app',signed:true,control:{allSignedOnly:true}});
+  expectFailure(f,f.run());
+});
 for(const format of ['hap','app']) {
   test(`${format} unsigned does not rewrite existing pack signing options`,t=>{
     const packOptions={appWithSignedPkg:false,buildAppSkipSignHap:true};

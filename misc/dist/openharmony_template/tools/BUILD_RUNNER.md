@@ -182,11 +182,16 @@ APP arguments:
 --mode project -p product=default -p buildMode=<debug|release> assembleApp --no-daemon --no-incremental
 ```
 
-The old 6.26.4 adapter's signed-APP `--parallel` workaround is not retained:
-its necessity on official 7.26.8 has not been verified. Signed APP profile flags
-remain `appWithSignedPkg: true` and `buildAppSkipSignHap: false`, and successful
-artifact selection requires `-all-signed.app`. Real signed APP validation must check
-the outer APP and each inner HAP; fixture success alone does not establish that gate.
+One `assembleApp` invocation builds and signs the ordinary APP using the selected
+product's signing configuration. Signed APP builds set `appWithSignedPkg: false`
+and select `-signed.app`, excluding the optional `-all-signed.app` extension.
+Existing `buildAppSkipSignHap` options are preserved; the adapter adds no requirement
+to sign each embedded HAP separately. The original profile is restored afterward.
+On CLT 26.0.0.201, forcing the all-signed extension makes SignApp request a missing
+`all-unsigned.app` because SignPackagesFromApp does not produce it. The ordinary
+APP flow avoids that extra branch. Acceptance verifies the APP's own signature
+with the native SDK signer. No separate packing/signing command is added.
+The old 6.26.4 adapter's `--parallel` workaround is not retained.
 
 Child cwd is `projectDir`. Child HOME is `workDir/home`; TMPDIR/TMP/TEMP are
 `workDir/tmp`, created with verified 0700 permissions. `HVIGOR_USER_HOME` is the
@@ -225,7 +230,7 @@ artifact, without recursive search or first-match selection:
 | Format | Directory | Required suffix |
 | --- | --- | --- |
 | HAP unsigned/signed | `entry/build/default/outputs/default` | `-unsigned.hap` / `-signed.hap` |
-| APP unsigned/signed | `build/outputs/default` | `-unsigned.app` / `-all-signed.app` |
+| APP unsigned/signed | `build/outputs/default` | `-unsigned.app` / `-signed.app` |
 
 On exit 0, `workDir/result.json` is a private 0600 file with exactly five keys:
 

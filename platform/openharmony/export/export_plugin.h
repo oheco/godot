@@ -63,17 +63,7 @@ class EditorExportPlatformOpenHarmony : public EditorExportPlatform {
 	int get_debug_port() const;
 	bool validate_export_configuration(const Ref<EditorExportPreset> &p_preset, String &r_error, bool &r_missing_templates, bool p_debug, bool p_validate_signing) const;
 	Error build_project(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, bool p_sign, const Dictionary &p_auto_signing = {});
-	Error build_auto_signed(const Ref<EditorExportPreset> &p_preset, bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing);
-	Error request_auto_signing_confirmation(const Ref<EditorExportPreset> &p_preset, const String &p_target, const Dictionary &p_result);
-	void confirm_auto_signing();
-	void cancel_auto_signing();
-	ObjectID auto_signing_confirmation;
-	Ref<EditorExportPreset> auto_signing_pending_preset;
-	String auto_signing_pending_target;
-	String auto_signing_pending_token;
-	Ref<EditorExportPreset> auto_signing_consent_preset;
-	String auto_signing_consent_target;
-	String auto_signing_consent_token;
+	Error build_auto_signed(bool p_debug, const String &p_project, const String &p_output, const Dictionary &p_auto_signing);
 	bool use_broker() const;
 	String get_broker_endpoint() const;
 	Error execute_tool(const String &p_command, const List<String> &p_arguments, String &r_output, int *r_exitcode = nullptr, bool p_read_stderr = true, int p_timeout_ms = 120000, const String *p_broker_endpoint = nullptr);

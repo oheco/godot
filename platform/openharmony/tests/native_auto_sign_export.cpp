@@ -110,7 +110,7 @@ void audit_case(EditorExportPlatformOpenHarmony *p_platform, const Dictionary &p
 	p_platform->clear_messages();
 	check(!FileAccess::exists(output), "unique case has no preexisting target HAP");
 	const Error result = p_platform->export_project_helper(preset, true, output, true, false, 0, true, nullptr, p_context);
-	const Error expected_result = expected == "ok" ? OK : (expected == "auth" ? ERR_CANT_CREATE : (expected == "confirmation" ? ERR_SKIP : (expected == "old_template" ? ERR_FILE_NOT_FOUND : ERR_INVALID_DATA)));
+	const Error expected_result = expected == "ok" ? OK : (expected == "auth" ? ERR_CANT_CREATE : (expected == "old_template" ? ERR_FILE_NOT_FOUND : ERR_INVALID_DATA));
 	check(result == expected_result, "real export helper returns the expected protocol result");
 	check(unchanged(preset, before), "all preset options and disabled manual signing remain unchanged");
 	check(p_context.recursive_equal(context_before, 0), "export preserves the caller's public automatic context");
@@ -140,8 +140,8 @@ void audit_case(EditorExportPlatformOpenHarmony *p_platform, const Dictionary &p
 	}
 	if (expected == "auth") {
 		check(p_platform->get_message_count() == 1 && p_platform->get_message(0).text == auth_message, "AUTH_REQUIRED exposes exactly the contracted actionable message");
-	} else if (expected == "confirmation") {
-		check(messages_contain(p_platform, "confirmation_required") && messages_contain(p_platform, "confirm") && messages_contain(p_platform, "Editor"), "headless confirmation explicitly requests an interactive Editor confirmation");
+	} else if (expected == "legacy_confirmation") {
+		check(messages_contain(p_platform, "old confirmation protocol") && messages_contain(p_platform, "Update"), "old confirmation helper is rejected with a template update diagnostic");
 	} else if (name == "invalid_json") {
 		check(messages_contain(p_platform, "valid result"), "malformed JSON yields a stable diagnostic without echoing stdout");
 	} else if (name.begins_with("schema_")) {
@@ -223,13 +223,12 @@ void run_fixture(OS_OpenHarmony &p_os) {
 	context["cliPath"] = root.path_join("metadata/cli-do-not-execute.cjs");
 	context["teamId"] = "public-fixture-team";
 	context["loginDataDir"] = root.path_join("login-unused");
-	context["confirmationToken"] = "";
 	Ref<FileAccess> results = FileAccess::open(root.path_join("case-results.jsonl"), FileAccess::WRITE);
 	if (!check(results.is_valid() && manifest.get("cases", Variant()).get_type() == Variant::ARRAY, "case result journal is writable")) {
 		return;
 	}
 	const Array cases = manifest["cases"];
-	if (!check(cases.size() >= 15, "manifest covers success, diagnostics, confirmation, artifact rejection and old templates")) {
+	if (!check(cases.size() >= 15, "manifest covers success without confirmation, diagnostics, legacy protocol rejection and old templates")) {
 		return;
 	}
 	for (const Variant &value : cases) {

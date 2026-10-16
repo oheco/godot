@@ -34,7 +34,7 @@ AUTH_MESSAGE = 'Run the local DevEco CLI login command, then retry Remote Deploy
 CASES = (
     ('ok', 'ok'),
     ('auth_required', 'auth'),
-    ('confirmation_required', 'confirmation'),
+    ('confirmation_required', 'legacy_confirmation'),
     ('invalid_json', 'invalid_json'),
     ('schema_number', 'invalid'),
     ('schema_string', 'invalid'),
@@ -250,7 +250,7 @@ def prepare_fixtures(root, template, tools):
                     sdkRoot=str(root / 'sdk'), hdcPath=str(root / 'metadata/hdc-do-not-execute'),
                     target='native-auto-sign-fake-serial', format='hap', buildMode='debug',
                     cliPath=str(root / 'metadata/cli-do-not-execute.cjs'), teamId='public-fixture-team',
-                    loginDataDir=str(root / 'login-unused'), confirmationToken='')
+                    loginDataDir=str(root / 'login-unused'))
     cases = []
     scripts = []
     with zipfile.ZipFile(template) as source:

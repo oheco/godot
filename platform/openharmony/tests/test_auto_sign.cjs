@@ -40,6 +40,12 @@ console.log('SENTINEL_secret_token_and_password_never_print');console.error('SEN
 const CLI = COMMON + String.raw`
 const args=process.argv.slice(2);log('cli',{args,home:process.env.HOME,data:process.env.DEVECO_CLI_DATA_DIR,cwd:process.cwd(),clt:process.env.COMMAND_LINE_TOOL_PATH,noColor:process.env.NO_COLOR,authSource:process.env.DEVECO_CLI_AUTH_SOURCE,codeAuthDir:process.env.DEVECO_CODE_AUTH_DIR});
 if(args.join(' ')==='auth status'){
+  const calls=fs.readFileSync(path.join(root,'events.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(event=>event.kind==='cli'&&event.args.join(' ')==='auth status').length;
+  if(calls===2){
+    if(control.permissionsOnRecheck){const file=path.join(process.cwd(),'entry/src/main/module.json5');const doc=JSON.parse(fs.readFileSync(file));doc.module.requestPermissions=control.permissionsOnRecheck.map(name=>({name}));json(file,doc);}
+    if(control.bundleOnRecheck){const file=path.join(process.cwd(),'AppScope/app.json5');const doc=JSON.parse(fs.readFileSync(file));doc.app.bundleName=control.bundleOnRecheck;json(file,doc);}
+    if(control.otherCLIStateOnRecheck)write(path.join(process.env.HOME,'.ohos/config/other-project-state'),'unrelated application state');
+  }
   if(control.notLoggedIn){console.log('Not logged in');process.exit(0);}
   const data=process.env.DEVECO_CLI_DATA_DIR;
   if(!fs.existsSync(path.join(data,'token.enc'))||!fs.existsSync(path.join(data,'token.dek'))){console.log('Not logged in');process.exit(0);}
@@ -47,11 +53,12 @@ if(args.join(' ')==='auth status'){
   fs.appendFileSync(path.join(data,'token.enc'),'private-refresh');
   console.log('Current user: local-fixture');
 }else if(args.join(' ')==='auth team list'){
-  const teams=control.teams||['team-one'],width=Math.max(2,...teams.map(id=>id.length));
+  const calls=fs.readFileSync(path.join(root,'events.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(event=>event.kind==='cli'&&event.args.join(' ')==='auth team list').length;
+  const teams=(calls>=2&&control.teamsOnRecheck)||control.teams||['team-one'],width=Math.max(2,...teams.map(id=>id.length));
   console.log('Id'.padEnd(width)+'  Name');console.log('-'.repeat(width)+'  ----');
   for(const id of teams)console.log(id.padEnd(width)+'  Local Team Name With Spaces');
 }else if(args[0]==='signature'&&args[1]==='generate'){
-  log('generate');
+  log('generate',{locks:fs.readdirSync(path.join(process.env.FIXTURE_SIGNING_ROOT,'locks')).sort()});
   if(!args.includes('--team-id')||args.includes('--force'))throw new Error('invalid generate arguments');
   const materialDir=path.join(process.env.HOME,'.ohos/config');
   const app=JSON.parse(fs.readFileSync(path.join(process.cwd(),'AppScope/app.json5'))).app;
@@ -75,11 +82,12 @@ if(control.unauthorized){console.error('device unauthorized');process.exit(0);}
 if(control.deviceFail){console.error('device disconnected');process.exit(3);}
 if(args.slice(2).join(' ')!=='shell bm get -u')throw new Error('unexpected hdc command');
 let udid=(control.udids||{})[args[1]]||'a'.repeat(64);
-if(control.changeUDIDOnConfirmation){const calls=fs.readFileSync(path.join(root,'events.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(event=>event.kind==='hdc').length;if(calls>=3)udid='b'.repeat(64);}
+if(control.changeUDIDBeforeGeneration){const calls=fs.readFileSync(path.join(root,'events.jsonl'),'utf8').trim().split('\n').map(line=>JSON.parse(line)).filter(event=>event.kind==='hdc').length;if(calls>=2)udid='b'.repeat(64);}
 console.log('udid: '+udid);
 `;
 const VERIFIER = COMMON + String.raw`
 const args=process.argv.slice(2);log('verify',{args});
+if(control.verifyFailOnce){json(process.env.FIXTURE_CONTROL,{...control,verifyFailOnce:false});process.exit(4);}
 if(control.verifyFail){process.exit(4);}
 const input=args[args.indexOf('-inFile')+1],output=args[args.indexOf('-outFile')+1];
 const doc=JSON.parse(fs.readFileSync(input));
@@ -138,30 +146,35 @@ function fixture(t, initial = {}) {
   write(path.join(login,'token.enc'),'original-token');write(path.join(login,'token.dek'),'original-dek');
   for(const n of [1,2,3])write(path.join(home,`.local/share/deveco-cli/keys/kek-v${n}.bin`),'original-kek-'+n);
   write(path.join(home,'.harmony/hdckey'),'original-hdc-private');write(path.join(home,'.harmony/hdckey.pub'),'original-hdc-public');
-  const request={schemaVersion:1,projectDir:project,projectIdentity:path.join(home,'source project/project.godot'),nodePath:process.execPath,
-    commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:'',confirmationToken:''};
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999'};
+  const identity=path.join(home,'source project/project.godot'),preset=path.join(path.dirname(identity),'export_presets.cfg');
+  const originalPreset='[preset.0.options]\nbuild/sign=false\nsign/key_alias="manual-unchanged"\n';
+  write(identity,'[application]\nconfig/name="Original source"\n');write(preset,originalPreset);
+  const request={schemaVersion:1,projectDir:project,projectIdentity:identity,nodePath:process.execPath,
+    commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
+  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999'};
   function run(changes={}, envChanges={}){
     const child=spawnSync(process.execPath,[HELPER,'--request-json',JSON.stringify({...request,...changes})],{encoding:'utf8',env:{...env,...envChanges},timeout:20000,maxBuffer:1024*1024});
     assert.equal(child.status,0,child.stderr+'\n'+child.stdout);assert.equal(child.stderr,'');
     assert.ok(!child.stdout.includes(SECRET),'raw child diagnostics escaped');
     const result=JSON.parse(child.stdout);assert.equal(result.schemaVersion,1);
+    assert.ok(['ok','error'].includes(result.status),'only automatic success/error receipts are supported');
+    assert.equal(Object.hasOwn(result,'confirmationToken'),false);
     assert.equal(child.stdout.trim(),JSON.stringify(result),'stdout must contain exactly one JSON object');
     return result;
   }
   function events(){const file=path.join(root,'events.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];}
   function update(value){control={...control,...value};json(controlFile,control);}
-  function confirm(changes={}){const pending=run(changes);assert.equal(pending.status,'confirmation_required',JSON.stringify(pending));return run({...changes,confirmationToken:pending.confirmationToken});}
   function cache(){const projects=path.join(config,'godot-openharmony-signing/projects');const keys=fs.readdirSync(projects);assert.equal(keys.length,1);return path.join(projects,keys[0]);}
   function profileEdit(change){const file=path.join(cache(),'materials/profile.p7b'),doc=JSON.parse(fs.readFileSync(file));change(doc);json(file,doc);}
   function assertClean(){
     assert.deepEqual(fs.readdirSync(tmp),[],'temporary files leaked');
     const locks=path.join(config,'godot-openharmony-signing/locks');if(fs.existsSync(locks))assert.deepEqual(fs.readdirSync(locks),[],'locks leaked');
     assert.deepEqual(fs.readFileSync(path.join(project,'build-profile.json5')),original,'public build profile changed');
+    assert.equal(fs.readFileSync(preset,'utf8'),originalPreset,'source export preset changed');
     assert.equal(fs.readFileSync(path.join(login,'token.enc'),'utf8'),'original-token');
     assert.equal(fs.readFileSync(path.join(home,'.harmony/hdckey'),'utf8'),'original-hdc-private');
   }
-  return {root,home,config,tmp,project,clt,sdk,cli,hdc,login,request,env,run,events,update,confirm,cache,profileEdit,assertClean,original,module};
+  return {root,home,config,tmp,project,clt,sdk,cli,hdc,login,request,env,run,events,update,cache,profileEdit,assertClean,original,module};
 }
 
 test('strict exported API and official team table parser',()=>{
@@ -169,16 +182,19 @@ test('strict exported API and official team table parser',()=>{
   assert.deepEqual(api.parseTeams('Id     Name\n-----  --------\n12345  Dev One\n67890  Dev Two With Spaces'),['12345','67890']);
   assert.throws(()=>api.validateRequest({schemaVersion:1,password:'secret'}),{code:'INVALID_REQUEST'});
 });
-test('first run requires confirmation; confirmed generation is explicit once; matching cache builds without generation',t=>{
-  const f=fixture(t);const first=f.run();assert.equal(first.status,'confirmation_required');assert.equal(first.reason,'CACHE_MISSING');
-  assert.equal(f.events().filter(e=>e.kind==='generate').length,0);f.assertClean();
-  const result=f.run({confirmationToken:first.confirmationToken});assert.equal(result.status,'ok',JSON.stringify(result));assert.equal(result.signed,true);assert.equal(result.profileValidated,true);
+test('first request without a token generates once automatically; matching cache builds without generation',t=>{
+  const f=fixture(t);assert.equal(Object.hasOwn(f.request,'confirmationToken'),false);
+  const result=f.run();assert.equal(result.status,'ok',JSON.stringify(result));assert.equal(result.signed,true);assert.equal(result.profileValidated,true);
+  assert.equal(fs.existsSync(path.join(f.cache(),'pending-confirmation.json')),false);
+  assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/confirmation.key')),false);
   assert.ok(result.outputPath.startsWith(f.project+path.sep));
   const cached=f.run();assert.equal(cached.status,'ok',JSON.stringify(cached));
   assert.equal(f.events().filter(e=>e.kind==='generate').length,1);
   const generate=f.events().filter(e=>e.kind==='cli'&&e.args[0]==='signature')[0];
   assert.deepEqual(generate.args,['signature','generate','--team-id','team-one','--product','default']);
   assert.ok(generate.home.startsWith(f.config+path.sep));assert.equal(generate.clt,f.clt);assert.equal(generate.noColor,'1');
+  const held=f.events().find(event=>event.kind==='generate').locks;
+  assert.equal(held.length,3);assert.ok(held.includes('cli'));assert.ok(held.some(name=>name.startsWith('project-')));assert.ok(held.some(name=>name.startsWith('team-')));
   const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
   const build=f.events().find(e=>e.kind==='build');assert.equal(build.requestMode,0o600);assert.equal(build.parentMode,0o700);assert.equal(build.request.hvigorUserHome,path.join(f.home,'.hvigor'));
   for(const key of ['certificate','profile','storeFile'])assert.ok(build.request.signing[key].startsWith(f.cache()+path.sep));
@@ -189,7 +205,7 @@ test('first run requires confirmation; confirmed generation is explicit once; ma
 test('inherited DevEco Code authentication cannot redirect the private CLI login',t=>{
   const f=fixture(t);
   const result=f.run({}, {DEVECO_CLI_AUTH_SOURCE:'deveco-code',DEVECO_CODE_AUTH_DIR:path.join(f.home,'unrelated-code-account')});
-  assert.equal(result.status,'confirmation_required');
+  assert.equal(result.status,'ok');
   const events=f.events().filter(event=>event.kind==='cli');
   assert.ok(events.length>=2);
   for(const event of events){assert.equal(event.authSource,undefined);assert.equal(event.codeAuthDir,undefined);assert.ok(event.home.startsWith(f.config+path.sep));}
@@ -201,7 +217,7 @@ test('CER bundles match the developer certificate without assuming the first ent
   const bytes=Buffer.from(new (require('node:crypto').X509Certificate)(CERT).raw);bytes[bytes.length-1]^=1;
   const other='-----BEGIN CERTIFICATE-----\n'+bytes.toString('base64').match(/.{1,64}/g).join('\n')+'\n-----END CERTIFICATE-----\n';
   const f=fixture(t,{certBundle:other+CERT});
-  assert.equal(f.confirm().status,'ok');
+  assert.equal(f.run().status,'ok');
   assert.equal(f.run().status,'ok');
   assert.equal(f.events().filter(event=>event.kind==='generate').length,1);
   f.assertClean();
@@ -212,7 +228,7 @@ test('unauthenticated CLI exit zero never triggers login or signing',t=>{
 });
 test('multiple teams require an explicit editor team; single team is always passed explicitly',t=>{
   const f=fixture(t,{teams:['first-team','second-team']});assert.equal(f.run().code,'TEAM_REQUIRED');assert.equal(f.events().filter(e=>e.kind==='generate').length,0);
-  assert.equal(f.confirm({teamId:'second-team'}).status,'ok');
+  assert.equal(f.run({teamId:'second-team'}).status,'ok');
   assert.ok(f.events().find(e=>e.kind==='cli'&&e.args[0]==='signature').args.includes('second-team'));f.assertClean();
 });
 test('device unavailable and unauthorized are distinct; serial is never a substitute for UDID',t=>{
@@ -220,50 +236,51 @@ test('device unavailable and unauthorized are distinct; serial is never a substi
   f.update({deviceFail:false,unauthorized:true});assert.equal(f.run().code,'DEVICE_UNAUTHORIZED');
   assert.equal(f.events().filter(e=>e.kind==='generate').length,0);f.assertClean();
 });
-test('confirmation is bound to target/UDID; a stale token cannot cause generation',t=>{
-  const f=fixture(t,{udids:{'second-serial':UDID_B}});const first=f.run();
-  const other=f.run({target:'second-serial',confirmationToken:first.confirmationToken});assert.equal(other.status,'confirmation_required');assert.notEqual(other.confirmationToken,first.confirmationToken);
-  assert.equal(f.events().filter(e=>e.kind==='generate').length,0);f.assertClean();
+test('a new target automatically regenerates for its actual UDID in the same application cache',t=>{
+  const f=fixture(t,{udids:{'second-serial':UDID_B}});assert.equal(f.run().status,'ok');const cache=f.cache();
+  f.update({generatedDevices:[UDID_B]});assert.equal(f.run({target:'second-serial'}).status,'ok');
+  assert.equal(f.cache(),cache);assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
+  assert.equal(f.run({target:'second-serial'}).status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);f.assertClean();
 });
-test('expired profile and new device require confirmation; mismatching generated device is rejected after one attempt',t=>{
-  const f=fixture(t,{udids:{'second-serial':UDID_B}});assert.equal(f.confirm().status,'ok');
-  f.profileEdit(p=>{p.validity['not-after']=1;});const expired=f.run();assert.equal(expired.status,'confirmation_required');assert.equal(expired.reason,'PROFILE_EXPIRED');
-  assert.equal(f.run({confirmationToken:expired.confirmationToken}).status,'ok');
-  const pending=f.run({target:'second-serial'});assert.equal(pending.reason,'PROFILE_DEVICE_MISMATCH');
+test('expired profiles update once; mismatching generated devices are rejected without an internal retry',t=>{
+  const f=fixture(t,{udids:{'second-serial':UDID_B}});assert.equal(f.run().status,'ok');
+  f.profileEdit(p=>{p.validity['not-after']=1;});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
   const old=fs.readFileSync(path.join(f.cache(),'materials/profile.p7b'));
-  const rejected=f.run({target:'second-serial',confirmationToken:pending.confirmationToken});assert.equal(rejected.code,'PROFILE_DEVICE_MISMATCH');
+  const rejected=f.run({target:'second-serial'});assert.equal(rejected.code,'PROFILE_DEVICE_MISMATCH');
   assert.deepEqual(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')),old,'failed generation must restore previous app material');
-  assert.equal(f.events().filter(e=>e.kind==='generate').length,3);
-  assert.equal(f.run({target:'second-serial',confirmationToken:pending.confirmationToken}).status,'confirmation_required','consumed token cannot retry');
-  f.assertClean();
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
-test('permission changes invalidate confirmation and matching cache',t=>{
-  const f=fixture(t);const initial=f.run();f.module.module.requestPermissions.push({name:'ohos.permission.NEW_ACL'});json(path.join(f.project,'entry/src/main/module.json5'),f.module);
-  const changed=f.run({confirmationToken:initial.confirmationToken});assert.equal(changed.status,'confirmation_required');assert.notEqual(changed.confirmationToken,initial.confirmationToken);
-  assert.equal(f.run({confirmationToken:changed.confirmationToken}).status,'ok');
-  f.profileEdit(p=>{p.acls['allowed-acls']=[];});assert.equal(f.run().reason,'PROFILE_ACL_MISMATCH');f.assertClean();
+test('new ACL permissions and missing profile ACLs update automatically exactly once per request',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');f.module.module.requestPermissions.push({name:'ohos.permission.NEW_ACL'});json(path.join(f.project,'entry/src/main/module.json5'),f.module);
+  assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
+  assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
+  f.profileEdit(p=>{p.acls['allowed-acls']=[];});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
-test('generation failures restore CLI team files and app keys, release locks, discard child diagnostics',t=>{
-  const f=fixture(t);assert.equal(f.confirm().status,'ok');
+test('generation fails once without retry and restores CLI team files, application keys and configuration',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');
   f.profileEdit(p=>{p.validity['not-after']=1;});const oldConfig=fs.readFileSync(path.join(f.cache(),'signing-config.json'));
+  const oldProfile=fs.readFileSync(path.join(f.cache(),'materials/profile.p7b'));
   const cliStore=path.join(f.config,'godot-openharmony-signing/cli-home/.ohos/config/store.p12');const oldStore=fs.readFileSync(cliStore);
-  const pending=f.run();f.update({generateFail:true,network:true});assert.equal(f.run({confirmationToken:pending.confirmationToken}).code,'NETWORK_ERROR');
-  assert.deepEqual(fs.readFileSync(cliStore),oldStore);assert.deepEqual(fs.readFileSync(path.join(f.cache(),'signing-config.json')),oldConfig);f.assertClean();
-  f.update({generateFail:false,network:false});assert.equal(f.confirm().status,'ok');f.assertClean();
+  f.update({generateFail:true,network:true});assert.equal(f.run().code,'NETWORK_ERROR');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
+  assert.deepEqual(fs.readFileSync(cliStore),oldStore);assert.deepEqual(fs.readFileSync(path.join(f.cache(),'signing-config.json')),oldConfig);
+  assert.deepEqual(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')),oldProfile);f.assertClean();
+  f.update({generateFail:false,network:false});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
 test('build failure restores public profile; later build reuses cache; invalid receipts never succeed',t=>{
-  const f=fixture(t,{buildFail:true});assert.equal(f.confirm().code,'BUILD_FAILED');f.assertClean();
+  const f=fixture(t,{buildFail:true});assert.equal(f.run().code,'BUILD_FAILED');f.assertClean();
   f.update({buildFail:false});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,1);
   for(const field of ['outsideArtifact','unsigned','wrongFormat','wrongMode']){f.update({[field]:true});assert.equal(f.run().code,'BUILD_FAILED');f.update({[field]:false});}
   f.assertClean();
 });
 test('profile verification failures are conservative; unknown all-device policy never becomes ready',t=>{
-  const f=fixture(t);assert.equal(f.confirm().status,'ok');f.update({verifyFail:true});assert.equal(f.run().reason,'PROFILE_UNVERIFIED');
-  f.update({verifyFail:false});f.profileEdit(p=>{p['debug-info']['device-ids']=[];});assert.equal(f.run().reason,'PROFILE_DEVICE_MISMATCH');f.assertClean();
+  const f=fixture(t);assert.equal(f.run().status,'ok');f.update({verifyFail:true});assert.equal(f.run().code,'PROFILE_INVALID');
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
+  f.update({verifyFail:false,generatedDevices:[]});f.profileEdit(p=>{p['debug-info']['device-ids']=[];});assert.equal(f.run().code,'PROFILE_DEVICE_MISMATCH');
+  assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
 test('private storage rejects HOME and updates copied login only after original metadata changes',t=>{
   const f=fixture(t);assert.equal(f.run({}, {XDG_CONFIG_HOME:path.join(f.home,'bad cache')}).code,'PRIVATE_STORAGE_REQUIRED');
-  assert.equal(f.confirm().status,'ok');
+  assert.equal(f.run().status,'ok');
   const copied=path.join(f.config,'godot-openharmony-signing/cli-home/.config/deveco-cli/token.enc');
   assert.ok(fs.readFileSync(copied,'utf8').startsWith('original-token'));assert.equal(fs.statSync(copied).mode&0o777,0o600);
   write(path.join(f.login,'token.enc'),'new-original-login');assert.equal(f.run().status,'ok');assert.ok(fs.readFileSync(copied,'utf8').startsWith('new-original-login'));
@@ -273,9 +290,9 @@ test('private storage rejects HOME and updates copied login only after original 
 test('CLI discovery uses PATH, selected Node prefix, and oo current Node without shell or installation',t=>{
   const f=fixture(t),selectedPrefix=path.join(f.root,'selected CLT Node'),selectedNode=path.join(selectedPrefix,'bin/node'),bin=path.join(f.root,'fixture PATH bin');
   fs.mkdirSync(path.dirname(selectedNode),{recursive:true,mode:0o700});fs.symlinkSync(process.execPath,selectedNode);fs.mkdirSync(bin,{mode:0o700});fs.symlinkSync(f.cli,path.join(bin,'devecocli'));
-  const pending=f.run({cliPath:'',nodePath:selectedNode},{PATH:bin});assert.equal(pending.status,'confirmation_required');
+  assert.equal(f.run({cliPath:'',nodePath:selectedNode},{PATH:bin}).status,'ok');
   const entry=path.join(selectedPrefix,'lib/node_modules/@deveco/deveco-cli/cli.js');write(entry,CLI);
-  assert.equal(f.run({cliPath:'',nodePath:selectedNode,confirmationToken:pending.confirmationToken},{PATH:''}).status,'ok');
+  assert.equal(f.run({cliPath:'',nodePath:selectedNode},{PATH:''}).status,'ok');
   assert.ok(entry.startsWith(f.root+path.sep));fs.unlinkSync(entry);
   const ooNode=path.join(f.root,'oo current Node/bin/node');write(ooNode,'public discovery marker; never executed');
   fs.symlinkSync(f.cli,path.join(path.dirname(ooNode),'devecocli'));fs.mkdirSync(path.join(f.home,'.oheco/bin'),{recursive:true,mode:0o700});fs.symlinkSync(ooNode,path.join(f.home,'.oheco/bin/node'));
@@ -292,13 +309,13 @@ test('malformed project/CLI JSON and inaccessible verifier produce expected safe
   json(path.join(f.project,'build-profile.json5'),{app:{products:[null]},modules:[null]});assert.equal(f.run().code,'INVALID_PROJECT');write(path.join(f.project,'build-profile.json5'),f.original);
   f.module.module.requestPermissions=null;json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.run().code,'INVALID_PROJECT');
   f.module.module.requestPermissions=[{name:'ohos.permission.TEST_ACL'}];json(path.join(f.project,'entry/src/main/module.json5'),f.module);
-  assert.equal(f.confirm().code,'SIGNING_FAILED');f.assertClean();f.update({malformedGenerated:false});assert.equal(f.confirm().status,'ok');
+  assert.equal(f.run().code,'SIGNING_FAILED');f.assertClean();f.update({malformedGenerated:false});assert.equal(f.run().status,'ok');
   fs.chmodSync(path.join(f.sdk,'default/openharmony/toolchains/lib/hap-sign-tool'),0o600);assert.equal(f.run().code,'CLT_MISSING');f.assertClean();
 });
 test('SDK permission metadata filters ACL exceptions, version strings, and unsupported permissions',t=>{
   const f=fixture(t,{generatedACL:['ohos.permission.FILE_ACCESS_PERSIST','ohos.permission.NEW_API_ACL']});
   f.module.module.requestPermissions=['ohos.permission.INTERNET','ohos.permission.READ_DOCUMENT','ohos.permission.WRITE_DOCUMENT','ohos.permission.FILE_ACCESS_PERSIST','ohos.permission.NEW_API_ACL'].map(name=>({name}));
-  json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.confirm().status,'ok');
+  json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.run().status,'ok');
   const stored=JSON.parse(fs.readFileSync(path.join(f.cache(),'signing-context.json')));
   assert.deepEqual(stored.requiredACL,['ohos.permission.FILE_ACCESS_PERSIST','ohos.permission.NEW_API_ACL']);
   f.module.module.requestPermissions.push({name:'ohos.permission.FUTURE_ACL'});json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.run().code,'ACL_UNSUPPORTED');
@@ -311,28 +328,57 @@ test('JSON schema errors and unexpected fatal failures each emit one safe JSON r
   assert.equal(child.status,1);assert.equal(child.stderr,'');assert.ok(!child.stdout.includes(SECRET));assert.equal(JSON.parse(child.stdout).code,'INTERNAL_ERROR');f.assertClean();
 });
 test('failure to restore the public build profile is reported explicitly',t=>{
-  const f=fixture(t,{noRestore:true});assert.equal(f.confirm().code,'BUILD_PROFILE_NOT_RESTORED');
+  const f=fixture(t,{noRestore:true});assert.equal(f.run().code,'BUILD_PROFILE_NOT_RESTORED');
   write(path.join(f.project,'build-profile.json5'),f.original);f.assertClean();
 });
-test('normal exporter permissions need no ACL and removed ACLs require a new confirmation',t=>{
+test('normal permissions reuse matching ACL-free material and removed ACLs automatically update once',t=>{
   const f=fixture(t,{generatedACL:[]});
   f.module.module.requestPermissions=[{name:'ohos.permission.INTERNET'},{name:'ohos.permission.MICROPHONE'}];
-  json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.confirm().status,'ok');
+  json(path.join(f.project,'entry/src/main/module.json5'),f.module);assert.equal(f.run().status,'ok');
   f.module.module.requestPermissions.push({name:'ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY'});
   json(path.join(f.project,'entry/src/main/module.json5'),f.module);f.update({generatedACL:['ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY']});
-  assert.equal(f.confirm().status,'ok');
+  assert.equal(f.run().status,'ok');
   f.module.module.requestPermissions.pop();json(path.join(f.project,'entry/src/main/module.json5'),f.module);
-  assert.equal(f.run().reason,'PROFILE_ACL_MISMATCH');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);f.assertClean();
+  f.update({generatedACL:[]});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
-test('stable projectIdentity permits confirmation and cache reuse across temporary export directories',t=>{
-  const f=fixture(t),pending=f.run(),other=path.join(f.root,'second exported project');fs.cpSync(f.project,other,{recursive:true});
-  const result=f.run({projectDir:other,confirmationToken:pending.confirmationToken});assert.equal(result.status,'ok',JSON.stringify(result));assert.ok(result.outputPath.startsWith(other+path.sep));
+test('stable projectIdentity reuses cache across temporary export directories without tokens',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');const other=path.join(f.root,'second exported project');fs.cpSync(f.project,other,{recursive:true});
+  const result=f.run({projectDir:other});assert.equal(result.status,'ok',JSON.stringify(result));assert.ok(result.outputPath.startsWith(other+path.sep));
   assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,1);f.assertClean();
 });
-test('device identity is checked again under the team lock before any generation',t=>{
-  const f=fixture(t,{changeUDIDOnConfirmation:true});const pending=f.run();
-  const changed=f.run({confirmationToken:pending.confirmationToken});assert.equal(changed.status,'confirmation_required');assert.notEqual(changed.confirmationToken,pending.confirmationToken);
-  assert.equal(f.events().filter(e=>e.kind==='generate').length,0);f.assertClean();
+test('device identity is checked again under the team lock and current UDID is generated once',t=>{
+  const f=fixture(t,{changeUDIDBeforeGeneration:true,generatedDevices:[UDID_B]});assert.equal(f.run().status,'ok');
+  const profile=JSON.parse(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')));
+  assert.deepEqual(profile['debug-info']['device-ids'],[UDID_B]);assert.equal(f.events().filter(e=>e.kind==='generate').length,1);f.assertClean();
+});
+test('legacy pending files and HMAC keys remain unused and untouched during automatic updates',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');
+  const pending=path.join(f.cache(),'pending-confirmation.json'),key=path.join(f.config,'godot-openharmony-signing/confirmation.key');
+  write(pending,'legacy-invalid-json-is-not-read');write(key,'legacy-key-is-not-used');
+  f.profileEdit(profile=>{profile.validity['not-after']=1;});assert.equal(f.run().status,'ok');
+  assert.equal(fs.readFileSync(pending,'utf8'),'legacy-invalid-json-is-not-read');assert.equal(fs.readFileSync(key,'utf8'),'legacy-key-is-not-used');
+  assert.equal(f.run({confirmationToken:'a'.repeat(64)}).code,'INVALID_REQUEST');
+  assert.equal(f.events().filter(event=>event.kind==='generate').length,2);f.assertClean();
+});
+test('cache becoming valid at the locked recheck is reused without generation',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');f.update({verifyFailOnce:true});assert.equal(f.run().status,'ok');
+  assert.equal(f.events().filter(event=>event.kind==='generate').length,1);f.assertClean();
+});
+test('live permissions and unrelated CLI state are re-read before one generation',t=>{
+  const f=fixture(t,{permissionsOnRecheck:['ohos.permission.TEST_ACL','ohos.permission.NEW_ACL'],otherCLIStateOnRecheck:true});
+  assert.equal(f.run().status,'ok');const profile=JSON.parse(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')));
+  assert.deepEqual(profile.acls['allowed-acls'].slice().sort(),['ohos.permission.NEW_ACL','ohos.permission.TEST_ACL']);
+  assert.equal(f.events().filter(event=>event.kind==='generate').length,1);f.assertClean();
+});
+test('bundle or automatically selected team changing under locks does not generate for stale cache identity',t=>{
+  const changedBundle=fixture(t,{bundleOnRecheck:'org.oheco.changed'});assert.equal(changedBundle.run().code,'PROJECT_CHANGED');
+  assert.equal(changedBundle.events().filter(event=>event.kind==='generate').length,0);changedBundle.assertClean();
+  const changedTeam=fixture(t,{teamsOnRecheck:['different-team']});assert.equal(changedTeam.run().code,'TEAM_REQUIRED');
+  assert.equal(changedTeam.events().filter(event=>event.kind==='generate').length,0);changedTeam.assertClean();
+});
+test('malformed cached configuration regenerates safely without forwarding stale signing paths',t=>{
+  const f=fixture(t);assert.equal(f.run().status,'ok');write(path.join(f.cache(),'signing-config.json'),'invalid old config');
+  assert.equal(f.run().status,'ok');assert.equal(f.events().filter(event=>event.kind==='generate').length,2);f.assertClean();
 });
 test('chmod success without effective private permissions is rejected',t=>{
   const f=fixture(t),privateRoot=path.join(f.config,'godot-openharmony-signing');fs.mkdirSync(privateRoot,{mode:0o770});fs.chmodSync(privateRoot,0o770);
@@ -343,7 +389,7 @@ test('chmod success without effective private permissions is rejected',t=>{
   assert.equal(f.events().length,0);assert.deepEqual(fs.readdirSync(f.tmp),[]);
 });
 test('SIGTERM waits for child exit, releases locks, and cleans private requests',async t=>{
-  const f=fixture(t);assert.equal(f.confirm().status,'ok');f.update({holdBuild:true});
+  const f=fixture(t);assert.equal(f.run().status,'ok');f.update({holdBuild:true});
   let watcher,timer;
   const held=new Promise((resolve,reject)=>{
     const check=()=>{if(f.events().some(event=>event.kind==='build-held'))resolve();};
@@ -357,7 +403,7 @@ test('SIGTERM waits for child exit, releases locks, and cleans private requests'
   f.assertClean();
 });
 test('project lock prevents concurrent cache mutation and leaves another owners lock intact',t=>{
-  const f=fixture(t);assert.equal(f.confirm().status,'ok');
+  const f=fixture(t);assert.equal(f.run().status,'ok');
   const cache=f.cache(),key=path.basename(cache),lock=path.join(f.config,'godot-openharmony-signing/locks','project-'+key);fs.mkdirSync(lock,{mode:0o700});
   try{assert.equal(f.run().code,'CACHE_BUSY');assert.ok(fs.existsSync(lock));}finally{fs.rmdirSync(lock);}f.assertClean();
 });

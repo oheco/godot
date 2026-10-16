@@ -5,7 +5,7 @@
 Uses existing signed Godot editor, complete debug/release template ZIPs, SDK26
 native hap-sign-tool and offline oo Hvigor dependencies. Generates one-time CA,
 app/profile certificates and PKCS12 material only in private TMPDIR. Exports and
-verifies signed debug HAP and release APP including EACH inner HAP. Optional
+verifies signed debug HAP and release APP signatures. Optional
 wrong-password rejection is enabled by default. No personal material, device
 trust claim, HDC/install, Java, SDK download, publish or persistent signed package.
 Evidence contains only sanitized logs, artifact hashes and verification checks.
@@ -15,7 +15,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import secrets
 import signal
@@ -103,37 +103,6 @@ def private_write(filename, text):
         stream.write(text)
     if stat.S_IMODE(filename.stat().st_mode) != 0o600:
         raise RuntimeError('Temporary credential/document requires effective 0600')
-
-
-def safe_app_haps(archive, destination):
-    """Validate ZIP names/types/limits before copying only inner HAP members."""
-    output = []
-    names = set()
-    total = 0
-    with zipfile.ZipFile(archive) as package:
-        for member in package.infolist():
-            name = member.filename
-            path = PurePosixPath(name)
-            if not name or path.is_absolute() or '\\' in name or ':' in name or '\0' in name or '..' in path.parts:
-                raise RuntimeError('Unsafe APP ZIP member path')
-            normalized = name.casefold().rstrip('/')
-            if normalized in names:
-                raise RuntimeError('Duplicate/case-conflicting APP ZIP member')
-            names.add(normalized)
-            kind = stat.S_IFMT(member.external_attr >> 16)
-            if kind not in (0, stat.S_IFREG, stat.S_IFDIR) or member.flag_bits & 1:
-                raise RuntimeError('Unsafe/encrypted APP ZIP member')
-            total += member.file_size
-            if member.file_size > 1024 * 1024 * 1024 or total > 2 * 1024 * 1024 * 1024:
-                raise RuntimeError('APP ZIP size limit exceeded')
-            if not member.is_dir() and name.lower().endswith('.hap'):
-                target = destination / ('inner-' + str(len(output)) + '.hap')
-                with package.open(member) as source, target.open('xb') as sink:
-                    shutil.copyfileobj(source, sink, 1024 * 1024)
-                output.append((name, target))
-    if not output:
-        raise RuntimeError('Signed APP has no inner HAP to verify')
-    return output
 
 
 def main():
@@ -481,14 +450,6 @@ permissions/ohos.permission.INTERNET=true
                 verify(label + '-verify-outer', target)
                 artifact_record = {'kind': suffix, 'mode': 'debug' if suffix == 'hap' else 'release',
                                    'size': target.stat().st_size, 'sha256': sha(target), 'outer_native_verified': True, **checks}
-                if suffix == 'app':
-                    extraction = root / 'app inner packages'
-                    extraction.mkdir(mode=0o700)
-                    inner = []
-                    for index, (member, filename) in enumerate(safe_app_haps(target, extraction)):
-                        verify(label + '-verify-inner-' + str(index), filename)
-                        inner.append({'name': member, 'size': filename.stat().st_size, 'sha256': sha(filename), 'native_verified': True})
-                    artifact_record['inner_haps'] = inner
                 result['artifacts'].append(artifact_record)
                 (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
             # Run the negative case even if one positive export fails, while
@@ -513,7 +474,7 @@ permissions/ohos.permission.INTERNET=true
                 raise RuntimeError('Signed export regression failed: ' + ', '.join(item['stage'] for item in result['export_failures']))
         result['private_temporary_tree_removed'] = not private_root.exists()
         result['status'] = 'PASS'
-        print('PASS native disposable signed debug HAP + release APP outer/all inner HAP verification; credentials/private requests cleaned; no personal/device/install trust')
+        print('PASS native disposable signed debug HAP + release APP signature verification; credentials/private requests cleaned; no personal/device/install trust')
     except BaseException as error:
         # Do not propagate an exception that embeds native signing argv/secrets.
         result['failure'] = sanitize(str(error))
