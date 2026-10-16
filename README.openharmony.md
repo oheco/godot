@@ -356,11 +356,11 @@ cloud certificate when regenerating for a new device, changed permissions or exp
 is reported, and local previous materials are retained. Existing applications are
 never automatically uninstalled to bypass a signature mismatch.
 
-Signing materials and the backend's working copy of the existing CLI login stay
-in permission-checked private storage in the executing host's `XDG_CONFIG_HOME`.
-The original CLI login and export preset are preserved. With the broker enabled,
-only the explicit native signing operation owns this terminal namespace; its
-`XDG_CONFIG_HOME` and `TMPDIR` must support real 0700/0600 permissions. Missing tools,
+The official CLI uses the broker's normal HOME, XDG paths and HDC identity;
+the backend does not copy login credentials, create a separate CLI HOME or CLT
+overlay, or impose a global umask/chmod policy. Generated signing results are
+cached in `XDG_CONFIG_HOME`, and owned temporary work uses `TMPDIR` with cleanup.
+Source export presets remain unchanged. Missing tools,
 logged-out or expired sessions, ambiguous teams, unavailable devices, invalid
 profiles and build failures produce actionable errors. See the [backend contract](<misc/dist/openharmony_template/tools/AUTO_SIGNING.md>)
 and [native implementation](<platform/openharmony/export/auto_signer/README.md>)

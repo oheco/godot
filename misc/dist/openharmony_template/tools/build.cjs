@@ -49,15 +49,6 @@ function directory(filename, field) {
   requireValue(fs.realpathSync(filename) === path.resolve(filename), `${field} must not traverse symlinks.`);
   return stat;
 }
-function ownedPrivate(stat, bits, field) {
-  // Reject hmdfs's effective 0660/02770 modes rather than trusting chmod's exit
-  // status. The caller must CREATE credentials/cache in a permission-capable FS.
-  requireValue(typeof process.getuid === 'function' && stat.uid === process.getuid() &&
-    (stat.mode & 0o777) === bits, `${field} must be caller-owned and private (${bits.toString(8)}).`);
-}
-function privateDirectory(filename, field) {
-  ownedPrivate(directory(filename, field), 0o700, field);
-}
 function jsonDocument(bytes, field, comments = false) {
   let text = bytes.toString('utf8');
   if (comments) {
@@ -75,13 +66,12 @@ function jsonDocument(bytes, field, comments = false) {
 }
 function readRequest(filename) {
   absolute(filename, 'request path');
-  privateDirectory(path.dirname(filename), 'request parent directory');
+  directory(path.dirname(filename), 'request parent directory');
   const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const stat = fs.fstatSync(fd);
     requireValue(stat.isFile() && stat.nlink === 1 && stat.size <= 1024 * 1024,
-      'Request must be a regular private JSON file with one hard link, no larger than 1 MiB.');
-    ownedPrivate(stat, 0o600, 'request file');
+      'Request must be a regular JSON file with one hard link, no larger than 1 MiB.');
     return jsonDocument(fs.readFileSync(fd), 'request');
   } finally { fs.closeSync(fd); }
 }
@@ -95,7 +85,7 @@ function validateRequest(request) {
   directory(request.projectDir, 'projectDir');
   directory(fs.realpathSync(request.sdkRoot), 'sdkRoot');
   directory(request.commandLineToolsRoot, 'commandLineToolsRoot');
-  privateDirectory(request.workDir, 'workDir');
+  directory(request.workDir, 'workDir');
   const relative = path.relative(request.projectDir, request.workDir);
   requireValue(relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative),
     'workDir must be outside the generated project.');
@@ -185,15 +175,12 @@ function childEnvironment(request, selection, toolchain) {
   env.HVIGOR_USER_HOME = toolchain.hvigorUserHome;
   env.NODE_HOME = path.dirname(toolchain.selectedNode);
   env.PATH = path.dirname(toolchain.selectedNode) + path.delimiter + (env.PATH || '');
-  for (const [key, name] of [['TMPDIR', 'tmp'], ['HOME', 'home']]) {
-    const target = path.join(request.workDir, name);
-    fs.mkdirSync(target, { mode: 0o700, recursive: true });
-    privateDirectory(target, `child ${key}`);
-    env[key] = target;
-  }
-  env.TMP = env.TEMP = env.TMPDIR;
+  const temporary = path.join(request.workDir, 'tmp');
+  fs.mkdirSync(temporary, { recursive: true });
+  directory(temporary, 'child TMPDIR');
+  env.TMPDIR = env.TMP = env.TEMP = temporary;
   env.npm_config_offline = env.NPM_CONFIG_OFFLINE = 'true';
-  // HOME/TMP are child-only; the prepared wrapper cache stays persistent.
+  // Keep the caller's HOME; scope only disposable operation files to workDir.
   return env;
 }
 // Probe payload travels on stdin, never argv/env. Response uses a dedicated pipe
@@ -460,7 +447,7 @@ async function run(filename) {
     secrets = secretsFrom(request);
     validateRequest(request);
     const workLockPath = path.join(request.workDir, '.runner-lock');
-    fs.mkdirSync(workLockPath, { mode: 0o700 });
+    fs.mkdirSync(workLockPath);
     workLock = workLockPath;
     // A failure must never leave a success result from an earlier invocation.
     const resultPath = path.join(request.workDir, 'result.json');
@@ -487,7 +474,7 @@ async function run(filename) {
     fs.renameSync(profile, backupPath);
     backup = backupPath;
     try {
-      fs.writeFileSync(profile, prepared.bytes, { flag: 'wx', mode: 0o600 });
+      fs.writeFileSync(profile, prepared.bytes, { flag: 'wx' });
       removeStaleArtifacts(request);
       await execute(request, toolchain, buildArguments(request), env, secrets);
       result = { schemaVersion: 2, outputPath: selectArtifact(request),
@@ -498,13 +485,13 @@ async function run(filename) {
     }
     // Write only after the original profile has been restored successfully.
     requireValue(!interrupted, 'Build runner was interrupted; no result was produced.');
-    fs.writeFileSync(resultPath, JSON.stringify(result, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+    fs.writeFileSync(resultPath, JSON.stringify(result, null, 2) + '\n', { flag: 'wx' });
     return result;
   } catch (error) {
     // Do not print native filesystem/JSON exceptions: they may include paths or
     // request/password fragments. Public errors never interpolate input values.
     const message = error instanceof RunnerError || error instanceof ToolchainError ? error.message :
-      'Build runner filesystem/process failure; check private paths, locks and any retained profile backup.';
+      'Build runner filesystem/process failure; check working paths, locks and any retained profile backup.';
     process.stderr.write(`build runner: ${redact(message, secrets)}\n`);
     throw new RunnerError('Build runner failed.');
   } finally {
@@ -520,7 +507,7 @@ async function run(filename) {
 
 if (require.main === module) {
   if (process.argv.length !== 4 || process.argv[2] !== '--request') {
-    process.stderr.write('Usage: node <project>/tools/build.cjs --request <absolute-private-json>\n');
+    process.stderr.write('Usage: node <project>/tools/build.cjs --request <absolute-json>\n');
     process.exitCode = 1;
   } else { run(process.argv[3]).catch(() => { process.exitCode = 1; }); }
 }

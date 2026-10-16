@@ -47,7 +47,6 @@ using JSON = Json::Value;
 using Env = std::map<std::string, std::string>;
 constexpr size_t LIMIT = 4 * 1024 * 1024;
 constexpr size_t TREE_LIMIT = 32 * LIMIT;
-constexpr size_t EXECUTABLE_LIMIT = 128 * 1024 * 1024;
 volatile sig_atomic_t interrupted = 0;
 
 struct SafeError : std::runtime_error {
@@ -107,24 +106,14 @@ struct stat regular(const std::string &path, const std::string &code = "CACHE_IN
 	return st;
 }
 bool sameFile(const struct stat &a, const struct stat &b) { return a.st_dev == b.st_dev && a.st_ino == b.st_ino; }
-void privateMode(const std::string &path, mode_t bits, bool dir, size_t maximum = LIMIT) {
-	const std::string code = "PRIVATE_STORAGE_REQUIRED";
-	struct stat before = dir ? directory(path, code) : regular(path, code, maximum);
-	need(before.st_uid == ::getuid() && real(path, code) == normalized(path), code, "Signing storage must be caller-owned and must not traverse symbolic links.");
-	FD fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (dir ? O_DIRECTORY : 0)));
-	struct stat checked{};
-	need(fd.fd >= 0 && ::fstat(fd.fd, &checked) == 0 && sameFile(before, checked) && ::fchmod(fd.fd, bits) == 0 && ::fstat(fd.fd, &checked) == 0 &&
-		(checked.st_mode & 07777) == bits && checked.st_uid == ::getuid() && (dir || checked.st_nlink == 1), code,
-		"Use permission-capable XDG_CONFIG_HOME and TMPDIR outside HOME (0700 directories, 0600 files).");
-}
-std::string privateDir(const std::string &path) {
-	need(absolute(path), "PRIVATE_STORAGE_REQUIRED", "Private storage paths must be absolute.");
+std::string ensureDir(const std::string &path) {
+	need(absolute(path), "PRIVATE_STORAGE_REQUIRED", "Signing cache and temporary paths must be absolute.");
 	if (!exists(path)) {
-		if (!exists(parent(path))) privateDir(parent(path));
+		if (!exists(parent(path))) ensureDir(parent(path));
 		directory(parent(path), "PRIVATE_STORAGE_REQUIRED");
-		need(::mkdir(path.c_str(), 0700) == 0 || errno == EEXIST, "PRIVATE_STORAGE_REQUIRED", "Cannot create a private signing directory.");
+		need(::mkdir(path.c_str(), 0777) == 0 || errno == EEXIST, "PRIVATE_STORAGE_REQUIRED", "Cannot create a signing directory.");
 	}
-	privateMode(path, 0700, true);
+	directory(path, "PRIVATE_STORAGE_REQUIRED");
 	return path;
 }
 std::string readBytes(const std::string &path, const std::string &code = "CACHE_INVALID", size_t maximum = LIMIT) {
@@ -146,25 +135,21 @@ std::string readBytes(const std::string &path, const std::string &code = "CACHE_
 	need(::fstat(fd.fd, &st) == 0 && sameFile(before, st) && st.st_nlink == 1 && st.st_size == before.st_size && data.size() == size_t(st.st_size), code, "A required file changed while it was being read.");
 	return data;
 }
-void privateWrite(const std::string &path, const std::string &data) {
-	privateDir(parent(path));
-	if (exists(path)) {
-		regular(path, "PRIVATE_STORAGE_REQUIRED");
-		privateMode(path, 0600, false);
-	}
-	FD fd(::open(path.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600));
+void writeFile(const std::string &path, const std::string &data) {
+	ensureDir(parent(path));
+	if (exists(path)) regular(path, "PRIVATE_STORAGE_REQUIRED");
+	FD fd(::open(path.c_str(), O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0666));
 	struct stat st{};
-	need(fd.fd >= 0 && ::fstat(fd.fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 && st.st_uid == ::getuid() &&
-		::fchmod(fd.fd, 0600) == 0 && ::fstat(fd.fd, &st) == 0 && (st.st_mode & 07777) == 0600 && ::ftruncate(fd.fd, 0) == 0,
-		"PRIVATE_STORAGE_REQUIRED", "Cannot write a caller-owned private signing file with working Unix permissions.");
+	need(fd.fd >= 0 && ::fstat(fd.fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 && ::ftruncate(fd.fd, 0) == 0,
+		"PRIVATE_STORAGE_REQUIRED", "Cannot write a signing cache or request file.");
 	size_t offset = 0;
 	while (offset < data.size()) {
 		ssize_t n = ::write(fd.fd, data.data() + offset, data.size() - offset);
 		if (n < 0 && errno == EINTR) continue;
-		need(n > 0, "PRIVATE_STORAGE_REQUIRED", "Cannot complete a private signing file write.");
+		need(n > 0, "PRIVATE_STORAGE_REQUIRED", "Cannot complete a signing file write.");
 		offset += size_t(n);
 	}
-	need(::fsync(fd.fd) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot persist a private signing file.");
+	need(::fsync(fd.fd) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot persist a signing file.");
 }
 std::string jsonString(const JSON &value) {
 	Json::StreamWriterBuilder builder;
@@ -192,7 +177,7 @@ JSON parseJSON(const std::string &data, bool comments = false) {
 	return value;
 }
 JSON readJSON(const std::string &path, bool comments = false) { return parseJSON(readBytes(path), comments); }
-void writeJSON(const std::string &path, const JSON &value) { privateWrite(path, jsonString(value) + "\n"); }
+void writeJSON(const std::string &path, const JSON &value) { writeFile(path, jsonString(value) + "\n"); }
 std::string digest(const std::string &data) {
 	unsigned char hash[32];
 	need(mbedtls_sha256(reinterpret_cast<const unsigned char *>(data.data()), data.size(), hash, 0) == 0, "INTERNAL_ERROR", "Cannot hash signing metadata.");
@@ -208,22 +193,22 @@ std::vector<std::string> entries(const std::string &path) {
 	return result;
 }
 void removeOwned(const std::string &root, const std::string &path) {
-	need(absolute(root) && absolute(path) && inside(root, path) && real(root) == normalized(root), "CACHE_INVALID", "Refusing to remove a path outside the private workspace.");
-	// The root and all live writable parents are caller-owned. remove_all unlinks
-	// symlinks themselves; it never follows links from an untrusted CLI output.
+	need(absolute(root) && absolute(path) && inside(root, path) && real(root) == normalized(root), "CACHE_INVALID", "Refusing to remove a path outside the owned workspace.");
+	// Remove only paths beneath the known operation/cache root. remove_all
+	// unlinks symlinks themselves instead of following them into source data.
 	if (!exists(path)) return;
 	directory(parent(path), "CACHE_INVALID");
 	fs::remove_all(path);
 }
 void unlinkRegular(const std::string &path, const std::string &code = "CACHE_INVALID") {
 	regular(path, code);
-	need(::unlink(path.c_str()) == 0, code, "Cannot remove an obsolete private file.");
+	need(::unlink(path.c_str()) == 0, code, "Cannot remove an obsolete signing cache file.");
 }
-void copyFilePrivate(const std::string &source, const std::string &destination) { privateWrite(destination, readBytes(source)); }
+void copyFile(const std::string &source, const std::string &destination) { writeFile(destination, readBytes(source)); }
 struct TreeState { size_t count = 0; uint64_t bytes = 0; };
 void copyTree(const std::string &source, const std::string &destination, TreeState &state) {
 	directory(source, "CACHE_INVALID");
-	privateDir(destination);
+	ensureDir(destination);
 	for (const std::string &name : entries(source)) {
 		need(++state.count <= 4096, "CACHE_INVALID", "Signing cache contains too many files.");
 		const std::string from = join(source, name), to = join(destination, name);
@@ -234,41 +219,29 @@ void copyTree(const std::string &source, const std::string &destination, TreeSta
 			need(st.st_size >= 0, "CACHE_INVALID", "Signing material has an invalid size.");
 			state.bytes += uint64_t(st.st_size);
 			need(state.bytes <= TREE_LIMIT, "CACHE_INVALID", "Signing material exceeds the supported cache size.");
-			copyFilePrivate(from, to);
+			copyFile(from, to);
 		}
 	}
 }
 void copyTree(const std::string &source, const std::string &destination) { TreeState state; copyTree(source, destination, state); }
-void hardenTree(const std::string &root, size_t &count) {
-	privateMode(root, 0700, true);
-	for (const auto &name : entries(root)) {
-		need(++count <= 4096, "PRIVATE_STORAGE_REQUIRED", "The private CLI home exceeds the supported file count.");
-		const std::string path = join(root, name);
-		struct stat st{};
-		need(::lstat(path.c_str(), &st) == 0, "PRIVATE_STORAGE_REQUIRED", "A private CLI file is inaccessible.");
-		if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) hardenTree(path, count);
-		else privateMode(path, 0600, false);
-	}
-}
-void hardenTree(const std::string &root) { size_t count = 0; hardenTree(root, count); }
 struct Lock {
 	std::string path;
 	struct stat identity{};
 	bool owned = false;
 	explicit Lock(const std::string &p_path) : path(p_path) {
-		if (::mkdir(path.c_str(), 0700) != 0) {
-			if (errno == EEXIST) fail("CACHE_BUSY", "Another signing operation is active; retry after it finishes. Remove a stale private lock only after checking no helper is running.");
-			fail("PRIVATE_STORAGE_REQUIRED", "Cannot lock the private signing cache.");
+		if (::mkdir(path.c_str(), 0777) != 0) {
+			if (errno == EEXIST) fail("CACHE_BUSY", "Another signing operation is active; retry after it finishes. Remove a stale lock only after checking no helper is running.");
+			fail("PRIVATE_STORAGE_REQUIRED", "Cannot lock the signing cache.");
 		}
 		owned = ::lstat(path.c_str(), &identity) == 0;
-		try { privateMode(path, 0700, true); } catch (...) { release(); throw; }
+		try { directory(path, "PRIVATE_STORAGE_REQUIRED"); } catch (...) { release(); throw; }
 	}
 	Lock(const Lock &) = delete;
 	Lock &operator=(const Lock &) = delete;
 	~Lock() { release(); }
 	void release() noexcept {
 		struct stat st{};
-		if (owned && ::lstat(path.c_str(), &st) == 0 && sameFile(identity, st) && S_ISDIR(st.st_mode) && st.st_uid == ::getuid()) ::rmdir(path.c_str());
+		if (owned && ::lstat(path.c_str(), &st) == 0 && sameFile(identity, st) && S_ISDIR(st.st_mode)) ::rmdir(path.c_str());
 		owned = false;
 	}
 };
@@ -279,9 +252,9 @@ struct Temporary {
 		std::string pattern = join(root, "godot-auto-sign-XXXXXX");
 		std::vector<char> bytes(pattern.begin(), pattern.end()); bytes.push_back(0);
 		char *created = ::mkdtemp(bytes.data());
-		need(created != nullptr, "PRIVATE_STORAGE_REQUIRED", "Cannot create a private temporary signing directory.");
+		need(created != nullptr, "PRIVATE_STORAGE_REQUIRED", "Cannot create a temporary signing directory.");
 		path = created;
-		try { privateMode(path, 0700, true); } catch (...) { cleanup(); throw; }
+		try { directory(path, "PRIVATE_STORAGE_REQUIRED"); } catch (...) { cleanup(); throw; }
 	}
 	void finish() { if (!path.empty()) { removeOwned(root, path); path.clear(); } }
 	void cleanup() noexcept { if (!retainedForRecovery) { try { finish(); } catch (...) {} } }
@@ -296,12 +269,8 @@ Env environment() {
 	return result;
 }
 std::string envValue(const Env &env, const std::string &key) { auto it = env.find(key); return it == env.end() ? "" : it->second; }
-Env cleanEnvironment(Env env) {
-	for (const char *name : {"NODE_OPTIONS", "NODE_PATH", "NODE_OPTS", "DEVECO_CLI_AUTH_SOURCE"}) env.erase(name);
-	for (auto it = env.begin(); it != env.end();) { if (it->first.compare(0, 16, "DEVECO_CODE_AUTH") == 0 || it->first == "DEVECO_CODE_AUTH") it = env.erase(it); else ++it; }
-	env["NO_COLOR"] = "1"; env["FORCE_COLOR"] = "0"; env["TERM"] = "dumb";
-	return env;
-}
+// Preserve the broker's normal tool and authentication environment.
+Env cleanEnvironment(Env env) { return env; }
 struct Result { bool ok = false, missing = false, timedOut = false, overflow = false; int execError = 0, exitCode = -1; std::string out, err; };
 using Clock = std::chrono::steady_clock;
 struct ChildReaper {
@@ -452,14 +421,14 @@ Env nodeEnvironment(const JSON &request, Env env, const std::string &workDir) {
 		// Node needs only this SONAME. Exposing the compiler library directory also
 		// shadows the system libc++.so used by HDC and other SDK descendants.
 		const std::string target = real(source, "CLT_MISSING");
-		const std::string runtime = privateDir(join(workDir, "node-runtime"));
+		const std::string runtime = ensureDir(join(workDir, "node-runtime"));
 		const std::string link = join(runtime, "libc++_shared.so");
-		if (!exists(link)) need(::symlink(target.c_str(), link.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Node runtime.");
+		if (!exists(link)) need(::symlink(target.c_str(), link.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the isolated Node runtime.");
 		std::vector<char> linked(target.size() + 1);
 		const ssize_t length = ::readlink(link.c_str(), linked.data(), linked.size());
-		need(::lstat(link.c_str(), &st) == 0 && S_ISLNK(st.st_mode) && st.st_uid == ::getuid() && length >= 0 && size_t(length) == target.size() &&
+		need(::lstat(link.c_str(), &st) == 0 && S_ISLNK(st.st_mode) && length >= 0 && size_t(length) == target.size() &&
 			std::string(linked.data(), size_t(length)) == target && entries(runtime) == std::vector<std::string>{"libc++_shared.so"},
-			"PRIVATE_STORAGE_REQUIRED", "The private Node runtime must contain only the selected Command Line Tools runtime link.");
+			"PRIVATE_STORAGE_REQUIRED", "The isolated Node runtime must contain only the selected Command Line Tools runtime link.");
 		const std::string old = envValue(env, "LD_LIBRARY_PATH");
 		env["LD_LIBRARY_PATH"] = runtime + (old.empty() ? "" : ":" + old);
 	}
@@ -471,12 +440,6 @@ void nodeCheck(const JSON &request, const Env &env, const std::string &workDir) 
 	std::smatch match;
 	need(result.ok && result.out.size() <= 128 && std::regex_match(result.out, match, std::regex("v([0-9]+)\\.[0-9]+\\.[0-9]+[\\r\\n\\t ]*")), "NODE_MISSING", "The selected Node.js executable cannot report its version.");
 	need(match[1].str().size() <= 8 && std::stoul(match[1].str()) >= 22, "NODE_VERSION_TOO_OLD", "Automatic signing requires Node.js 22 or newer.");
-}
-std::string selfPath() {
-	std::vector<char> buffer(32769);
-	const ssize_t n = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-	need(n > 0 && size_t(n) < buffer.size() - 1, "INTERNAL_ERROR", "Cannot locate the native signing worker executable.");
-	return real(std::string(buffer.data(), size_t(n)), "INTERNAL_ERROR");
 }
 std::string discoverCLI(const JSON &request, const Env &env) {
 	std::vector<std::string> candidates;
@@ -610,117 +573,23 @@ Metadata projectMetadata(const JSON &request) {
 struct Context {
 	JSON request;
 	Env originalEnv, env;
-	std::string originalHome, root, cliHome, cliData, work, cli, verifier, team, udid, cache, minimal, overlay;
+	std::string originalHome, root, work, cli, verifier, team, udid, cache, minimal;
 	Metadata metadata;
 	Temporary *temporary = nullptr;
 };
-JSON sourceFingerprint(const std::string &path) {
-	if (!exists(path)) return JSON();
-	const struct stat st = regular(path, "LOGIN_DATA_INVALID");
-	JSON result(Json::objectValue);
-	result["size"] = Json::Int64(st.st_size);
-	result["mtime"] = double(st.st_mtim.tv_sec) * 1000 + double(st.st_mtim.tv_nsec) / 1000000;
-	result["sha256"] = digest(readBytes(path, "LOGIN_DATA_INVALID"));
-	return result;
-}
-void syncLogin(Context &ctx) {
-	std::string login = field(ctx.request, "loginDataDir");
-	if (login.empty()) login = envValue(ctx.originalEnv, "DEVECO_CLI_DATA_DIR");
-	if (login.empty()) login = join(ctx.originalHome, ".config/deveco-cli");
-	need(absolute(login), "LOGIN_DATA_INVALID", "The original CLI login data directory must be absolute.");
-	need(normalized(login) != ctx.root && !inside(ctx.root, login), "LOGIN_DATA_INVALID", "The source CLI login must be outside the worker's private signing cache.");
-	std::vector<std::pair<std::string, std::string>> files;
-	for (const char *name : {"token.enc", "token.dek"}) files.emplace_back(join(login, name), join(ctx.cliData, name));
-	for (int n = 1; n <= 3; ++n) {
-		const std::string relative = ".local/share/deveco-cli/keys/kek-v" + std::to_string(n) + ".bin";
-		files.emplace_back(join(ctx.originalHome, relative), join(ctx.cliHome, relative));
-	}
-	for (const char *name : {"hdckey", "hdckey.key", "hdckey.pub"}) files.emplace_back(join(ctx.originalHome, std::string(".harmony/") + name), join(ctx.cliHome, std::string(".harmony/") + name));
-	JSON metadata(Json::objectValue); metadata["source"] = login; metadata["originalHome"] = ctx.originalHome; metadata["files"] = JSON(Json::arrayValue);
-	for (const auto &file : files) metadata["files"].append(sourceFingerprint(file.first));
-	const std::string metaPath = join(ctx.root, "login-source.json");
-	if (exists(metaPath)) { privateMode(metaPath, 0600, false); if (readJSON(metaPath) == metadata) return; }
-	for (size_t index = 0; index < files.size(); ++index) {
-		if (!metadata["files"][Json::ArrayIndex(index)].isNull()) copyFilePrivate(files[index].first, files[index].second);
-		else if (exists(files[index].second)) unlinkRegular(files[index].second);
-	}
-	writeJSON(metaPath, metadata);
-}
-void linkSiblings(const std::string &source, const std::string &destination, const std::set<std::string> &except) {
-	directory(real(source), "CLT_MISSING"); privateDir(destination);
-	for (const auto &name : entries(source)) if (!except.count(name)) {
-		const std::string from = join(source, name), to = join(destination, name);
-		need(::symlink(from.c_str(), to.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Command Line Tools overlay.");
-	}
-}
-void copyToolBin(const std::string &source, const std::string &destination, const std::string &entry) {
-	linkSiblings(source, destination, {"bin"});
-	const std::string fromBin = join(source, "bin"), toBin = privateDir(join(destination, "bin"));
-	directory(real(fromBin), "CLT_MISSING");
-	regular(join(fromBin, entry), "CLT_MISSING", EXECUTABLE_LIMIT);
-	for (const auto &name : entries(fromBin)) {
-		checkInterrupted();
-		const std::string from = join(fromBin, name), to = join(toBin, name);
-		struct stat st{};
-		need(::lstat(from.c_str(), &st) == 0, "CLT_MISSING", "A required Command Line Tools launcher is inaccessible.");
-		if (S_ISREG(st.st_mode)) {
-			// The official CLI realpaths its explicit entries. Copy bin siblings
-			// too, preserving relative imports and signed ELF bytes unchanged.
-			privateWrite(to, readBytes(from, "CLT_MISSING", EXECUTABLE_LIMIT));
-			privateMode(to, (entry == "node" && name == entry) || (st.st_mode & 0111) ? 0700 : 0600, false, EXECUTABLE_LIMIT);
-		} else {
-			need(::symlink(from.c_str(), to.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Command Line Tools launcher siblings.");
-		}
-	}
-}
-std::string prepareOverlay(Context &ctx) {
-	if (!ctx.overlay.empty()) return ctx.overlay;
-	const std::string original = field(ctx.request, "commandLineToolsRoot");
-	const std::string overlay = privateDir(join(ctx.work, "clt-overlay"));
-	linkSiblings(original, overlay, {"sdk", "node", "ohpm", "hvigor"});
-	for (const auto &tool : {std::make_pair("node", "node"), std::make_pair("ohpm", "pm-cli.js"), std::make_pair("hvigor", "hvigorw.js")}) {
-		copyToolBin(join(original, tool.first), join(overlay, tool.first), tool.second);
-	}
-	linkSiblings(join(original, "sdk"), join(overlay, "sdk"), {"default"});
-	linkSiblings(join(original, "sdk/default"), join(overlay, "sdk/default"), {"openharmony"});
-	linkSiblings(join(original, "sdk/default/openharmony"), join(overlay, "sdk/default/openharmony"), {"toolchains"});
-	const std::string toolchains = join(overlay, "sdk/default/openharmony/toolchains");
-	linkSiblings(join(original, "sdk/default/openharmony/toolchains"), toolchains, {"hdc"});
-	// Copy the already signed executable without modifying any bytes. A native
-	// executable cannot be replaced with a script under the broker's namespace.
-	const std::string proxy = join(toolchains, "hdc");
-	privateWrite(proxy, readBytes(selfPath(), "INTERNAL_ERROR", EXECUTABLE_LIMIT));
-	struct stat st{};
-	need(::chmod(proxy.c_str(), 0700) == 0 && ::lstat(proxy.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_nlink == 1 && st.st_uid == ::getuid() && (st.st_mode & 07777) == 0700, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private native HDC proxy executable.");
-	JSON config(Json::objectValue); config["schemaVersion"] = 1; config["hdcPath"] = real(field(ctx.request, "hdcPath"), "DEVICE_UNAVAILABLE");
-	config["hostEnvironment"] = JSON(Json::objectValue); config["hostEnvironment"]["HOME"] = ctx.originalHome;
-	for (const char *key : {"HDC_SERVER", "OHOS_HDC_SERVER_PORT"}) {
-		auto it = ctx.originalEnv.find(key); if (it != ctx.originalEnv.end()) config["hostEnvironment"][key] = it->second;
-	}
-	need(real(proxy) != config["hdcPath"].asString(), "DEVICE_UNAVAILABLE", "The selected HDC executable must not be the private proxy.");
-	writeJSON(join(toolchains, ".godot-hdc-host.json"), config);
-	ctx.overlay = overlay;
-	return overlay;
-}
 Env cliEnvironment(Context &ctx) {
 	Env env = ctx.env;
-	env["HOME"] = ctx.cliHome;
-	env["XDG_CONFIG_HOME"] = privateDir(join(ctx.cliHome, ".config")); env["XDG_DATA_HOME"] = privateDir(join(ctx.cliHome, ".local/share"));
-	env["XDG_CACHE_HOME"] = privateDir(join(ctx.cliHome, ".cache")); env["XDG_STATE_HOME"] = privateDir(join(ctx.cliHome, ".local/state"));
-	env["DEVECO_CLI_DATA_DIR"] = ctx.cliData;
-	env["TMPDIR"] = ctx.work; env["TMP"] = ctx.work; env["TEMP"] = ctx.work;
-	env["COMMAND_LINE_TOOL_PATH"] = prepareOverlay(ctx);
+	// The official CLI owns its login, keys and .ohos state in the broker's
+	// normal HOME/XDG namespace. Only explicit tool/login selections override it.
+	if (!field(ctx.request, "loginDataDir").empty()) env["DEVECO_CLI_DATA_DIR"] = field(ctx.request, "loginDataDir");
+	env["COMMAND_LINE_TOOL_PATH"] = field(ctx.request, "commandLineToolsRoot");
 	const std::string oldPath = envValue(ctx.env, "PATH");
 	env["PATH"] = parent(field(ctx.request, "nodePath")) + (oldPath.empty() ? "" : ":" + oldPath);
 	return env;
 }
 Result cli(Context &ctx, const std::vector<std::string> &args) {
 	std::vector<std::string> argv{ctx.cli}; argv.insert(argv.end(), args.begin(), args.end());
-	try {
-		Result result = execute(field(ctx.request, "nodePath"), argv, nodeEnvironment(ctx.request, cliEnvironment(ctx), ctx.work), ctx.minimal.empty() ? field(ctx.request, "projectDir") : ctx.minimal, !args.empty() && args[0] == "signature" ? 120000 : 20000);
-		hardenTree(ctx.cliHome);
-		return result;
-	} catch (...) { hardenTree(ctx.cliHome); throw; }
+	return execute(field(ctx.request, "nodePath"), argv, nodeEnvironment(ctx.request, cliEnvironment(ctx), ctx.work), ctx.minimal.empty() ? field(ctx.request, "projectDir") : ctx.minimal, !args.empty() && args[0] == "signature" ? 120000 : 20000);
 }
 bool networkFailure(const Result &result) { return std::regex_search(result.out + result.err, std::regex("ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|network|fetch failed|proxy|timeout", std::regex::icase)); }
 void authenticate(Context &ctx) {
@@ -842,17 +711,15 @@ Inspection inspectSigning(Context &ctx, const JSON &config) {
 		material = configMaterial(config);
 		for (const char *key : {"certpath", "profile", "storeFile"}) {
 			const std::string path = material[key].asString();
-			need(absolute(path) && inside(join(ctx.cache, "materials"), path) && real(path) == path, "CACHE_INVALID", "Signing paths must remain in this private application cache without symbolic links.");
-			privateMode(path, 0600, false);
+			need(absolute(path) && inside(join(ctx.cache, "materials"), path) && real(path) == path, "CACHE_INVALID", "Cached signing paths must remain in this application cache without symbolic links.");
+			regular(path, "CACHE_INVALID");
 		}
 		for (const char *name : {"fd", "ac", "ce"}) {
 			const std::string dir = join(parent(material["storeFile"].asString()), std::string("material/") + name);
 			directory(dir, "CACHE_INVALID");
-			privateMode(dir, 0700, true);
 			need(!entries(dir).empty(), "CACHE_INVALID", "Signing companion material is incomplete.");
 		}
-	} catch (const SafeError &error) {
-		if (error.code == "PRIVATE_STORAGE_REQUIRED") throw;
+	} catch (const SafeError &) {
 		return {false, "CACHE_INVALID", JSON()};
 	}
 	const std::string output = join(ctx.work, "verified-profile.json");
@@ -861,8 +728,8 @@ Inspection inspectSigning(Context &ctx, const JSON &config) {
 	if (result.missing || result.execError == EACCES || result.execError == ENOEXEC) fail("CLT_MISSING", "The selected SDK native profile verifier is not executable. Check the Command Line Tools installation.");
 	if (!result.ok || !exists(output)) return {false, "PROFILE_UNVERIFIED", JSON()};
 	JSON profile;
-	try { privateMode(output, 0600, false); profile = readJSON(output); }
-	catch (const SafeError &error) { if (error.code == "PRIVATE_STORAGE_REQUIRED") throw; return {false, "PROFILE_UNVERIFIED", JSON()}; }
+	try { profile = readJSON(output); }
+	catch (const SafeError &) { return {false, "PROFILE_UNVERIFIED", JSON()}; }
 	const int64_t now = int64_t(std::time(nullptr));
 	if (!equals(member(profile, "type"), "debug") || !equals(member(member(profile, "bundle-info"), "bundle-name"), ctx.metadata.bundle.c_str())) return {false, "PROFILE_BUNDLE_MISMATCH", JSON()};
 	const JSON &validity = member(profile, "validity"), &before = member(validity, "not-before"), &after = member(validity, "not-after");
@@ -905,7 +772,7 @@ Inspection cachedSigning(Context &ctx) {
 	}
 }
 void prepareMinimal(Context &ctx) {
-	const std::string target = privateDir(join(ctx.cache, "project"));
+	const std::string target = ensureDir(join(ctx.cache, "project"));
 	JSON profile = ctx.metadata.rootProfile;
 	profile["app"]["signingConfigs"] = JSON(Json::arrayValue);
 	for (auto &product : profile["app"]["products"]) product.removeMember("signingConfig");
@@ -927,12 +794,11 @@ JSON importGenerated(Context &ctx) {
 	need(selectedConfigs.size() == 1, "SIGNING_FAILED", "The CLI did not write one selected signing configuration.");
 	JSON config = selectedConfigs[0];
 	const JSON material = configMaterial(config);
-	const std::string stage = privateDir(join(ctx.work, "new-materials"));
+	const std::string stage = ensureDir(join(ctx.work, "new-materials"));
 	for (const auto &item : std::array<std::pair<const char *, const char *>, 3>{{{"certpath", "certificate.cer"}, {"profile", "profile.p7b"}, {"storeFile", "store.p12"}}}) {
 		need(absolute(material[item.first].asString()), "SIGNING_FAILED", "The CLI returned a nonabsolute signing path.");
 		const std::string source = real(material[item.first].asString());
-		need(inside(ctx.cliHome, source) || inside(ctx.cache, source), "SIGNING_FAILED", "The CLI returned signing files outside its private namespace.");
-		copyFilePrivate(source, join(stage, item.second));
+		copyFile(source, join(stage, item.second));
 	}
 	copyTree(join(parent(real(material["storeFile"].asString())), "material"), join(stage, "material"));
 	const std::string destination = join(ctx.cache, "materials");
@@ -947,31 +813,27 @@ JSON importGenerated(Context &ctx) {
 	writeJSON(join(ctx.cache, "signing-context.json"), context);
 	return config;
 }
-void retainRecovery(Context &ctx, const std::string &cacheBackup, const std::string &ohosBackup, bool hadOhos) noexcept {
-	// A failed restore (e.g. full configuration filesystem) must not destroy its
-	// sole complete backups. Prefer durable private recovery storage; retain the
-	// original verified private TMPDIR only if even that transfer is impossible.
+void retainRecovery(Context &ctx, const std::string &cacheBackup) noexcept {
+	// Preserve the sole complete cache backup if restoration fails. CLI-owned
+	// credentials and global .ohos state are outside this cache transaction.
 	if (ctx.temporary) ctx.temporary->retainedForRecovery = true;
 	try {
-		const std::string recoveryRoot = privateDir(join(ctx.root, "recovery"));
+		const std::string recoveryRoot = ensureDir(join(ctx.root, "recovery"));
 		std::string pattern = join(recoveryRoot, "recovery-XXXXXX");
 		std::vector<char> bytes(pattern.begin(), pattern.end()); bytes.push_back(0);
 		char *created = ::mkdtemp(bytes.data());
-		need(created != nullptr, "PRIVATE_STORAGE_REQUIRED", "Cannot retain private recovery material.");
-		const std::string destination = created; privateMode(destination, 0700, true);
+		need(created != nullptr, "PRIVATE_STORAGE_REQUIRED", "Cannot retain signing cache recovery material.");
+		const std::string destination = created; directory(destination, "PRIVATE_STORAGE_REQUIRED");
 		copyTree(cacheBackup, join(destination, "cache-backup"));
-		if (hadOhos) copyTree(ohosBackup, join(destination, "cli-backup"));
 		if (ctx.temporary) ctx.temporary->retainedForRecovery = false;
 	} catch (...) {}
 }
 Inspection generate(Context &ctx) {
 	Lock teamLock(join(ctx.root, "locks/team-" + digest(ctx.team)));
 	Lock cliLock(join(ctx.root, "locks/cli"));
-	const std::string cacheBackup = join(ctx.work, "cache-backup"), ohos = join(ctx.cliHome, ".ohos"), ohosBackup = join(ctx.work, "cli-backup");
-	bool backedUp = false, hadOhos = false;
+	const std::string cacheBackup = join(ctx.work, "cache-backup");
+	bool backedUp = false;
 	try {
-		hardenTree(ctx.cliHome);
-		syncLogin(ctx);
 		authenticate(ctx);
 		need(selectTeam(ctx) == ctx.team, "TEAM_REQUIRED", "The available signing team changed. Select the intended team ID in EditorSettings and retry.");
 		ctx.udid = deviceUDID(ctx);
@@ -979,30 +841,23 @@ Inspection generate(Context &ctx) {
 		const Inspection current = cachedSigning(ctx);
 		if (current.ready) return current;
 		copyTree(ctx.cache, cacheBackup);
-		hadOhos = exists(ohos);
-		if (hadOhos) copyTree(ohos, ohosBackup);
 		backedUp = true;
 		prepareMinimal(ctx);
 		const Result result = cli(ctx, {"signature", "generate", "--team-id", ctx.team, "--product", "default"});
 		if (!result.ok) {
-			if (networkFailure(result)) fail("NETWORK_ERROR", "Signing service request failed. Check the network/proxy; old local signing materials were retained.");
-			fail("SIGNING_FAILED", "The official CLI failed to generate signing materials. Old local files were retained; a cloud certificate change cannot be rolled back locally.");
+			if (networkFailure(result)) fail("NETWORK_ERROR", "Signing service request failed. Check the network/proxy; old cached signing materials were retained.");
+			fail("SIGNING_FAILED", "The official CLI failed to generate signing materials. Old cached files were retained; CLI credentials and cloud changes are managed by the official CLI.");
 		}
 		const JSON config = importGenerated(ctx);
 		const Inspection checked = inspectSigning(ctx, config);
-		need(checked.ready, checked.reason == "PROFILE_DEVICE_MISMATCH" ? "PROFILE_DEVICE_MISMATCH" : "PROFILE_INVALID", "The generated profile did not pass bundle, device, permission, validity and certificate checks. Validation reason: " + checked.reason + ". Old local files were retained; check the official CLI account/device setup.");
+		need(checked.ready, checked.reason == "PROFILE_DEVICE_MISMATCH" ? "PROFILE_DEVICE_MISMATCH" : "PROFILE_INVALID", "The generated profile did not pass bundle, device, permission, validity and certificate checks. Validation reason: " + checked.reason + ". Old cached files were retained; check the official CLI account/device setup.");
 		return checked;
 	} catch (...) {
 		if (backedUp) {
-			bool restoreFailed = false;
-			try { removeOwned(ctx.root, ctx.cache); copyTree(cacheBackup, ctx.cache); } catch (...) { restoreFailed = true; }
-			try {
-				if (exists(ohos)) removeOwned(ctx.cliHome, ohos);
-				if (hadOhos) copyTree(ohosBackup, ohos);
-			} catch (...) { restoreFailed = true; }
-			if (restoreFailed) {
-				retainRecovery(ctx, cacheBackup, ohosBackup, hadOhos);
-				fail("ROLLBACK_FAILED", "Local signing files could not be fully restored. Stop signing and inspect the retained private recovery backups before retrying; cloud certificate changes cannot be rolled back locally.");
+			try { removeOwned(ctx.root, ctx.cache); copyTree(cacheBackup, ctx.cache); }
+			catch (...) {
+				retainRecovery(ctx, cacheBackup);
+				fail("ROLLBACK_FAILED", "The signing cache could not be fully restored. Inspect the retained cache recovery backup before retrying; CLI credentials and cloud changes are managed by the official CLI.");
 			}
 		}
 		throw;
@@ -1015,34 +870,13 @@ std::string buildSdkRoot(const JSON &request) {
 	if (fs::path(selected).filename() == "openharmony" && fs::path(parent(selected)).filename() == "default" && exists(join(parent(selected), "sdk-pkg.json"))) return parent(parent(selected));
 	return field(request, "sdkRoot");
 }
-std::string buildHvigorHome(Context &ctx) {
-	// Keep the private umask: HOME/hmdfs maps directory ownership and cannot
-	// safely host owner-only workspaces. Reuse only the prepared wrapper tree;
-	// all writable Hvigor state belongs to this permission-capable operation.
-	const auto selected = ctx.originalEnv.find("HVIGOR_USER_HOME");
-	const std::string source = selected == ctx.originalEnv.end() ? join(ctx.originalHome, ".hvigor") : selected->second;
-	need(absolute(source), "CLT_MISSING", "The prepared Hvigor home must be an absolute path.");
-	const std::string wrapper = real(join(source, "wrapper"), "CLT_MISSING");
-	directory(wrapper, "CLT_MISSING");
-	const std::string home = privateDir(join(ctx.work, "hvigor-home"));
-	need(entries(home).empty(), "PRIVATE_STORAGE_REQUIRED", "The private Hvigor workspace must be empty before initialization.");
-	need(::symlink(wrapper.c_str(), join(home, "wrapper").c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot reuse the prepared Hvigor wrapper dependencies.");
-	const std::string config = join(source, "hvigor-config.json5");
-	if (exists(config)) {
-		// Preserve the public runner's validation of global dependencies/options
-		// without allowing this build to rewrite the caller's configuration.
-		privateWrite(join(home, "hvigor-config.json5"), readBytes(real(config, "CLT_MISSING"), "CLT_MISSING"));
-	}
-	return home;
-}
 JSON build(Context &ctx, const JSON &material) {
 	const std::string project = field(ctx.request, "projectDir"), runner = join(project, "tools/build.cjs"), profilePath = join(project, "build-profile.json5");
 	regular(runner, "BUILD_FAILED");
-	const std::string original = readBytes(profilePath, "BUILD_FAILED"), workDir = privateDir(join(ctx.work, "build"));
+	const std::string original = readBytes(profilePath, "BUILD_FAILED"), workDir = ensureDir(join(ctx.work, "build"));
 	JSON request(Json::objectValue); request["schemaVersion"] = 2; request["projectDir"] = project;
 	request["sdkRoot"] = buildSdkRoot(ctx.request); request["commandLineToolsRoot"] = ctx.request["commandLineToolsRoot"];
 	request["buildMode"] = "debug"; request["format"] = "hap"; request["workDir"] = workDir;
-	request["hvigorUserHome"] = buildHvigorHome(ctx);
 	JSON signing(Json::objectValue);
 	for (const auto &item : std::array<std::pair<const char *, const char *>, 7>{{{"certificate", "certpath"}, {"profile", "profile"}, {"storeFile", "storeFile"}, {"keyAlias", "keyAlias"}, {"signAlg", "signAlg"}, {"keyPasswordEncrypted", "keyPassword"}, {"storePasswordEncrypted", "storePassword"}}}) signing[item.first] = material[item.second];
 	request["signing"] = signing;
@@ -1071,29 +905,27 @@ JSON perform(const JSON &request, const Env &originalEnv) {
 	validateRequest(request);
 	Context ctx; ctx.request = request; ctx.originalEnv = originalEnv; ctx.env = cleanEnvironment(originalEnv);
 	ctx.originalHome = envValue(originalEnv, "HOME");
-	need(absolute(ctx.originalHome), "PRIVATE_STORAGE_REQUIRED", "An absolute original HOME is required to copy the existing CLI login.");
+	need(absolute(ctx.originalHome), "PRIVATE_STORAGE_REQUIRED", "The broker HOME path must be absolute.");
 	ctx.originalHome = normalized(ctx.originalHome);
 	const std::string configHome = normalized(envValue(originalEnv, "XDG_CONFIG_HOME")), tempHome = normalized(envValue(originalEnv, "TMPDIR"));
 	for (const auto &root : {configHome, tempHome}) {
-		need(absolute(root) && root != ctx.originalHome && !inside(ctx.originalHome, root) && !std::regex_search(root, std::regex("(^|/)hmdfs(/|$)", std::regex::icase)), "PRIVATE_STORAGE_REQUIRED", "Set XDG_CONFIG_HOME and TMPDIR to permission-capable private storage outside HOME/hmdfs.");
+		need(absolute(root), "PRIVATE_STORAGE_REQUIRED", "Set absolute XDG_CONFIG_HOME and TMPDIR paths for signing cache and temporary files.");
 		directory(root, "PRIVATE_STORAGE_REQUIRED");
 	}
 	const std::string signingRoot = join(configHome, "godot-openharmony-signing");
-	need(signingRoot != ctx.originalHome && !inside(signingRoot, ctx.originalHome) && normalized(field(request, "projectDir")) != signingRoot && !inside(signingRoot, field(request, "projectDir")) && !inside(field(request, "projectDir"), signingRoot) && normalized(field(request, "projectDir")) != tempHome && !inside(field(request, "projectDir"), tempHome) && tempHome != signingRoot && !inside(signingRoot, tempHome), "PRIVATE_STORAGE_REQUIRED", "Private signing storage and temporary storage must be separate from the source HOME and exported project.");
-	ctx.root = privateDir(signingRoot); privateDir(join(ctx.root, "locks"));
-	ctx.cliHome = privateDir(join(ctx.root, "cli-home")); ctx.cliData = privateDir(join(ctx.cliHome, ".config/deveco-cli"));
+	need(signingRoot != ctx.originalHome && !inside(signingRoot, ctx.originalHome) && normalized(field(request, "projectDir")) != signingRoot && !inside(signingRoot, field(request, "projectDir")) && !inside(field(request, "projectDir"), signingRoot) && normalized(field(request, "projectDir")) != tempHome && !inside(field(request, "projectDir"), tempHome) && tempHome != signingRoot && !inside(signingRoot, tempHome), "PRIVATE_STORAGE_REQUIRED", "Signing cache and temporary roots must not overlap the exported project, contain HOME, or place temporary files inside the signing cache.");
+	ctx.root = ensureDir(signingRoot); ensureDir(join(ctx.root, "locks"));
 	Temporary temporary(tempHome); ctx.work = temporary.path; ctx.temporary = &temporary;
 	nodeCheck(request, ctx.env, ctx.work);
 	ctx.cli = discoverCLI(request, ctx.env); ctx.verifier = discoverVerifier(request); ctx.metadata = projectMetadata(request);
 	{
 		Lock cliLock(join(ctx.root, "locks/cli"));
-		hardenTree(ctx.cliHome);
-		syncLogin(ctx); ctx.udid = deviceUDID(ctx); authenticate(ctx); ctx.team = selectTeam(ctx);
+		ctx.udid = deviceUDID(ctx); authenticate(ctx); ctx.team = selectTeam(ctx);
 	}
 	JSON identity(Json::arrayValue); identity.append(request["projectIdentity"]); identity.append(ctx.metadata.bundle); identity.append(ctx.team);
 	const std::string key = digest(jsonString(identity));
 	Lock projectLock(join(ctx.root, "locks/project-" + key));
-	ctx.cache = privateDir(join(ctx.root, "projects/" + key)); hardenTree(ctx.cache); refreshMetadata(ctx);
+	ctx.cache = ensureDir(join(ctx.root, "projects/" + key)); refreshMetadata(ctx);
 	Inspection checked = cachedSigning(ctx);
 	if (!checked.ready) checked = generate(ctx);
 	JSON response = build(ctx, checked.material);
@@ -1102,30 +934,6 @@ JSON perform(const JSON &request, const Env &originalEnv) {
 	return response;
 }
 
-// Only the generated private overlay invokes this path. Proxy stdout/stderr are
-// HDC's own streams, directed to the CLI's bounded captured pipes, never Editor.
-int proxyMain(const std::string &configPath, const std::vector<std::string> &args) {
-	try {
-		const std::string dir = parent(configPath);
-		const struct stat parentStat = directory(dir, "PRIVATE_STORAGE_REQUIRED"), fileStat = regular(configPath, "PRIVATE_STORAGE_REQUIRED");
-		need(parentStat.st_uid == ::getuid() && (parentStat.st_mode & 07777) == 0700 && fileStat.st_uid == ::getuid() && (fileStat.st_mode & 07777) == 0600 && real(configPath) == normalized(configPath), "PRIVATE_STORAGE_REQUIRED", "Invalid native HDC proxy configuration.");
-		const JSON config = readJSON(configPath);
-		need(config.size() == 3 && config.isMember("schemaVersion") && config["schemaVersion"].isInt() && config["schemaVersion"].asInt() == 1 && text(member(config, "hdcPath")) && absolute(config["hdcPath"].asString()) && member(config, "hostEnvironment").isObject(), "INVALID_REQUEST", "Invalid native HDC proxy configuration.");
-		const std::string hdc = real(config["hdcPath"].asString());
-		need(hdc != selfPath(), "INVALID_REQUEST", "The native HDC proxy cannot invoke itself.");
-		const JSON &host = config["hostEnvironment"];
-		need(text(member(host, "HOME")) && absolute(host["HOME"].asString()), "INVALID_REQUEST", "Invalid original HDC HOME.");
-		for (const auto &key : host.getMemberNames()) need((key == "HOME" || key == "HDC_SERVER" || key == "OHOS_HDC_SERVER_PORT") && text(host[key]), "INVALID_REQUEST", "Invalid native HDC host environment.");
-		Env env = cleanEnvironment(environment());
-		for (const char *key : {"HOME", "HDC_SERVER", "OHOS_HDC_SERVER_PORT"}) { if (host.isMember(key)) env[key] = host[key].asString(); else env.erase(key); }
-		std::vector<std::string> storage{hdc}; storage.insert(storage.end(), args.begin(), args.end());
-		std::vector<char *> argv; for (auto &arg : storage) argv.push_back(arg.data()); argv.push_back(nullptr);
-		std::vector<std::string> envStorage; for (const auto &entry : env) envStorage.push_back(entry.first + "=" + entry.second);
-		std::vector<char *> envp; for (auto &entry : envStorage) envp.push_back(entry.data()); envp.push_back(nullptr);
-		::execve(hdc.c_str(), argv.data(), envp.data());
-		return 127;
-	} catch (...) { return 126; }
-}
 JSON errorResponse(const std::string &code, const std::string &message) {
 	JSON response(Json::objectValue); response["schemaVersion"] = 1; response["status"] = "error"; response["code"] = code; response["message"] = message; return response;
 }
@@ -1133,15 +941,6 @@ JSON errorResponse(const std::string &code, const std::string &message) {
 
 int main(int argc, char **argv) {
 	using namespace auto_signer;
-	if (argc > 0 && fs::path(argv[0]).filename() == "hdc") {
-		std::vector<std::string> args; for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
-		try { return proxyMain(join(parent(selfPath()), ".godot-hdc-host.json"), args); } catch (...) { return 126; }
-	}
-	if (argc >= 4 && std::string(argv[1]) == "--hdc-host" && std::string(argv[3]) == "--") {
-		std::vector<std::string> args; for (int i = 4; i < argc; ++i) args.emplace_back(argv[i]);
-		return proxyMain(argv[2], args);
-	}
-	::umask(0077);
 	struct sigaction action{}; action.sa_handler = handleSignal; ::sigemptyset(&action.sa_mask);
 	::sigaction(SIGINT, &action, nullptr); ::sigaction(SIGTERM, &action, nullptr); ::signal(SIGPIPE, SIG_IGN); ::signal(SIGCHLD, SIG_DFL);
 	JSON response; int exitCode = 0;
@@ -1150,10 +949,10 @@ int main(int argc, char **argv) {
 		response = perform(parseJSON(argv[2]), environment());
 	} catch (const SafeError &error) { response = errorResponse(error.code, error.what()); if (error.code == "INTERNAL_ERROR") exitCode = 1; }
 	catch (const fs::filesystem_error &error) {
-		if (error.code().value() == EACCES || error.code().value() == EPERM || error.code().value() == EROFS) response = errorResponse("PRIVATE_STORAGE_REQUIRED", "Signing storage or tools are inaccessible. Check private storage permissions and tool paths.");
+		if (error.code().value() == EACCES || error.code().value() == EPERM || error.code().value() == EROFS) response = errorResponse("PRIVATE_STORAGE_REQUIRED", "Signing files or tools are inaccessible. Check the selected tool paths and writable cache and temporary directories.");
 		else if (error.code().value() == ENOENT) response = errorResponse("CACHE_INVALID", "A required signing/build file disappeared. Check the selected toolchain and retry.");
-		else { response = errorResponse("INTERNAL_ERROR", "Automatic signing failed internally. Check the private cache and selected tools."); exitCode = 1; }
-	} catch (...) { response = errorResponse("INTERNAL_ERROR", "Automatic signing failed internally. Check the private cache and selected tools."); exitCode = 1; }
+		else { response = errorResponse("INTERNAL_ERROR", "Automatic signing failed internally. Check the signing cache and selected tools."); exitCode = 1; }
+	} catch (...) { response = errorResponse("INTERNAL_ERROR", "Automatic signing failed internally. Check the signing cache and selected tools."); exitCode = 1; }
 	std::cout << jsonString(response) << '\n';
 	return exitCode;
 }

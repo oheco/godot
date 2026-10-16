@@ -20,10 +20,10 @@ const args = process.argv.slice(2);
 const profile = fs.readFileSync(path.join(root, 'build-profile.json5'));
 const doc = JSON.parse(profile);
 const material = doc.app.signingConfigs[0]?.material;
-const work = path.dirname(process.env.HOME);
+const work = path.dirname(process.env.TMPDIR);
 fs.writeFileSync(path.join(work, 'generated-profile.json'), profile);
 fs.writeFileSync(path.join(work, 'invocation.json'), JSON.stringify({
-  args, wrapper:process.argv[1], execPath:process.execPath, cwd:root,
+  args, wrapper:process.argv[1], execPath:process.execPath, cwd:root, umask:process.umask(),
   env:Object.fromEntries(['JAVA_HOME','DEVECO_SDK_HOME','OHOS_SDK_HOME','OHOS_BASE_SDK_HOME',
     'HVIGOR_USER_HOME','HVIGOR_WRAPPER_HOME','TMPDIR','TMP','TEMP','HOME','NODE_PATH','NODE_OPTIONS','NODE_OPTS',
     'NODE_HOME','CANGJIE_BUILD_SUPPORT_PATH','NPM_CONFIG_OFFLINE'].map(k => [k,process.env[k]])),
@@ -270,7 +270,7 @@ test('incoherent SDK metadata is rejected before invoking the build', t => {
 });
 
 for (const format of ['hap','app']) for (const mode of ['debug','release']) for (const signed of [false,true]) {
-  test(`${format} ${mode} ${signed ? 'signed' : 'unsigned'}: node spawn, isolated env, exact profile restoration`, t => {
+  test(`${format} ${mode} ${signed ? 'signed' : 'unsigned'}: node spawn, selected toolchain env, exact profile restoration`, t => {
     const f = fixture(t, {format, mode, signed});
     const response = f.run();
     assert.equal(response.error, undefined);
@@ -296,7 +296,7 @@ for (const format of ['hap','app']) for (const mode of ['debug','release']) for 
     assert.equal(invoked.env.TMP,path.join(f.work,'tmp'));
     assert.equal(invoked.env.TEMP,path.join(f.work,'tmp'));
     assert.equal(invoked.env.TMPDIR, path.join(f.work,'tmp'));
-    assert.equal(invoked.env.HOME, path.join(f.work,'home'));
+    assert.equal(invoked.env.HOME, process.env.HOME);
     assert.equal(invoked.env.NODE_PATH, undefined);
     assert.equal(invoked.env.NPM_CONFIG_OFFLINE, 'true');
     assert.equal(invoked.secretEnvAbsent,true);
@@ -322,7 +322,7 @@ for (const format of ['hap','app']) for (const mode of ['debug','release']) for 
     const outDir = format === 'hap' ? 'entry/build/default/outputs/default' : 'build/outputs/default';
     assert.deepEqual(JSON.parse(fs.readFileSync(f.resultPath)), {schemaVersion:2,
       outputPath:path.join(f.project,outDir,expectedName), mode, format, signed});
-    assert.equal(fs.statSync(f.resultPath).mode & 0o777, 0o600);
+    assert.equal(invoked.umask, process.umask());
     assert.match(response.stdout, /fixture build stdout/);
     assert.match(response.stderr, /fixture build stderr/);
     f.restored();
@@ -419,20 +419,21 @@ for (const [label,changes] of Object.entries({unknown:{unknown:true}, version:{s
     expectFailure(f,f.run(changes));
   });
 }
-test('normal FS privacy is required; chmod is not attempted by runner', t => {
-  const f = fixture(t);
-  fs.chmodSync(f.work,0o770); // Test deliberately unsafe effective mode, on TMPDIR.
-  expectFailure(f,f.run());
+test('normal caller permissions and HOME are accepted without permission isolation', t => {
+  const f = fixture(t,{signed:true}),home=path.join(f.root,'caller home');
+  fs.mkdirSync(home);fs.chmodSync(f.work,0o770);
+  writeJSON(f.requestPath,f.request,0o660);fs.chmodSync(f.requestPath,0o660);
+  const response=f.run({}, {HOME:home});
+  assert.equal(response.status,0,response.stderr);
+  const invoked=JSON.parse(fs.readFileSync(f.invocationPath));
+  assert.equal(invoked.env.HOME,home);assert.equal(invoked.umask,process.umask());
+  assert.equal(fs.statSync(f.work).mode&0o777,0o770);assert.equal(fs.statSync(f.requestPath).mode&0o777,0o660);
+  assert.equal(fs.existsSync(path.join(f.work,'home')),false);f.restored();
 });
-test('non-private request and symlink request are rejected without exposing contents', t => {
-  const f = fixture(t,{signed:true});
-  writeJSON(f.requestPath,f.request,0o660);
-  fs.chmodSync(f.requestPath,0o660);
-  let response = spawnSync(process.execPath,[RUNNER,'--request',f.requestPath],{encoding:'utf8'});
-  expectFailure(f,response);
-  fs.chmodSync(f.requestPath,0o600);
+test('symlink request is rejected without exposing contents', t => {
+  const f = fixture(t,{signed:true});writeJSON(f.requestPath,f.request);
   const link = path.join(f.work,'request-link.json'); fs.symlinkSync(f.requestPath,link);
-  response = spawnSync(process.execPath,[RUNNER,'--request',link],{encoding:'utf8'});
+  const response = spawnSync(process.execPath,[RUNNER,'--request',link],{encoding:'utf8'});
   expectFailure(f,response);
   assert.equal((response.stdout+response.stderr).includes(f.request.signing.keyPasswordEncrypted),false);
 });

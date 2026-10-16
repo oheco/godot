@@ -15,12 +15,11 @@ C# source debugging, publishing, and device installation are outside this interf
 
 ## Caller and exact request
 
-Create a unique, caller-owned `workDir` with effective mode 0700 on the application's
-permission-capable private temporary/cache filesystem, outside the project. Create
-a plain JSON request file with effective mode 0600, one hard link, and size at most
-1 MiB; its direct parent must also be caller-owned 0700. HOME/hmdfs does not provide
-these permissions and is rejected. The runner checks effective modes and never
-relies on chmod succeeding. The caller removes its request/work directory afterward.
+Create a unique `workDir` outside the project and a plain JSON request file of at
+most 1 MiB with one hard link. Temporary operation files belong under TMPDIR; the
+caller removes them afterward. The runner checks accessible directory/regular-file
+paths and bounded request contents, without caller-UID checks, exact mode checks,
+chmod, or an imposed umask. Normal creation permissions follow the caller.
 
 Call using an argument array:
 
@@ -28,8 +27,8 @@ Call using an argument array:
 <selected-node> <absolute-project>/tools/build.cjs --request <absolute-private-json>
 ```
 
-The caller must clear bootstrap `NODE_OPTIONS`/`NODE_PATH` before launching Node:
-the runner can clear them for its children only after Node has already started.
+The caller's Node bootstrap environment remains its own selection. The runner
+normalizes stale SDK/Node path overrides for its selected toolchain children.
 The request has exactly these seven required keys, with optional `hvigorUserHome`
 and `signing`. Unknown, missing, obsolete `hvigorEntry`, and mistyped fields fail.
 
@@ -75,7 +74,7 @@ No adapter metadata or claim that upstream interfaces are unmodified is used.
 `hvigorUserHome`, inherited `HVIGOR_USER_HOME`, then
 `dirname(OHECO_ROOT)/.hvigor`. Native `OHECO_ROOT` defaults to
 `/storage/Users/currentUser/.oheco`, so its fallback is
-`/storage/Users/currentUser/.hvigor`. This is separate from private HOME/TMP/workDir.
+`/storage/Users/currentUser/.hvigor`. This is separate from the operation TMP/workDir and does not change HOME.
 The persistent home must already contain the prepared wrapper tools.
 
 The runner reads the actual `PNPM_VERSION` assignment in the selected wrapper.
@@ -193,9 +192,9 @@ APP flow avoids that extra branch. Acceptance verifies the APP's own signature
 with the native SDK signer. No separate packing/signing command is added.
 The old 6.26.4 adapter's `--parallel` workaround is not retained.
 
-Child cwd is `projectDir`. Child HOME is `workDir/home`; TMPDIR/TMP/TEMP are
-`workDir/tmp`, created with verified 0700 permissions. `HVIGOR_USER_HOME` is the
-selected persistent home. NODE_HOME and the leading PATH entry use the selected
+Child cwd is `projectDir`, and HOME remains inherited from the caller.
+TMPDIR/TMP/TEMP use the disposable `workDir/tmp` directory without exact permission
+requirements. `HVIGOR_USER_HOME` is the selected persistent home. NODE_HOME and the leading PATH entry use the selected
 bundled Node bin directory. The runner clears inherited NODE_OPTIONS/NODE_PATH,
 NODE_OPTS, Java home, unrelated Hvigor/Node/Cangjie wrapper overrides, and obsolete
 OHECO_HVIGOR secret environment fields; it sets npm offline flags as an additional
@@ -232,7 +231,7 @@ artifact, without recursive search or first-match selection:
 | HAP unsigned/signed | `entry/build/default/outputs/default` | `-unsigned.hap` / `-signed.hap` |
 | APP unsigned/signed | `build/outputs/default` | `-unsigned.app` / `-signed.app` |
 
-On exit 0, `workDir/result.json` is a private 0600 file with exactly five keys:
+On exit 0, `workDir/result.json` contains exactly five keys and follows normal caller creation permissions:
 
 ```json
 {

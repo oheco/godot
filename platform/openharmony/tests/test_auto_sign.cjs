@@ -1,9 +1,8 @@
 'use strict';
 // Runs the actual helper through execFile-compatible local executables. No real
 // auth, cloud signing, SDK build, installation, or network requests are made.
-// GODOT_NATIVE_AUTO_SIGNER selects a signed C++ executable; otherwise the legacy
-// JS helper remains a reference backend. GODOT_NATIVE_SDK selects the local SDK
-// used only to compile/sign the silent-chmod shared-library fixture.
+// GODOT_NATIVE_AUTO_SIGNER selects the signed production C++ executable.
+// Official tools retain the caller environment and selected original CLT.
 // GODOT_NATIVE_NODE_RUNTIME selects a real signed CLT libc++_shared.so copied as
 // fixture data; the installed CLI, HDC and SDK launchers are never executed.
 const { test } = require('node:test');
@@ -11,12 +10,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync, spawn } = require('node:child_process');
-const HELPER = path.resolve(__dirname, '../../../misc/dist/openharmony_template/tools/auto-sign.cjs');
 const NATIVE = process.env.GODOT_NATIVE_AUTO_SIGNER || '';
-const api = NATIVE ? null : require(HELPER);
-const NATIVE_SDK = process.env.GODOT_NATIVE_SDK || '/storage/Users/currentUser/.oheco/packages/ohos-sdk-native/26.0.0.35-Beta';
+assert.ok(path.isAbsolute(NATIVE),'set GODOT_NATIVE_AUTO_SIGNER to the signed production native worker');
 const NODE_RUNTIME = process.env.GODOT_NATIVE_NODE_RUNTIME || '/storage/Users/currentUser/.oheco/packages/command-line-tools/26.0.0.201/sdk/default/openharmony/native/llvm/lib/aarch64-linux-ohos/libc++_shared.so';
-function invocation(args) { return NATIVE ? {file:NATIVE,args} : {file:process.execPath,args:[HELPER,...args]}; }
+function invocation(args) { return {file:NATIVE,args}; }
 function receipt(child, expectedExit = 0) {
   assert.equal(child.error,undefined,child.error&&child.error.message);
   assert.equal(child.status,expectedExit,child.stderr+'\n'+child.stdout);assert.equal(child.signal,null);assert.equal(child.stderr,'');
@@ -28,15 +25,6 @@ function receipt(child, expectedExit = 0) {
   if(result.status==='error'){assert.equal(typeof result.code,'string');assert.ok(result.code.length);assert.equal(typeof result.message,'string');}
   else{assert.equal(result.signed,true);assert.equal(result.profileValidated,true);assert.equal(result.format,'hap');assert.equal(result.mode,'debug');}
   return result;
-}
-function chmodNoopLibrary(root) {
-  const source=path.join(__dirname,'native_auto_sign_fixture/chmod_noop.c'),unsigned=path.join(root,'chmod-noop.unsigned.so'),output=path.join(root,'chmod-noop.so');
-  const env={...process.env};delete env.LD_PRELOAD;
-  const compile=spawnSync(path.join(NATIVE_SDK,'llvm/bin/clang'),['--target=aarch64-linux-ohos','--sysroot='+path.join(NATIVE_SDK,'sysroot'),'-shared','-fPIC','-O2','-Wl,--no-code-sign',source,'-o',unsigned],{encoding:'utf8',env,timeout:30000});
-  assert.equal(compile.status,0,compile.stderr);assert.equal(compile.error,undefined);
-  const sign=spawnSync('binary-sign-tool',['sign','-selfSign','1','-inFile',unsigned,'-outFile',output],{encoding:'utf8',env,timeout:30000});
-  assert.equal(sign.status,0,sign.stderr);assert.equal(sign.error,undefined);fs.chmodSync(output,0o600);
-  return output;
 }
 const UDID_A = 'a'.repeat(64), UDID_B = 'b'.repeat(64);
 const SECRET = 'SENTINEL_secret_token_and_password_never_print';
@@ -62,8 +50,19 @@ const fs=require('node:fs'),path=require('node:path');
 const control=JSON.parse(fs.readFileSync(process.env.FIXTURE_CONTROL));
 const root=path.dirname(process.env.FIXTURE_CONTROL);
 function log(kind,details={}){fs.appendFileSync(path.join(root,'events.jsonl'),JSON.stringify({kind,...details})+'\n');}
-function write(file,data){fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});fs.writeFileSync(file,data,{mode:0o600});}
+function write(file,data){fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,data);}
 function json(file,data){write(file,JSON.stringify(data));}
+function auditToolEnvironment(phase){
+  if(!control.normalEnvironmentProbe)return;
+  const assert=require('node:assert/strict');
+  assert.equal(process.env.HOME,process.env.FIXTURE_ORIGINAL_HOME,'official tools must retain caller HOME');
+  assert.equal(process.env.XDG_CONFIG_HOME,process.env.FIXTURE_ORIGINAL_CONFIG,'official tools must retain caller XDG config');
+  assert.equal(process.umask(),Number(process.env.FIXTURE_CALLER_UMASK),'official tools must inherit caller umask');
+  if(phase==='cli'){
+    assert.equal(process.env.COMMAND_LINE_TOOL_PATH,process.env.FIXTURE_ORIGINAL_CLT,'selected original CLT must be used');
+  }
+  log('normal-tool-environment',{phase,home:process.env.HOME,config:process.env.XDG_CONFIG_HOME,umask:process.umask()});
+}
 function auditRuntime(phase,nodeChild){
   if(!control.runtimeIsolation)return;
   const assert=require('node:assert/strict'),ld=process.env.LD_LIBRARY_PATH||'',original=process.env.FIXTURE_ORIGINAL_LD_LIBRARY_PATH||'';
@@ -75,10 +74,10 @@ function auditRuntime(phase,nodeChild){
     assert.equal(ld,runtime+suffix);assert.equal(path.basename(runtime),'node-runtime');
     assert.equal(path.dirname(path.dirname(runtime)),path.join(root,'private tmp'));
     assert.match(path.basename(path.dirname(runtime)),/^godot-auto-sign-[^/]+$/);
-    const dir=fs.lstatSync(runtime);assert.equal(dir.isDirectory(),true);assert.equal(dir.isSymbolicLink(),false);assert.equal(dir.mode&0o7777,0o700);assert.equal(dir.uid,process.getuid());assert.equal(fs.realpathSync(runtime),runtime);
+    const dir=fs.lstatSync(runtime);assert.equal(dir.isDirectory(),true);assert.equal(dir.isSymbolicLink(),false);assert.equal(fs.realpathSync(runtime),runtime);
     assert.deepEqual(fs.readdirSync(runtime),['libc++_shared.so']);
     const library=path.join(runtime,'libc++_shared.so'),link=fs.lstatSync(library);
-    target=fs.readlinkSync(library);assert.equal(link.isSymbolicLink(),true);assert.equal(link.uid,process.getuid());assert.equal(target,fs.realpathSync(process.env.FIXTURE_SELECTED_NODE_RUNTIME));
+    target=fs.readlinkSync(library);assert.equal(link.isSymbolicLink(),true);assert.equal(target,fs.realpathSync(process.env.FIXTURE_SELECTED_NODE_RUNTIME));
     assert.ok(fs.readFileSync(library).equals(fs.readFileSync(process.env.FIXTURE_SELECTED_NODE_RUNTIME)));
     assert.equal(fs.existsSync(path.join(runtime,'libc++.so')),false);
   }else assert.equal(ld,original,'a non-Node process or absent runtime must retain the broker loader environment');
@@ -92,21 +91,16 @@ console.log('SENTINEL_secret_token_and_password_never_print');console.error('SEN
 `;
 const CLI = COMMON + String.raw`
 (async()=>{
-auditRuntime('cli',true);
+auditRuntime('cli',true);auditToolEnvironment('cli');
 if(control.runtimeIsolation){
   const child=require('node:child_process').spawnSync(process.execPath,[path.join(root,'sdk-child.cjs')],{encoding:'utf8'});
   if(child.error||child.status!==0||!child.stdout.includes('SDK_CHILD_OK'))throw new Error('SDK child inherited an unsafe loader environment');
 }
-const args=process.argv.slice(2),preloadIndex=process.execArgv.indexOf('--import'),preload=preloadIndex<0?null:process.execArgv[preloadIndex+1];
-const preloadFile=preload&&require('node:url').fileURLToPath(preload);
-const nativeProxyPath=process.env.FIXTURE_NATIVE_WORKER&&path.join(process.env.COMMAND_LINE_TOOL_PATH,'sdk/default/openharmony/toolchains/hdc');
-if(nativeProxyPath){
-  const stat=fs.lstatSync(nativeProxyPath),parent=fs.statSync(path.dirname(nativeProxyPath)),configPath=path.join(path.dirname(nativeProxyPath),'.godot-hdc-host.json'),configStat=fs.lstatSync(configPath);
-  log('native-proxy',{path:nativeProxyPath,mode:stat.mode&0o7777,parentMode:parent.mode&0o7777,isFile:stat.isFile(),isSymlink:stat.isSymbolicLink(),links:stat.nlink,owner:stat.uid,configPath,configMode:configStat.mode&0o7777,configIsFile:configStat.isFile(),configIsSymlink:configStat.isSymbolicLink(),configLinks:configStat.nlink,configOwner:configStat.uid,magic:fs.readFileSync(nativeProxyPath).subarray(0,4).toString('hex'),sameWorker:fs.readFileSync(nativeProxyPath).equals(fs.readFileSync(process.env.FIXTURE_NATIVE_WORKER)),config:JSON.parse(fs.readFileSync(configPath))});
-}
-log('cli',{args,home:process.env.HOME,data:process.env.DEVECO_CLI_DATA_DIR,cwd:process.cwd(),clt:process.env.COMMAND_LINE_TOOL_PATH,noColor:process.env.NO_COLOR,authSource:process.env.DEVECO_CLI_AUTH_SOURCE,codeAuthDir:process.env.DEVECO_CODE_AUTH_DIR,nodeOptions:process.env.NODE_OPTIONS,nodePath:process.env.NODE_PATH,nodeOpts:process.env.NODE_OPTS,execArgv:process.execArgv,preloadMode:preloadFile&&fs.statSync(preloadFile).mode&0o7777,preloadParentMode:preloadFile&&fs.statSync(path.dirname(preloadFile)).mode&0o7777});
+const args=process.argv.slice(2),loginData=process.env.DEVECO_CLI_DATA_DIR||path.join(process.env.HOME,'.config/deveco-cli');
+if(control.normalEnvironmentProbe)require('node:assert/strict').equal(loginData,process.env.FIXTURE_EXPECTED_LOGIN_DATA,'official CLI must read the selected existing login directory');
+log('cli',{args,home:process.env.HOME,data:loginData,config:process.env.XDG_CONFIG_HOME,cwd:process.cwd(),clt:process.env.COMMAND_LINE_TOOL_PATH,umask:process.umask(),authSource:process.env.DEVECO_CLI_AUTH_SOURCE,codeAuthDir:process.env.DEVECO_CODE_AUTH_DIR,nodeOptions:process.env.NODE_OPTIONS,nodePath:process.env.NODE_PATH,nodeOpts:process.env.NODE_OPTS,execArgv:process.execArgv});
 async function probeChildren(){
-  const cp=require('node:child_process'),bin=control.cliHdcPath||((process.env.FIXTURE_NATIVE_WORKER||control.cliUseSDK)?path.join(process.env.COMMAND_LINE_TOOL_PATH,'sdk/default/openharmony/toolchains/hdc'):process.env.FIXTURE_HDC_PATH);
+  const cp=require('node:child_process'),bin=path.join(process.env.COMMAND_LINE_TOOL_PATH,'sdk/default/openharmony/toolchains/hdc');
   const childArgs=['-t','serial-is-not-udid','shell','bm','get','-u'];
   const env=Object.freeze({...process.env,HDC_SERVER:'cli-override-must-not-replace-host',OHOS_HDC_SERVER_PORT:'1'}),options=Object.freeze({encoding:'utf8',env});
   const collect=child=>new Promise((resolve,reject)=>{let stdout='';child.stdout.on('data',bytes=>stdout+=bytes);child.on('error',reject);child.on('close',code=>code===0?resolve(stdout):reject(new Error('fake HDC spawn failed')));});
@@ -134,10 +128,13 @@ if(args.join(' ')==='auth status'){
     if(control.otherCLIStateOnRecheck)write(path.join(process.env.HOME,'.ohos/config/other-project-state'),'unrelated application state');
   }
   if(control.notLoggedIn){console.log('Not logged in');process.exit(0);}
-  const data=process.env.DEVECO_CLI_DATA_DIR;
+  const data=loginData;
   if(!fs.existsSync(path.join(data,'token.enc'))||!fs.existsSync(path.join(data,'token.dek'))){console.log('Not logged in');process.exit(0);}
-  // Model auth refresh in the private copy only.
-  fs.appendFileSync(path.join(data,'token.enc'),'private-refresh');
+  const token=fs.readFileSync(path.join(data,'token.enc'),'utf8'),dek=fs.readFileSync(path.join(data,'token.dek'),'utf8');
+  if(!token.endsWith('original-token')||!dek.endsWith('original-dek'))throw new Error('existing CLI login data changed');
+  for(const version of [1,2,3])if(fs.readFileSync(path.join(process.env.HOME,'.local/share/deveco-cli/keys','kek-v'+version+'.bin'),'utf8')!=='original-kek-'+version)throw new Error('CLI did not read original KEK data');
+  // Fake CLI only reads fixture login data. Worker-issued copies or rewrites
+  // would change the observed path/content and fail the environment regression.
   console.log('Current user: local-fixture');
   if(process.env.FIXTURE_NATIVE_WORKER&&control.runtimeTamper){
     const runtime=(process.env.LD_LIBRARY_PATH||'').split(':')[0],library=path.join(runtime,'libc++_shared.so');
@@ -170,7 +167,7 @@ if(args.join(' ')==='auth status'){
     const cp=require('node:child_process');
     for(const name of ['ohpm','hvigor']){
       const result=cp.spawnSync(path.join(clt,tools.node),[path.join(clt,tools[name])],{encoding:'utf8'});
-      if(result.error||result.status!==0||result.stdout.trim()!=='FAKE_'+name.toUpperCase()+'_OK')throw new Error('copied launcher dependency resolution failed: '+name);
+      if(result.error||result.status!==0||result.stdout.trim()!=='FAKE_'+name.toUpperCase()+'_OK')throw new Error('selected launcher dependency resolution failed: '+name);
       log('cli-launcher-probe',{name});
     }
     const links=['node/lib','ohpm/lib','ohpm/node_modules','hvigor/engine','hvigor/plugins','hvigor/node_modules'];
@@ -206,8 +203,9 @@ if(args.join(' ')==='auth status'){
 })().catch(error=>{console.error(error.message);process.exitCode=12;});
 `;
 const HDC = COMMON + String.raw`
-const args=process.argv.slice(2);auditRuntime('hdc',!!process.env.COMMAND_LINE_TOOL_PATH);log('hdc',{args,file:process.argv[1],home:process.env.HOME,server:process.env.HDC_SERVER,port:process.env.OHOS_HDC_SERVER_PORT});
-if(process.env.HOME!==process.env.FIXTURE_ORIGINAL_HOME)throw new Error('private HOME would replace the shared HDC service');
+const args=process.argv.slice(2),runtime=(process.env.LD_LIBRARY_PATH||'').split(':')[0];auditRuntime('hdc',path.basename(runtime)==='node-runtime');auditToolEnvironment('hdc');log('hdc',{args,file:process.argv[1],home:process.env.HOME,server:process.env.HDC_SERVER,port:process.env.OHOS_HDC_SERVER_PORT,umask:process.umask()});
+if(process.env.HOME!==process.env.FIXTURE_ORIGINAL_HOME)throw new Error('caller HDC HOME changed');
+if(fs.readFileSync(path.join(process.env.HOME,'.harmony/hdckey'),'utf8')!=='original-hdc-private'||fs.readFileSync(path.join(process.env.HOME,'.harmony/hdckey.pub'),'utf8')!=='original-hdc-public')throw new Error('original HDC identity changed');
 if(args.join(' ')==='list targets'){console.log('serial-is-not-udid');process.exit(0);}
 if(control.unauthorized){console.error('device unauthorized');process.exit(0);}
 if(control.deviceFail){console.error('device disconnected');process.exit(3);}
@@ -217,7 +215,7 @@ if(control.changeUDIDBeforeGeneration){const calls=fs.readFileSync(path.join(roo
 console.log('udid: '+udid);
 `;
 const VERIFIER = COMMON + String.raw`
-const args=process.argv.slice(2);auditRuntime('verify',false);log('verify',{args});
+const args=process.argv.slice(2);auditRuntime('verify',false);auditToolEnvironment('verify');log('verify',{args});
 if(control.verifyFailOnce){json(process.env.FIXTURE_CONTROL,{...control,verifyFailOnce:false});process.exit(4);}
 if(control.verifyFail){process.exit(4);}
 const input=args[args.indexOf('-inFile')+1],output=args[args.indexOf('-outFile')+1];
@@ -225,19 +223,17 @@ const doc=JSON.parse(fs.readFileSync(input));
 if(control.invalidVerifiedJSON)write(output,'not JSON');else json(output,doc);
 `;
 const BUILD = COMMON + String.raw`
-auditRuntime('build',true);
+auditRuntime('build',true);auditToolEnvironment('build');
 const args=process.argv.slice(2),file=args[1],request=JSON.parse(fs.readFileSync(file));
 const stat=fs.statSync(file),parent=fs.statSync(path.dirname(file));
 log('build',{args,requestMode:stat.mode&0o777,parentMode:parent.mode&0o777,request,requestFile:file});
 if(args[0]!=='--request'||request.schemaVersion!==2)throw new Error('invalid build contract');
-if(control.hvigorWorkspaceProbe){
-  const home=request.hvigorUserHome,source=process.env.HVIGOR_USER_HOME;
-  const workspace=path.join(home,'project_caches/fixture/workspace/node_modules/@ohos');
-  fs.mkdirSync(workspace,{recursive:true});
-  const stat=fs.statSync(home),config=path.join(home,'hvigor-config.json5');
-  if(!fs.readFileSync(config).equals(fs.readFileSync(path.join(source,'hvigor-config.json5'))))throw new Error('global Hvigor config not preserved');
-  if(fs.statSync(config).ino===fs.statSync(path.join(source,'hvigor-config.json5')).ino)throw new Error('caller Hvigor config must not be writable through the private home');
-  log('hvigor-workspace',{home,mode:stat.mode&0o7777,owner:stat.uid,umask:process.umask(),wrapper:fs.realpathSync(path.join(home,'wrapper')),configMode:fs.statSync(config).mode&0o7777,workspaceCreated:fs.statSync(workspace).isDirectory()});
+if(control.normalEnvironmentProbe){
+  const assert=require('node:assert/strict'),home=request.hvigorUserHome||process.env.HVIGOR_USER_HOME;
+  assert.equal(home,process.env.HVIGOR_USER_HOME,'ordinary Hvigor home must not be replaced');
+  const workspace=path.join(home,'project_caches/fixture/workspace/node_modules/@ohos'),file=path.join(workspace,'created-with-caller-umask');
+  fs.mkdirSync(workspace,{recursive:true});fs.writeFileSync(file,'ordinary SDK cache');
+  log('normal-hvigor-cache',{home,umask:process.umask(),directoryMode:fs.statSync(workspace).mode&0o777,fileMode:fs.statSync(file).mode&0o777});
 }
 const profile=path.join(request.projectDir,'build-profile.json5'),original=fs.readFileSync(profile);
 try{
@@ -250,7 +246,7 @@ try{
   }
 }finally{if(!control.noRestore)fs.writeFileSync(profile,original);}
 if(control.holdBuild){
-  if(process.env.FIXTURE_NATIVE_WORKER){
+  {
     // The grandchild closes its stdio and ignores SIGTERM. The worker must wait
     // for group termination even after the direct build process exits.
     const marker=path.join(root,'grandchild-ready');
@@ -259,7 +255,7 @@ if(control.holdBuild){
     child.on('error',()=>process.exit(12));
     process.on('SIGTERM',()=>{log('build-exiting');process.exit(0);});
     const ready=setInterval(()=>{if(fs.existsSync(marker)){clearInterval(ready);log('build-held',{grandchild:Number(fs.readFileSync(marker,'utf8'))});}},10);
-  }else log('build-held');
+  }
   setInterval(()=>{},1000);
 }
 `;
@@ -279,7 +275,7 @@ function fixture(t, initial = {}) {
   // Every fake CLT has the real provider's explicit paths and runnable launcher
   // dependencies. The fixed-SDK case uses the actual signed Node ELF (>4 MiB).
   const cltNode=path.join(clt,'node/bin/node');
-  if(NATIVE&&initial.cliLauncherProbe){fs.mkdirSync(path.dirname(cltNode),{recursive:true,mode:0o700});fs.copyFileSync(process.execPath,cltNode);fs.chmodSync(cltNode,0o500);}
+  if(initial.cliLauncherProbe){fs.mkdirSync(path.dirname(cltNode),{recursive:true,mode:0o700});fs.copyFileSync(process.execPath,cltNode);fs.chmodSync(cltNode,0o500);}
   else executable(cltNode,"const result=require('node:child_process').spawnSync(process.execPath,process.argv.slice(2),{stdio:'inherit'});if(result.error)throw result.error;process.exit(result.status===null?1:result.status);");
   write(path.join(clt,'node/lib/fixture-runtime.txt'),'selected CLT runtime');
   write(path.join(clt,'ohpm/bin/pm-cli.js'),"require('./launcher.cjs')();\n");
@@ -296,10 +292,8 @@ function fixture(t, initial = {}) {
     write(path.join(runtimeDir,'libc++.so'),'POISON compiler linker script; never a system runtime');
     write(path.join(runtimeDir,'unrelated-sdk-library.so'),'must not enter the loader search path');
     if(!initial.runtimeAbsent){
-      if(NATIVE){
-        assert.equal(fs.readFileSync(NODE_RUNTIME).subarray(0,4).toString('hex'),'7f454c46','supply a real signed CLT runtime via GODOT_NATIVE_NODE_RUNTIME');
-        fs.copyFileSync(NODE_RUNTIME,runtime);fs.chmodSync(runtime,0o500);
-      }else write(runtime,'reference backend does not inject a Node runtime');
+      assert.equal(fs.readFileSync(NODE_RUNTIME).subarray(0,4).toString('hex'),'7f454c46','supply a real signed CLT runtime via GODOT_NATIVE_NODE_RUNTIME');
+      fs.copyFileSync(NODE_RUNTIME,runtime);fs.chmodSync(runtime,0o500);
       fs.mkdirSync(path.dirname(unselectedRuntime),{recursive:true,mode:0o700});fs.copyFileSync(runtime,unselectedRuntime);fs.chmodSync(unselectedRuntime,0o500);
     }
   }
@@ -327,8 +321,9 @@ console.log('SDK_CHILD_OK');
 `);
   executable(path.join(root,'unrelated tools/hdc'),COMMON+String.raw`
 auditRuntime('other-child',true);
-log('other-child',{home:process.env.HOME,server:process.env.HDC_SERVER});
-if(process.env.HOME===process.env.FIXTURE_ORIGINAL_HOME)throw new Error('unrelated child received host HOME');
+auditToolEnvironment('other-child');
+log('other-child',{home:process.env.HOME,server:process.env.HDC_SERVER,umask:process.umask()});
+if(process.env.HOME!==process.env.FIXTURE_ORIGINAL_HOME)throw new Error('unrelated child HOME changed');
 console.log('OTHER_CHILD_OK');
 `);
   executable(path.join(sdk,'default/openharmony/toolchains/lib/hap-sign-tool'),VERIFIER);
@@ -347,8 +342,8 @@ console.log('OTHER_CHILD_OK');
   const originalPreset='[preset.0.options]\nbuild/sign=false\nsign/key_alias="manual-unchanged"\n';
   write(identity,'[application]\nconfig/name="Original source"\n');write(preset,originalPreset);
   const request={schemaVersion:1,projectDir:project,projectIdentity:identity,nodePath:process.execPath,
-    commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:NATIVE&&control.cliUseSDK?path.join(sdk,'default/openharmony/toolchains/hdc'):hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,HVIGOR_USER_HOME:path.join(home,'.hvigor'),FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_ORIGINAL_CLT:clt,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE,FIXTURE_SELECTED_NODE_RUNTIME:runtime,FIXTURE_UNSELECTED_NODE_RUNTIME:unselectedRuntime};
+    commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:control.cliUseSDK?path.join(sdk,'default/openharmony/toolchains/hdc'):hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
+  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,HVIGOR_USER_HOME:path.join(home,'.hvigor'),FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_ORIGINAL_CONFIG:config,FIXTURE_CALLER_UMASK:String(process.umask()),FIXTURE_ORIGINAL_CLT:clt,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE,FIXTURE_SELECTED_NODE_RUNTIME:runtime,FIXTURE_UNSELECTED_NODE_RUNTIME:unselectedRuntime};
   if(initial.runtimeIsolation){
     const brokerLibraries=[path.join(root,'broker runtime first'),path.join(root,'broker runtime second')];
     for(const dir of brokerLibraries)fs.mkdirSync(dir,{mode:0o700});
@@ -356,8 +351,10 @@ console.log('OTHER_CHILD_OK');
     env.FIXTURE_ORIGINAL_LD_LIBRARY_PATH=env.LD_LIBRARY_PATH;env.COMMAND_LINE_TOOL_PATH='';
   }
   function run(changes={}, envChanges={}){
-    const command=invocation(['--request-json',JSON.stringify({...request,...changes})]);
-    return receipt(spawnSync(command.file,command.args,{encoding:'utf8',env:{...env,...envChanges},timeout:20000,maxBuffer:1024*1024}));
+    const selected={...request,...changes},childEnv={...env,...envChanges};
+    childEnv.FIXTURE_EXPECTED_LOGIN_DATA=selected.loginDataDir||childEnv.DEVECO_CLI_DATA_DIR||login;
+    const command=invocation(['--request-json',JSON.stringify(selected)]);
+    return receipt(spawnSync(command.file,command.args,{encoding:'utf8',env:childEnv,timeout:20000,maxBuffer:1024*1024}));
   }
   function events(){const file=path.join(root,'events.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];}
   function update(value){control={...control,...value};json(controlFile,control);}
@@ -376,39 +373,36 @@ console.log('OTHER_CHILD_OK');
   return {root,home,config,tmp,project,clt,sdk,cli,hdc,login,request,env,run,events,update,cache,profileEdit,assertClean,original,module};
 }
 
-if(NATIVE)test('native Hvigor workspace avoids a readonly caller cache while keeping private umask',t=>{
-  const f=fixture(t,{hvigorWorkspaceProbe:true}),home=path.join(f.home,'.hvigor');
-  const config=path.join(home,'hvigor-config.json5'),original=Buffer.from('{"modelVersion":"5.0.0","dependencies":{}}\n');
-  write(config,original);write(path.join(home,'wrapper/prepared-dependency'),'offline dependency');
-  const before=fs.statSync(config);fs.chmodSync(home,0o500);
+test('native signing preserves the caller tool environment and umask',t=>{
+  const previous=process.umask(0o022);
   try{
-    const result=f.run();assert.equal(result.status,'ok',JSON.stringify(result));
-    const event=f.events().find(row=>row.kind==='hvigor-workspace');assert.ok(event);
-    assert.ok(event.home.startsWith(f.tmp+path.sep));assert.equal(event.mode,0o700);assert.equal(event.owner,process.getuid());
-    assert.equal(event.umask,0o077);assert.equal(event.configMode,0o600);assert.equal(event.workspaceCreated,true);
-    assert.equal(event.wrapper,fs.realpathSync(path.join(home,'wrapper')));
-    assert.equal(fs.existsSync(path.join(home,'project_caches')),false);assert.equal(fs.existsSync(event.home),false);
-    assert.deepEqual(fs.readFileSync(config),original);assert.equal(fs.statSync(config).mtimeMs,before.mtimeMs);
-    assert.equal(fs.statSync(home).mode&0o7777,0o500);f.assertClean();
-  }finally{fs.chmodSync(home,0o700);}
+    const f=fixture(t,{normalEnvironmentProbe:true,cliHdcProbe:true});
+    const originals=[path.join(f.login,'token.enc'),path.join(f.login,'token.dek'),path.join(f.home,'.harmony/hdckey')];
+    const before=originals.map(file=>({file,bytes:fs.readFileSync(file),mtime:fs.statSync(file).mtimeMs}));
+    assert.equal(f.run().status,'ok');
+    const events=f.events(),tools=events.filter(row=>row.kind==='normal-tool-environment');
+    for(const phase of ['cli','hdc','other-child','verify','build'])assert.ok(tools.some(row=>row.phase===phase),'missing caller environment probe: '+phase);
+    for(const row of tools){assert.equal(row.home,f.home);assert.equal(row.config,f.config);assert.equal(row.umask,0o022);}
+    for(const row of events.filter(row=>row.kind==='cli')){assert.equal(row.data,f.login);assert.equal(row.clt,f.clt);assert.deepEqual(row.execArgv,[]);}
+    const cache=events.find(row=>row.kind==='normal-hvigor-cache');assert.ok(cache);
+    assert.equal(cache.home,f.env.HVIGOR_USER_HOME);assert.equal(cache.umask,0o022);assert.equal(cache.directoryMode,0o755);assert.equal(cache.fileMode,0o644);
+    for(const row of before){assert.deepEqual(fs.readFileSync(row.file),row.bytes);assert.equal(fs.statSync(row.file).mtimeMs,row.mtime);}
+    assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/cli-home')),false,'worker must not clone CLI credentials');
+    assert.equal(fs.existsSync(path.join(f.clt,'sdk/default/openharmony/toolchains/.godot-hdc-host.json')),false,'worker must not install an HDC proxy');
+    f.assertClean();
+  }finally{process.umask(previous);}
 });
 
-test('strict exported API and official team table parser',t=>{
-  if(NATIVE){
-    const f=fixture(t,{teams:['12345','67890']});
-    for(const args of [[],['--request-json'],['--request-json','{}','extra'],['--request-json',JSON.stringify({...f.request,password:SECRET})]]){
-      const command=invocation(args),result=receipt(spawnSync(command.file,command.args,{encoding:'utf8',env:f.env,timeout:20000}));
-      assert.equal(result.status,'error');assert.equal(result.code,'INVALID_REQUEST');
-    }
-    assert.equal(f.events().length,0);
-    assert.equal(f.run().code,'TEAM_REQUIRED');assert.equal(f.events().filter(e=>e.kind==='generate').length,0);
-    assert.equal(f.run({teamId:'67890'}).status,'ok');
-    assert.ok(f.events().find(e=>e.kind==='cli'&&e.args[0]==='signature').args.includes('67890'));f.assertClean();
-  }else{
-    assert.equal(typeof api.run,'function');assert.equal(typeof api.main,'function');
-    assert.deepEqual(api.parseTeams('Id     Name\n-----  --------\n12345  Dev One\n67890  Dev Two With Spaces'),['12345','67890']);
-    assert.throws(()=>api.validateRequest({schemaVersion:1,password:'secret'}),{code:'INVALID_REQUEST'});
+test('strict public request protocol and official team table parser',t=>{
+  const f=fixture(t,{teams:['12345','67890']});
+  for(const args of [[],['--request-json'],['--request-json','{}','extra'],['--request-json',JSON.stringify({...f.request,password:SECRET})]]){
+    const command=invocation(args),result=receipt(spawnSync(command.file,command.args,{encoding:'utf8',env:f.env,timeout:20000}));
+    assert.equal(result.status,'error');assert.equal(result.code,'INVALID_REQUEST');
   }
+  assert.equal(f.events().length,0);
+  assert.equal(f.run().code,'TEAM_REQUIRED');assert.equal(f.events().filter(e=>e.kind==='generate').length,0);
+  assert.equal(f.run({teamId:'67890'}).status,'ok');
+  assert.ok(f.events().find(e=>e.kind==='cli'&&e.args[0]==='signature').args.includes('67890'));f.assertClean();
 });
 test('first request without a token generates once automatically; matching cache builds without generation',t=>{
   const f=fixture(t);assert.equal(Object.hasOwn(f.request,'confirmationToken'),false);
@@ -420,105 +414,70 @@ test('first request without a token generates once automatically; matching cache
   assert.equal(f.events().filter(e=>e.kind==='generate').length,1);
   const generate=f.events().filter(e=>e.kind==='cli'&&e.args[0]==='signature')[0];
   assert.deepEqual(generate.args,['signature','generate','--team-id','team-one','--product','default']);
-  assert.ok(generate.home.startsWith(f.config+path.sep));
-  if(NATIVE){assert.ok(generate.clt.startsWith(f.tmp+path.sep));assert.equal(fs.existsSync(generate.clt),false);}else assert.equal(generate.clt,f.clt);
-  assert.equal(generate.noColor,'1');
+  assert.equal(generate.home,f.home);assert.equal(generate.data,f.login);assert.equal(generate.clt,f.clt);
   const held=f.events().find(event=>event.kind==='generate').locks;
   assert.equal(held.length,3);assert.ok(held.includes('cli'));assert.ok(held.some(name=>name.startsWith('project-')));assert.ok(held.some(name=>name.startsWith('team-')));
-  const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,f.home);assert.notEqual(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
-  const build=f.events().find(e=>e.kind==='build');assert.equal(build.requestMode,0o600);assert.equal(build.parentMode,0o700);if(NATIVE)assert.ok(build.request.hvigorUserHome.startsWith(f.tmp+path.sep));else assert.equal(build.request.hvigorUserHome,path.join(f.home,'.hvigor'));
+  const hdc=f.events().find(e=>e.kind==='hdc');assert.deepEqual(hdc.args,['-t','serial-is-not-udid','shell','bm','get','-u']);assert.equal(hdc.home,f.home);assert.equal(hdc.home,generate.home);assert.equal(hdc.server,'127.0.0.1:39999');
+  const build=f.events().find(e=>e.kind==='build');assert.ok(build.requestFile.startsWith(f.tmp+path.sep));assert.equal(build.request.hvigorUserHome||f.env.HVIGOR_USER_HOME,f.env.HVIGOR_USER_HOME);
   for(const key of ['certificate','profile','storeFile'])assert.ok(build.request.signing[key].startsWith(f.cache()+path.sep));
   assert.ok(!JSON.stringify(build.args).includes(build.request.signing.keyPasswordEncrypted));assert.ok(!fs.existsSync(build.requestFile));
-  for(const dir of [path.join(f.config,'godot-openharmony-signing'),generate.home,f.cache()])assert.equal(fs.statSync(dir).mode&0o7777,0o700);
   f.assertClean();
 });
-test('inherited DevEco Code authentication cannot redirect the private CLI login',t=>{
-  const f=fixture(t);
-  const result=f.run({}, {DEVECO_CLI_AUTH_SOURCE:'deveco-code',DEVECO_CODE_AUTH_DIR:path.join(f.home,'unrelated-code-account')});
-  assert.equal(result.status,'ok');
-  const events=f.events().filter(event=>event.kind==='cli');
-  assert.ok(events.length>=2);
-  for(const event of events){assert.equal(event.authSource,undefined);assert.equal(event.codeAuthDir,undefined);assert.ok(event.home.startsWith(f.config+path.sep));}
-  f.assertClean();
-});
-test('CLI HDC children share host HOME through CJS, ESM and promisified subprocess APIs only for known tools',t=>{
+test('official CLI HDC subprocesses use original tools and ordinary caller environments',t=>{
   const f=fixture(t,{cliHdcProbe:true});assert.equal(f.run().status,'ok');
-  const events=f.events(),home=path.join(f.config,'godot-openharmony-signing/cli-home');
+  const events=f.events();
   assert.deepEqual(events.filter(e=>e.kind==='cli-hdc-probe').map(e=>e.mode),['spawn','spawnSync','execFile','execFileSync','promisify','esm']);
   const hdcs=events.filter(e=>e.kind==='hdc');assert.equal(hdcs.length,9);
-  for(const event of hdcs){assert.equal(event.home,f.home);assert.equal(event.server,f.env.HDC_SERVER);assert.equal(event.port,f.env.OHOS_HDC_SERVER_PORT);}
-  for(const event of events.filter(e=>e.kind==='cli')){
-    assert.equal(event.home,home);
-    if(NATIVE){assert.deepEqual(event.execArgv,[]);assert.equal(event.preloadMode,null);assert.equal(event.preloadParentMode,null);}
-    else{
-      assert.equal(event.preloadMode,0o600);assert.equal(event.preloadParentMode,0o700);
-      assert.equal(event.execArgv[0],'--import');assert.equal(event.execArgv.length,2);
-      assert.ok(require('node:url').fileURLToPath(event.execArgv[1]).startsWith(f.tmp+path.sep));
-      assert.equal(fs.existsSync(require('node:url').fileURLToPath(event.execArgv[1])),false,'preload must be cleaned');
-    }
-  }
-  if(NATIVE){
-    const proxies=events.filter(e=>e.kind==='native-proxy');assert.equal(proxies.length,events.filter(e=>e.kind==='cli').length);
-    for(const proxy of proxies){
-      assert.ok(proxy.path.startsWith(f.tmp+path.sep));assert.equal(proxy.mode,0o700);assert.equal(proxy.parentMode,0o700);
-      assert.equal(proxy.isFile,true);assert.equal(proxy.isSymlink,false);assert.equal(proxy.links,1);assert.equal(proxy.owner,process.getuid());
-      assert.equal(proxy.magic,'7f454c46');assert.equal(proxy.sameWorker,true);
-      assert.equal(proxy.configMode,0o600);assert.equal(proxy.configIsFile,true);assert.equal(proxy.configIsSymlink,false);assert.equal(proxy.configLinks,1);assert.equal(proxy.configOwner,process.getuid());
-      assert.deepEqual(proxy.config,{schemaVersion:1,hdcPath:f.hdc,hostEnvironment:{HOME:f.home,HDC_SERVER:f.env.HDC_SERVER,OHOS_HDC_SERVER_PORT:f.env.OHOS_HDC_SERVER_PORT}});
-      assert.equal(fs.existsSync(proxy.path),false,'native proxy must be cleaned');assert.equal(fs.existsSync(proxy.configPath),false,'native proxy config must be cleaned');
-    }
-    const unrelated=fixture(t,{cliHdcProbe:true});unrelated.update({cliHdcPath:path.join(unrelated.root,'unrelated tools/hdc')});
-    assert.equal(unrelated.run().code,'SIGNING_FAILED');assert.equal(unrelated.events().find(e=>e.kind==='other-child').home,path.join(unrelated.config,'godot-openharmony-signing/cli-home'));unrelated.assertClean();
-  }
-  const other=events.find(e=>e.kind==='other-child');assert.equal(other.home,home);assert.equal(other.server,'cli-override-must-not-replace-host');
-  assert.equal(fs.readFileSync(path.join(home,'.harmony/hdckey.key'),'utf8'),'original-hdc-component');
-  f.assertClean();
+  for(const event of hdcs)assert.equal(event.home,f.home);
+  const defaults=hdcs.filter(event=>event.server===f.env.HDC_SERVER);assert.equal(defaults.length,3);
+  for(const event of defaults)assert.equal(event.port,f.env.OHOS_HDC_SERVER_PORT);
+  const selected=hdcs.filter(event=>event.file===path.join(f.sdk,'default/openharmony/toolchains/hdc'));assert.equal(selected.length,7);
+  const overridden=hdcs.filter(event=>event.server==='cli-override-must-not-replace-host');assert.equal(overridden.length,6);
+  for(const event of overridden)assert.equal(event.port,'1','explicit CLI child options must not be intercepted');
+  for(const event of events.filter(e=>e.kind==='cli')){assert.equal(event.home,f.home);assert.equal(event.data,f.login);assert.equal(event.clt,f.clt);assert.deepEqual(event.execArgv,[]);}
+  const other=events.find(e=>e.kind==='other-child');assert.equal(other.home,f.home);assert.equal(other.server,'cli-override-must-not-replace-host');
+  assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/cli-home')),false);f.assertClean();
 });
-test('official SDK fixed HDC path passes realpath containment and copied launchers while the extra HDC key remains optional',t=>{
+test('selected original SDK launchers keep their paths and Node runtime isolation',t=>{
   const f=fixture(t,{cliHdcProbe:true,cliUseSDK:true,cliLauncherProbe:true,runtimeIsolation:true}),key=path.join(f.home,'.harmony/hdckey.key');
   f.request.nodePath=path.join(f.clt,'node/bin/node');
   const runtimeFile=path.join(f.sdk,'default/openharmony/native/llvm/lib/aarch64-linux-ohos/libc++_shared.so'),runtimeBytes=fs.readFileSync(runtimeFile),runtimeStat=fs.statSync(runtimeFile);
   fs.unlinkSync(key);
   assert.equal(f.run().status,'ok');
   const events=f.events(),guard=events.find(e=>e.kind==='toolchain-containment');
-  assert.ok(guard);assert.deepEqual(guard.checked.map(e=>e.name),['node','ohpm','hvigor','sdk','hdc']);
+  assert.ok(guard);assert.equal(guard.root,fs.realpathSync(f.clt));assert.deepEqual(guard.checked.map(e=>e.name),['node','ohpm','hvigor','sdk','hdc']);
   for(const entry of guard.checked){
     const relative=path.relative(guard.root,entry.resolved);
     assert.equal(path.isAbsolute(relative),false);assert.notEqual(relative,'..');assert.equal(relative.startsWith('..'+path.sep),false);
     assert.equal(entry.isSymlink,false);assert.equal(entry.name==='sdk'?entry.isDirectory:entry.isFile,true);
     if(['node','ohpm','hvigor'].includes(entry.name)){
-      assert.equal(entry.sameBytes,true);assert.equal(entry.distinctOriginal,!!NATIVE);
-      if(NATIVE){assert.equal(entry.links,1);assert.equal(entry.owner,process.getuid());assert.equal(entry.mode,entry.name==='node'?0o700:0o600);}
+      assert.equal(entry.sameBytes,true);assert.equal(entry.distinctOriginal,false);
     }
   }
   assert.deepEqual(events.filter(e=>e.kind==='cli-launcher-probe').map(e=>e.name),['ohpm','hvigor']);
   const dependencies=events.find(e=>e.kind==='toolchain-dependency-links');
-  for(const entry of dependencies.links){assert.equal(entry.isSymlink,!!NATIVE);assert.equal(entry.resolved,fs.realpathSync(path.join(f.clt,entry.relative)));}
+  for(const entry of dependencies.links){assert.equal(entry.isSymlink,false);assert.equal(entry.resolved,fs.realpathSync(path.join(f.clt,entry.relative)));}
   for(const entry of dependencies.binSiblings){assert.equal(entry.isFile,true);assert.equal(entry.isSymlink,false);assert.equal(entry.sameBytes,true);}
-  if(NATIVE){
-    const node=path.join(f.clt,'node/bin/node');assert.ok(fs.statSync(node).size>4*1024*1024);assert.deepEqual(fs.readFileSync(node),fs.readFileSync(process.execPath),'original signed Node bytes changed');assert.equal(fs.statSync(node).mode&0o7777,0o500,'read-only source mode changed');
-    const proxies=events.filter(e=>e.kind==='native-proxy');assert.ok(proxies.length);
-    for(const proxy of proxies){assert.equal(proxy.sameWorker,true);assert.equal(proxy.magic,'7f454c46');assert.equal(proxy.mode,0o700);assert.equal(proxy.isSymlink,false);assert.equal(proxy.configMode,0o600);assert.equal(proxy.configIsSymlink,false);assert.deepEqual(proxy.config,{schemaVersion:1,hdcPath:path.join(f.sdk,'default/openharmony/toolchains/hdc'),hostEnvironment:{HOME:f.home,HDC_SERVER:f.env.HDC_SERVER,OHOS_HDC_SERVER_PORT:f.env.OHOS_HDC_SERVER_PORT}});}
-    assert.equal(fs.existsSync(guard.root),false,'overlay must be cleaned');
-  }
+  const node=path.join(f.clt,'node/bin/node');assert.ok(fs.statSync(node).size>4*1024*1024);assert.deepEqual(fs.readFileSync(node),fs.readFileSync(process.execPath),'original signed Node bytes changed');assert.equal(fs.statSync(node).mode&0o7777,0o500,'original fixture Node mode changed');
+  assert.equal(fs.existsSync(guard.root),true,'selected original toolchain must remain in place');
   const hdcs=events.filter(e=>e.kind==='hdc');
   assert.equal(hdcs.length,9);
-  assert.equal(hdcs.filter(e=>e.file===path.join(f.sdk,'default/openharmony/toolchains/hdc')).length,NATIVE?9:7);
-  assert.equal(hdcs.filter(e=>e.file===f.hdc).length,NATIVE?0:2);
-  for(const event of hdcs){assert.equal(event.home,f.home);assert.equal(event.server,f.env.HDC_SERVER);assert.equal(event.port,f.env.OHOS_HDC_SERVER_PORT);}
+  assert.equal(hdcs.filter(e=>e.file===path.join(f.sdk,'default/openharmony/toolchains/hdc')).length,9);
+  assert.equal(hdcs.filter(e=>e.file===f.hdc).length,0);
+  for(const event of hdcs)assert.equal(event.home,f.home);
+  assert.equal(hdcs.filter(event=>event.server===f.env.HDC_SERVER&&event.port===f.env.OHOS_HDC_SERVER_PORT).length,3);
+  assert.equal(hdcs.filter(event=>event.server==='cli-override-must-not-replace-host'&&event.port==='1').length,6);
   assert.equal(fs.existsSync(key),false);
   assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/cli-home/.harmony/hdckey.key')),false);
   write(key,'original-hdc-component');
   const runtimes=events.filter(e=>e.kind==='runtime-environment');
   for(const phase of ['cli','sdk-child','sdk-grandchild','hdc','other-child','verify','build'])assert.ok(runtimes.some(e=>e.phase===phase),'missing loader inheritance probe: '+phase);
-  if(NATIVE){
-    const isolated=runtimes.filter(e=>e.isolated);assert.ok(isolated.length);
-    assert.equal(new Set(isolated.map(e=>e.runtime)).size,1,'one work directory must reuse exactly one runtime');
-    for(const event of isolated){assert.equal(event.ld,event.runtime+':'+f.env.LD_LIBRARY_PATH);assert.equal(event.target,fs.realpathSync(runtimeFile));assert.equal(fs.existsSync(event.runtime),false,'Node runtime must be cleaned');}
-    assert.equal(runtimes.filter(e=>e.phase==='hdc'&&!e.isolated).length,2,'direct HDC calls retain the original broker loader environment');
-    assert.equal(runtimes.filter(e=>e.phase==='hdc'&&e.isolated).length,7,'all CLI HDC APIs inherit the same safe one-SONAME directory');
-    assert.ok(runtimes.filter(e=>e.phase==='verify').every(e=>!e.isolated));
-  }else assert.ok(runtimes.every(e=>!e.isolated),'legacy reference backend retains its original loader behavior');
+  const isolated=runtimes.filter(e=>e.isolated);assert.ok(isolated.length);
+  assert.equal(new Set(isolated.map(e=>e.runtime)).size,1,'one work directory must reuse exactly one runtime');
+  for(const event of isolated){assert.equal(event.ld,event.runtime+':'+f.env.LD_LIBRARY_PATH);assert.equal(event.target,fs.realpathSync(runtimeFile));assert.equal(fs.existsSync(event.runtime),false,'Node runtime must be cleaned');}
+  assert.equal(runtimes.filter(e=>e.phase==='hdc'&&!e.isolated).length,2,'direct HDC calls retain the original broker loader environment');
+  assert.equal(runtimes.filter(e=>e.phase==='hdc'&&e.isolated).length,7,'CLI children inherit the same one-SONAME directory');
+  assert.ok(runtimes.filter(e=>e.phase==='verify').every(e=>!e.isolated));
   // A second request with no LD variable must not gain an empty/trailing search
   // component. Cache reuse still exercises CLI, HDC, verifier, and build children.
   const before=f.events().length;
@@ -530,21 +489,12 @@ test('official SDK fixed HDC path passes realpath containment and copied launche
   f.assertClean();
   const absent=fixture(t,{runtimeIsolation:true,runtimeAbsent:true,cliHdcProbe:true});
   assert.equal(absent.run().status,'ok');const absentEvents=absent.events().filter(e=>e.kind==='runtime-environment');assert.ok(absentEvents.length);assert.ok(absentEvents.every(e=>!e.isolated&&e.ld===absent.env.LD_LIBRARY_PATH));absent.assertClean();
-  if(NATIVE)for(const mode of ['wrong-target','extra-library','symlink-dir']){
+  for(const mode of ['wrong-target','extra-library','symlink-dir']){
     const stale=fixture(t,{runtimeIsolation:true,runtimeTamper:mode});
-    assert.equal(stale.run().code,'PRIVATE_STORAGE_REQUIRED',mode);
+    assert.equal(stale.run().status,'error',mode);
     assert.equal(stale.events().filter(e=>e.kind==='runtime-tamper').length,1);
     assert.equal(stale.events().filter(e=>e.kind==='generate').length,0);assert.equal(stale.events().filter(e=>e.kind==='build').length,0);stale.assertClean();
   }
-});
-test('trusted HDC preload does not revive inherited Node injection options',async t=>{
-  const f=fixture(t,{cliHdcProbe:true}),marker=path.join(f.home,'untrusted-import-ran'),bad=path.join(f.home,'untrusted.cjs');
-  write(bad,"require('node:fs').writeFileSync("+JSON.stringify(marker)+",'bad');");
-  const injectedEnv={NODE_OPTIONS:'--import '+require('node:url').pathToFileURL(bad).href,NODE_PATH:f.home,NODE_OPTS:'untrusted'};
-  const result=NATIVE?f.run({},injectedEnv):await api.run(f.request,{...f.env,...injectedEnv});
-  assert.equal(result.status,'ok');assert.equal(fs.existsSync(marker),false);
-  for(const event of f.events().filter(e=>e.kind==='cli')){assert.equal(event.nodeOptions,undefined);assert.equal(event.nodePath,undefined);assert.equal(event.nodeOpts,undefined);assert.equal(event.home,path.join(f.config,'godot-openharmony-signing/cli-home'));}
-  assert.ok(f.events().filter(e=>e.kind==='hdc').every(e=>e.home===f.home));f.assertClean();
 });
 test('CER bundles match the developer certificate without assuming the first entry',t=>{
   // A different parseable public certificate models an unrelated chain entry.
@@ -670,15 +620,15 @@ test('generation fails once without retry and restores CLI team files, applicati
   const f=fixture(t);assert.equal(f.run().status,'ok');
   f.profileEdit(p=>{p.validity['not-after']=1;});const oldConfig=fs.readFileSync(path.join(f.cache(),'signing-config.json'));
   const oldProfile=fs.readFileSync(path.join(f.cache(),'materials/profile.p7b'));
-  const cliStore=path.join(f.config,'godot-openharmony-signing/cli-home/.ohos/config/store.p12');const oldStore=fs.readFileSync(cliStore);
+  const cliStore=path.join(f.home,'.ohos/config/store.p12');const oldStore=fs.readFileSync(cliStore);
   f.update({generateFail:true,network:true});assert.equal(f.run().code,'NETWORK_ERROR');assert.equal(f.events().filter(e=>e.kind==='generate').length,2);
   assert.deepEqual(fs.readFileSync(cliStore),oldStore);assert.deepEqual(fs.readFileSync(path.join(f.cache(),'signing-config.json')),oldConfig);
   assert.deepEqual(fs.readFileSync(path.join(f.cache(),'materials/profile.p7b')),oldProfile);f.assertClean();
   f.update({generateFail:false,network:false});assert.equal(f.run().status,'ok');assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
-  if(NATIVE){
+  {
     const broken=fixture(t);assert.equal(broken.run().status,'ok');broken.profileEdit(profile=>{profile.validity['not-after']=1;});
     const cache=broken.cache(),config=fs.readFileSync(path.join(cache,'signing-config.json')),profile=fs.readFileSync(path.join(cache,'materials/profile.p7b'));
-    const store=path.join(broken.config,'godot-openharmony-signing/cli-home/.ohos/config/store.p12'),storeBytes=fs.readFileSync(store);
+    const store=path.join(broken.home,'.ohos/config/store.p12'),storeBytes=fs.readFileSync(store);
     broken.update({generateFail:true,blockCacheRollback:true});
     const result=broken.run();assert.equal(result.status,'error');assert.equal(result.code,'ROLLBACK_FAILED');
     assert.equal(broken.events().filter(event=>event.kind==='generate').length,2);
@@ -690,8 +640,8 @@ test('generation fails once without retry and restores CLI team files, applicati
       assert.deepEqual(fs.readFileSync(path.join(recovery,'cache-backup/materials/profile.p7b')),profile);
       assert.deepEqual(fs.readFileSync(path.join(recovery,'cli-backup/config/store.p12')),storeBytes);
       assert.deepEqual(fs.readFileSync(store),storeBytes,'CLI restoration must still run when cache restoration fails');
-      function privateTree(dir){assert.equal(fs.lstatSync(dir).mode&0o7777,0o700);for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const file=path.join(dir,entry.name);assert.equal(entry.isSymbolicLink(),false);if(entry.isDirectory())privateTree(file);else assert.equal(fs.lstatSync(file).mode&0o7777,0o600);}}
-      privateTree(recoveryRoot);assert.deepEqual(fs.readdirSync(broken.tmp),[],'durable recovery must allow temporary cleanup');
+      function recoveryTree(dir){assert.equal(fs.lstatSync(dir).isDirectory(),true);for(const entry of fs.readdirSync(dir,{withFileTypes:true})){const file=path.join(dir,entry.name);assert.equal(entry.isSymbolicLink(),false);if(entry.isDirectory())recoveryTree(file);else assert.equal(fs.lstatSync(file).isFile(),true);}}
+      recoveryTree(recoveryRoot);assert.deepEqual(fs.readdirSync(broken.tmp),[],'durable recovery must allow temporary cleanup');
     }finally{assert.equal(fs.readlinkSync(projects),path.join(broken.root,'unrelated-cache-root'));fs.unlinkSync(projects);fs.renameSync(path.join(broken.root,'projects-before-rollback'),projects);}
     broken.assertClean();
   }
@@ -708,14 +658,20 @@ test('profile verification failures are conservative; unknown all-device policy 
   f.update({verifyFail:false,generatedDevices:[]});f.profileEdit(p=>{p['debug-info']['device-ids']=[];});assert.equal(f.run().code,'PROFILE_DEVICE_MISMATCH');
   assert.equal(f.events().filter(e=>e.kind==='generate').length,3);f.assertClean();
 });
-test('private storage rejects HOME and updates copied login only after original metadata changes',t=>{
-  const f=fixture(t);assert.equal(f.run({}, {XDG_CONFIG_HOME:path.join(f.home,'bad cache')}).code,'PRIVATE_STORAGE_REQUIRED');
-  assert.equal(f.run().status,'ok');
-  const copied=path.join(f.config,'godot-openharmony-signing/cli-home/.config/deveco-cli/token.enc');
-  assert.ok(fs.readFileSync(copied,'utf8').startsWith('original-token'));assert.equal(fs.statSync(copied).mode&0o777,0o600);
-  write(path.join(f.login,'token.enc'),'new-original-login');assert.equal(f.run().status,'ok');assert.ok(fs.readFileSync(copied,'utf8').startsWith('new-original-login'));
-  assert.equal(fs.readFileSync(path.join(f.login,'token.enc'),'utf8'),'new-original-login');
-  assert.deepEqual(fs.readdirSync(f.tmp),[]);
+test('native signing selects existing login data without copying credentials',t=>{
+  for(const selection of ['explicit request','inherited CLI directory','HOME fallback']){
+    const f=fixture(t,{normalEnvironmentProbe:true}),selected=path.join(f.root,'selected existing CLI login');
+    write(path.join(selected,'token.enc'),'selected-original-token');write(path.join(selected,'token.dek'),'selected-original-dek');
+    const login=selection==='HOME fallback'?f.login:selected;
+    const before=['token.enc','token.dek'].map(name=>{const file=path.join(login,name);return{file,bytes:fs.readFileSync(file),mtime:fs.statSync(file).mtimeMs};});
+    const request=selection==='explicit request'?{loginDataDir:login}:{};
+    const environment=selection==='inherited CLI directory'?{DEVECO_CLI_DATA_DIR:login}:selection==='HOME fallback'?{DEVECO_CLI_DATA_DIR:undefined}:{};
+    assert.equal(f.run(request,environment).status,'ok',selection);
+    for(const row of f.events().filter(row=>row.kind==='cli')){assert.equal(row.home,f.home,selection);assert.equal(row.data,login,selection);assert.equal(row.clt,f.clt,selection);}
+    for(const row of before){assert.deepEqual(fs.readFileSync(row.file),row.bytes,selection);assert.equal(fs.statSync(row.file).mtimeMs,row.mtime,selection);}
+    assert.equal(fs.existsSync(path.join(f.config,'godot-openharmony-signing/cli-home')),false,selection);
+    f.assertClean();
+  }
 });
 test('CLI discovery uses PATH, selected Node prefix, and oo current Node without shell or installation',t=>{
   const f=fixture(t),selectedPrefix=path.join(f.root,'selected CLT Node'),selectedNode=path.join(selectedPrefix,'bin/node'),bin=path.join(f.root,'fixture PATH bin');
@@ -753,16 +709,10 @@ test('SDK permission metadata filters ACL exceptions, version strings, and unsup
 });
 test('JSON schema errors and unexpected fatal failures each emit one safe JSON receipt',t=>{
   const f=fixture(t);assert.equal(f.run({password:SECRET}).code,'INVALID_REQUEST');assert.equal(f.run({schemaVersion:2}).code,'INVALID_REQUEST');
-  let child;
-  if(NATIVE){
-    // JsonCpp throws when its bounded parser stack is exceeded, exercising the
-    // executable's unexpected-exception receipt without a product test hook.
-    const raw='{"password":'+JSON.stringify(SECRET)+',"nested":'+'['.repeat(256)+'0'+']'.repeat(256)+'}';
-    child=spawnSync(NATIVE,['--request-json',raw],{encoding:'utf8',env:f.env,timeout:20000});
-  }else{
-    const launcher=path.join(f.root,'simulate-fatal.cjs');write(launcher,"const fs=require('node:fs');fs.mkdtempSync=()=>{throw new Error('SENTINEL_secret_token_and_password_never_print')};require(process.argv[2]).main(process.argv.slice(3));\n");
-    child=spawnSync(process.execPath,[launcher,HELPER,'--request-json',JSON.stringify(f.request)],{encoding:'utf8',env:f.env,timeout:20000});
-  }
+  // JsonCpp throws when its bounded parser stack is exceeded, exercising the
+  // executable's unexpected-exception receipt without a product test hook.
+  const raw='{"password":'+JSON.stringify(SECRET)+',"nested":'+'['.repeat(256)+'0'+']'.repeat(256)+'}';
+  const child=spawnSync(NATIVE,['--request-json',raw],{encoding:'utf8',env:f.env,timeout:20000});
   const result=receipt(child,1);assert.equal(result.status,'error');assert.equal(result.code,'INTERNAL_ERROR');assert.equal(f.events().length,0);f.assertClean();
 });
 test('failure to restore the public build profile is reported explicitly',t=>{
@@ -818,19 +768,7 @@ test('malformed cached configuration regenerates safely without forwarding stale
   const f=fixture(t);assert.equal(f.run().status,'ok');write(path.join(f.cache(),'signing-config.json'),'invalid old config');
   assert.equal(f.run().status,'ok');assert.equal(f.events().filter(event=>event.kind==='generate').length,2);f.assertClean();
 });
-test('chmod success without effective private permissions is rejected',t=>{
-  const f=fixture(t),privateRoot=path.join(f.config,'godot-openharmony-signing'),mode=NATIVE?0o755:0o770;fs.mkdirSync(privateRoot,{mode});fs.chmodSync(privateRoot,mode);
-  let result;
-  if(NATIVE){result=f.run({}, {LD_PRELOAD:chmodNoopLibrary(f.root)});}
-  else{
-    const launcher=path.join(f.root,'simulate-silent-chmod.cjs');
-    write(launcher,"const fs=require('node:fs');fs.chmodSync=()=>{};require(process.argv[2]).run(JSON.parse(process.argv[3])).then(result=>process.stdout.write(JSON.stringify(result)));\n");
-    result=receipt(spawnSync(process.execPath,[launcher,HELPER,JSON.stringify(f.request)],{encoding:'utf8',env:f.env,timeout:20000}));
-  }
-  assert.equal(result.status,'error');assert.equal(result.code,'PRIVATE_STORAGE_REQUIRED');assert.equal(fs.statSync(privateRoot).mode&0o777,mode);
-  assert.equal(f.events().length,0);assert.deepEqual(fs.readdirSync(f.tmp),[]);
-});
-test('SIGTERM waits for child exit, releases locks, and cleans private requests',async t=>{
+test('SIGTERM waits for child exit, releases locks, and cleans owned temporary requests',async t=>{
   const f=fixture(t);assert.equal(f.run().status,'ok');f.update({holdBuild:true});
   let watcher,timer;
   const held=new Promise((resolve,reject)=>{
@@ -849,9 +787,9 @@ test('SIGTERM waits for child exit, releases locks, and cleans private requests'
   }
   try{
     await held;grandchild=f.events().find(event=>event.kind==='build-held').grandchild;
-    if(NATIVE){assert.ok(Number.isSafeInteger(grandchild)&&grandchild>1);assert.equal(alive(grandchild),true);}
+    assert.ok(Number.isSafeInteger(grandchild)&&grandchild>1);assert.equal(alive(grandchild),true);
     child.kill('SIGTERM');const result=await closed;const response=receipt({status:result.code,signal:result.signal,stdout,stderr});assert.equal(response.status,'error');assert.equal(response.code,'INTERRUPTED');
-    if(NATIVE){assert.ok(f.events().some(event=>event.kind==='build-exiting'));assert.equal(alive(grandchild),false,'SIGTERM receipt must wait for the redirected-stdio, SIGTERM-ignoring grandchild to exit');}
+    assert.ok(f.events().some(event=>event.kind==='build-exiting'));assert.equal(alive(grandchild),false,'SIGTERM receipt must wait for the redirected-stdio, SIGTERM-ignoring grandchild to exit');
   }
   finally{
     watcher.close();clearTimeout(timer);if(child.exitCode===null)child.kill('SIGKILL');
