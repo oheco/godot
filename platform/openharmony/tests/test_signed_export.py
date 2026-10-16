@@ -32,6 +32,64 @@ BUNDLE = 'org.oheco.signedexportfixture'
 PASSWORD_KEYS = {'keystorePwd', 'keyPwd', 'issuerKeyPwd'}
 PEM = re.compile(r'-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----')
 
+# Test-only disposable encryption fixture. The official SDK computes its own
+# root key and verifies every password through public decryptPwd; no SDK source,
+# embedded component or PBKDF implementation is copied or patched here. Secrets
+# enter on stdin and leave only through an exclusive private response file.
+ENCRYPT_PASSWORD_FIXTURE = r'''
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+try {
+  const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+  const engine = require.resolve(path.join(input.toolsRoot, 'hvigor/hvigor'));
+  require('node:module').registerHooks({resolve(specifier, context, next) {
+    return next(specifier === '@ohos/hvigor' ? engine : specifier, context);
+  }});
+  const {DecipherUtil: d} = require(path.join(input.toolsRoot, 'hvigor/hvigor-ohos-plugin/src/utils/decipher-util.js'));
+  if (JSON.stringify(d.dirs) !== JSON.stringify(['fd', 'ac', 'ce'])) throw new Error();
+  function directory(filename) {
+    fs.mkdirSync(filename, {recursive:true, mode:0o700});
+    if ((fs.statSync(filename).mode & 0o777) !== 0o700) throw new Error();
+  }
+  function privateWrite(filename, bytes) {
+    fs.writeFileSync(filename, bytes, {flag:'wx', mode:0o600});
+    if ((fs.statSync(filename).mode & 0o777) !== 0o600) throw new Error();
+  }
+  function frame(key, plaintext) {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-128-gcm', key, iv);
+    const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(ciphertext.length + 16);
+    return Buffer.concat([length, iv, ciphertext, cipher.getAuthTag()]);
+  }
+  const materialDir = path.join(input.materialRoot, 'material');
+  directory(materialDir);
+  for (const name of d.dirs) directory(path.join(materialDir, name));
+  for (let index = 0; index < 3; ++index) {
+    const componentDir = path.join(materialDir, 'fd', String(index));
+    directory(componentDir);
+    privateWrite(path.join(componentDir, 'value'), crypto.randomBytes(16));
+  }
+  privateWrite(path.join(materialDir, 'ac/value'), crypto.randomBytes(16));
+  const components = d.readFd(materialDir, 'fd', input.profilePath);
+  const salt = d.readSalt(path.join(materialDir, 'ac'), input.profilePath);
+  const rootKey = Buffer.from(d.getRootKey(components, salt, input.profilePath));
+  const workKey = crypto.randomBytes(16);
+  privateWrite(path.join(materialDir, 'ce/value'), frame(rootKey, workKey));
+  const encrypted = input.passwords.map(password => frame(workKey, Buffer.from(password, 'utf8')).toString('hex'));
+  for (let index = 0; index < encrypted.length; ++index) {
+    if (d.decryptPwd(input.materialRoot, encrypted[index], input.profilePath) !== input.passwords[index]) throw new Error();
+  }
+  privateWrite(input.response, JSON.stringify({encrypted}));
+} catch {
+  // SDK diagnostics are captured by the Python helper, never forwarded.
+  process.exitCode = 1;
+}
+'''
+
 
 def sha(filename):
     with filename.open('rb') as stream:
@@ -84,6 +142,7 @@ def main():
     parser.add_argument('--template-debug-zip', type=Path, required=True)
     parser.add_argument('--template-release-zip', type=Path, required=True)
     parser.add_argument('--sdk-root', type=Path, required=True)
+    parser.add_argument('--command-line-tools-root', type=Path, required=True, help='Official CLT root with bundled Node and public SDK DecipherUtil')
     parser.add_argument('--output', type=Path, required=True, help='New application-private evidence directory; no material/packages saved')
     parser.add_argument('--skip-wrong-password', action='store_true', help='Skip optional negative native export (positive signing remains mandatory)')
     parser.add_argument('--build-timeout', type=int, default=600, help='Per-export native deadline in seconds (default 600)')
@@ -94,6 +153,11 @@ def main():
     debug_zip = args.template_debug_zip.resolve(strict=True)
     release_zip = args.template_release_zip.resolve(strict=True)
     sdk = args.sdk_root.resolve(strict=True)
+    tools = args.command_line_tools_root.resolve(strict=True)
+    node = tools / 'node/bin/node'
+    decipher = tools / 'hvigor/hvigor-ohos-plugin/src/utils/decipher-util.js'
+    if not all(filename.is_file() for filename in (node, decipher, tools / 'hvigor/bin/hvigorw.js')):
+        parser.error('CLT root must provide bundled Node, official Hvigor wrapper and public SDK DecipherUtil')
     signer = sdk / '26.0.0/toolchains/lib/hap-sign-tool'
     if not signer.is_file():
         parser.error('SDK root must provide SDK26 native toolchains/lib/hap-sign-tool')
@@ -118,11 +182,13 @@ def main():
               'personal_material': False, 'network_downloads': False, 'installation': False,
               'inputs': {name: {'sha256': sha(filename)} for name, filename in [
                   ('editor', editor), ('editor_library', editor.parent / 'libgodot.so'),
-                  ('debug_template', debug_zip), ('release_template', release_zip), ('native_signer', signer), ('runner', runner_source)]},
+                  ('debug_template', debug_zip), ('release_template', release_zip), ('native_signer', signer), ('runner', runner_source),
+                   ('bundled_node', node), ('official_decipher', decipher), ('test_script', Path(__file__).resolve())]},
               'stages': records, 'artifacts': [], 'wrong_password': {'status': 'not requested'}}
     password = 'Disposable Export With Spaces ' + secrets.token_hex(24)
     wrong_password = 'Incorrect Export With Spaces ' + secrets.token_hex(24)
-    secret_values = [password, wrong_password, password.split()[-1], wrong_password.split()[-1]]
+    secret_credentials = [password, wrong_password]
+    secret_values = [*secret_credentials, password.split()[-1], wrong_password.split()[-1]]
     private_root = None
 
     def sanitize(text):
@@ -171,6 +237,7 @@ def main():
             env.pop('DEVECO_SDK_HOME', None)
             env.pop('LD_PRELOAD', None)
             env['GODOT_OHOS_SDK_ROOT'] = env['OHOS_SDK_HOME'] = env['OHOS_BASE_SDK_HOME'] = str(sdk)
+            env['GODOT_OHOS_COMMAND_LINE_TOOLS_ROOT'] = str(tools)
             env['NPM_CONFIG_OFFLINE'] = env['npm_config_offline'] = 'true'
             inherited = os.environ.get('LD_LIBRARY_PATH', '')
             env['LD_LIBRARY_PATH'] = str(editor.parent) + (os.pathsep + inherited if inherited else '')
@@ -225,33 +292,39 @@ def main():
                         text = stream.read().decode(errors='replace')
                     (output / (label + '-diagnostic-' + str(index) + '.log')).write_text(sanitize(text))
 
-            def run(label, command, *, expected_zero=True, exporter=False, timeout=None):
+            def run(label, command, *, expected_zero=True, exporter=False, timeout=None, input_data=None, private_logs=False):
                 # Never check=True/CalledProcessError: it would embed signer argv
                 # passwords. Kill the OWNED process group before deleting keys.
                 timeout = args.build_timeout if timeout is None else timeout
                 started = time.monotonic()
                 process = subprocess.Popen(command, cwd=project, env=env, stdout=subprocess.PIPE,
-                                           stderr=subprocess.PIPE, umask=0o077, start_new_session=True)
+                                           stderr=subprocess.PIPE, stdin=subprocess.PIPE if input_data is not None else None,
+                                           umask=0o077, start_new_session=True)
                 try:
                     try:
-                        stdout, stderr = process.communicate(timeout=timeout)
+                        stdout, stderr = process.communicate(input=input_data, timeout=timeout)
                     except subprocess.TimeoutExpired as error:
-                        diagnose(label, process)
+                        if not private_logs:
+                            diagnose(label, process)
                         raw = (error.stdout or b'') + (error.stderr or b'')
-                        (output / (label + '.log')).write_text(sanitize(raw.decode(errors='replace')))
+                        text = '[Private SDK fixture diagnostics omitted; timeout recorded]\n' if private_logs else sanitize(raw.decode(errors='replace'))
+                        (output / (label + '.log')).write_text(text)
                         records.append({'stage': label, 'exit_code': None, 'timeout': True, 'elapsed_seconds': time.monotonic() - started})
                         raise RuntimeError('Native task exceeded timeout: ' + label) from None
                     completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
                 finally:
                     stop_owned_group(process)
                 raw = (completed.stdout + completed.stderr).decode(errors='replace')
-                (output / (label + '.log')).write_text(sanitize(raw))
-                leaked = any(value in raw for value in (password, wrong_password))
+                text = '[Private SDK fixture diagnostics omitted; exit/check recorded]\n' if private_logs else sanitize(raw)
+                (output / (label + '.log')).write_text(text)
+                leaked = any(value in raw for value in secret_credentials)
                 records.append({'stage': label, 'exit_code': completed.returncode,
                                 'complete_password_in_raw_exporter_log': leaked if exporter else False})
                 if exporter and leaked:
                     raise RuntimeError('Exporter disclosed a complete password; sanitized evidence retained')
                 if expected_zero and (completed.returncode != 0 or (exporter and 'SCRIPT ERROR:' in raw)):
+                    if exporter:
+                        diagnose(label, process)
                     raise RuntimeError('Native task failed: ' + label + ' (exit ' + str(completed.returncode) + ')')
                 if not expected_zero and completed.returncode == 0:
                     raise RuntimeError('Wrong-password export unexpectedly succeeded')
@@ -262,6 +335,28 @@ def main():
                 for key, value in options.items():
                     command.extend(['-' + key, str(value)])
                 return run(label, command, timeout=180)
+
+            response_file = root / 'encrypted-password-fixture.json'
+            try:
+                run('encrypted-password-fixture', [str(node), '--eval', ENCRYPT_PASSWORD_FIXTURE], timeout=30,
+                    input_data=json.dumps({'toolsRoot': str(tools), 'materialRoot': str(material),
+                                           'profilePath': str(project / 'build-profile.json5'),
+                                           'passwords': [password, wrong_password], 'response': str(response_file)}).encode(),
+                    private_logs=True)
+                if stat.S_IMODE(response_file.stat().st_mode) != 0o600:
+                    raise RuntimeError('Private encrypted fixture response requires effective 0600')
+                encrypted = json.loads(response_file.read_text())['encrypted']
+                if not isinstance(encrypted, list) or len(encrypted) != 2 or any(
+                        not isinstance(value, str) or re.fullmatch(r'[0-9a-f]{64,}', value) is None or len(value) % 2 for value in encrypted):
+                    raise RuntimeError('Invalid private SDK encrypted fixture response')
+                secret_credentials.extend(encrypted)
+                secret_values.extend(encrypted)
+                encrypted_password, encrypted_wrong_password = encrypted
+            finally:
+                response_file.unlink(missing_ok=True)
+            result['encrypted_password_fixture'] = {'status': 'PASS', 'sdk_decrypt_exact_matches': 2,
+                                                    'correct_and_wrong_passwords_encrypted': True,
+                                                    'private_response_removed': not response_file.exists()}
 
             common = {'keystoreFile': store, 'keystorePwd': password, 'keyPwd': password}
             root_dn = 'CN=Godot Disposable Root,O=oheco,C=CN'
@@ -335,11 +430,11 @@ permissions/ohos.permission.INTERNET=true
             credential_dir.chmod(0o700)
             if stat.S_IMODE(credential_dir.stat().st_mode) != 0o700:
                 raise RuntimeError('Credential directory is not effective 0700')
-            def credentials(store_password):
+            def credentials(encrypted_store_password):
                 if credential_file.exists():
                     credential_file.unlink()
-                fields = {'sign/store_file': str(store), 'sign/store_password': store_password, 'sign/key_alias': 'app',
-                          'sign/key_password': password, 'sign/sign_alg': 'SHA256withECDSA',
+                fields = {'sign/store_file': str(store), 'sign/store_password': encrypted_store_password, 'sign/key_alias': 'app',
+                          'sign/key_password': encrypted_password, 'sign/sign_alg': 'SHA256withECDSA',
                           'sign/profile_file': str(material / 'profile.p7b'), 'sign/certpath_file': str(material / 'app-chain.cer')}
                 private_write(credential_file, '[preset.0.options]\n' + ''.join(key + '=' + json.dumps(value) + '\n' for key, value in fields.items()))
 
@@ -357,7 +452,7 @@ permissions/ohos.permission.INTERNET=true
                 assert not (generated / '.godot-build-runner.lock').exists()
                 # Credentials should occur only in the intended temporary
                 # .godot file; generated profiles/cache requests must not retain
-                # either actual password after C++ finally cleanup.
+                # plaintext passwords or encrypted frames after C++ finally cleanup.
                 for directory in (generated, root / 'env-xdg_cache_home'):
                     for filename in directory.rglob('*'):
                         if not filename.is_file() or filename.is_symlink():
@@ -366,8 +461,8 @@ permissions/ohos.permission.INTERNET=true
                             raise RuntimeError('C++ private signing request was not removed')
                         if filename.suffix in ('.json', '.json5', '.cfg', '.log', '.txt', '.js', '.cjs', '.ts', '.ets'):
                             data = filename.read_bytes()
-                            if password.encode() in data or wrong_password.encode() in data:
-                                raise RuntimeError('Generated configuration/cache retained a complete password')
+                            if any(value.encode() in data for value in secret_credentials):
+                                raise RuntimeError('Generated configuration/cache retained a password or encrypted frame')
                 assert 'sign/store_password' not in (project / 'export_presets.cfg').read_text()
                 return {'profile_signing_material_removed': True, 'private_request_removed': True,
                         'password_not_in_generated_config_or_cache': True, 'original_pack_options_restored': True}
@@ -375,8 +470,8 @@ permissions/ohos.permission.INTERNET=true
             def verify(label, artifact):
                 sign(label, 'verify-app', inFile=artifact, outCertChain=material / (label + '-verify.cer'), outProfile=material / (label + '-verify.p7b'))
 
-            credentials(password)
-            for label, switch, suffix in [('signed-debug-hap', '--export-debug', 'hap'), ('signed-release-app', '--export-release', 'app')]:
+            credentials(encrypted_password)
+            def export_and_verify(label, switch, suffix):
                 target = root / (label + ' with spaces.' + suffix)
                 run(label, [str(editor), '--headless', '--path', str(project), switch, 'OpenHarmony', str(target)], exporter=True)
                 if not target.is_file() or target.stat().st_size <= 0:
@@ -396,8 +491,16 @@ permissions/ohos.permission.INTERNET=true
                     artifact_record['inner_haps'] = inner
                 result['artifacts'].append(artifact_record)
                 (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+            # Run the negative case even if one positive export fails, while
+            # retaining an overall FAIL for every failed export/verification.
+            result['export_failures'] = []
+            for label, switch, suffix in [('signed-debug-hap', '--export-debug', 'hap'), ('signed-release-app', '--export-release', 'app')]:
+                try:
+                    export_and_verify(label, switch, suffix)
+                except Exception as error:
+                    result['export_failures'].append({'stage': label, 'failure': sanitize(str(error))})
             if not args.skip_wrong_password:
-                credentials(wrong_password)
+                credentials(encrypted_wrong_password)
                 target = root / 'wrong password with spaces.hap'
                 failed = run('wrong-password', [str(editor), '--headless', '--path', str(project), '--export-debug', 'OpenHarmony', str(target)], expected_zero=False, exporter=True)
                 assert failed.returncode > 0 and not target.exists()
@@ -406,6 +509,8 @@ permissions/ohos.permission.INTERNET=true
                                            'no_artifact': True, 'complete_password_not_logged': True, **checks}
             credential_file.unlink()
             result['temporary_credentials_removed'] = not credential_file.exists()
+            if result['export_failures']:
+                raise RuntimeError('Signed export regression failed: ' + ', '.join(item['stage'] for item in result['export_failures']))
         result['private_temporary_tree_removed'] = not private_root.exists()
         result['status'] = 'PASS'
         print('PASS native disposable signed debug HAP + release APP outer/all inner HAP verification; credentials/private requests cleaned; no personal/device/install trust')
@@ -417,9 +522,9 @@ permissions/ohos.permission.INTERNET=true
         if private_root is not None:
             result['private_temporary_tree_removed'] = not private_root.exists()
         result_text = json.dumps(result, indent=2, ensure_ascii=False) + '\n'
-        for value in (password, wrong_password):
+        for value in secret_credentials:
             if value in result_text:
-                raise RuntimeError('Evidence unexpectedly contains a password')
+                raise RuntimeError('Evidence unexpectedly contains a password or encrypted frame')
         (output / 'result.json').write_text(result_text)
 
 

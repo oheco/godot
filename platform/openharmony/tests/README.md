@@ -391,3 +391,40 @@ logged-out messages, malformed/secret output, invalid signing receipts, unsafe
 artifact paths and old templates are checked without CLI/HDC/network calls.
 The output HAP bytes are synthetic. Real cloud issuance, the installed GUI's
 confirmation/resume and a device's signature trust remain separate acceptance.
+
+## Native manual signing with disposable credentials
+
+```sh
+python3 platform/openharmony/tests/test_signed_export.py \
+  --editor "$SIGNED_EDITOR_CLI" \
+  --template-debug-zip "$DEBUG_TEMPLATE_ZIP" \
+  --template-release-zip "$RELEASE_TEMPLATE_ZIP" \
+  --sdk-root "$SDK26_VIEW" --command-line-tools-root "$CLT_ROOT" \
+  --output "$NEW_PRIVATE_SIGNED_EXPORT_EVIDENCE_DIR"
+```
+
+This gate generates a disposable local CA, certificates and PKCS12 in private
+TMPDIR, then performs real C++/Hvigor signed debug HAP and release APP exports,
+verifies the outer/inner packages with the native SDK signer, and rejects a wrong
+password. It never issues cloud certificates, uses personal signing material or
+installs an application. Correct and incorrect passwords use opaque AES-GCM
+frames with adjacent private material; the selected SDK's exported DecipherUtil
+must recover each original value exactly before the test proceeds. This producer
+exists only in the fixture; production keeps its encrypted-password validation.
+
+The versioned signer view must expose `26.0.0/toolchains/lib/hap-sign-tool` and
+preserve the selected SDK's actual runtime metadata. For an official bundled
+HarmonyOS SDK, keep `default/sdk-pkg.json` and its real component tree visible;
+a version-only OpenHarmony component alias loses the HarmonyOS runtime identity.
+Use a private prepared `HVIGOR_USER_HOME` for wrapper/project caches. A copied
+offline wrapper cache can be reused in TMPDIR without changing the original
+cache; temporary SDK views and cache copies must be cleaned on exit. Evidence
+retains only redacted logs, hashes and checks, and explicitly records that file
+signature verification does not prove device installation trust.
+
+The current CLT 26.0.0.201 full APP gate is a known FAIL: the SDK does not
+produce the all-unsigned intermediate requested by its second signing step.
+A separately retained standard-signing experiment verifies the outer APP but
+finds unsigned inner HAPs. HAP signing and wrong-password rejection pass.
+Complete APP inner signing is deferred to the next iteration; no experimental
+APP change is merged into this local candidate, and these failures remain FAIL.
