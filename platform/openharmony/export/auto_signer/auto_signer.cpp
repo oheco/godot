@@ -107,9 +107,9 @@ struct stat regular(const std::string &path, const std::string &code = "CACHE_IN
 	return st;
 }
 bool sameFile(const struct stat &a, const struct stat &b) { return a.st_dev == b.st_dev && a.st_ino == b.st_ino; }
-void privateMode(const std::string &path, mode_t bits, bool dir) {
+void privateMode(const std::string &path, mode_t bits, bool dir, size_t maximum = LIMIT) {
 	const std::string code = "PRIVATE_STORAGE_REQUIRED";
-	struct stat before = dir ? directory(path, code) : regular(path, code);
+	struct stat before = dir ? directory(path, code) : regular(path, code, maximum);
 	need(before.st_uid == ::getuid() && real(path, code) == normalized(path), code, "Signing storage must be caller-owned and must not traverse symbolic links.");
 	FD fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (dir ? O_DIRECTORY : 0)));
 	struct stat checked{};
@@ -637,23 +637,46 @@ void syncLogin(Context &ctx) {
 	}
 	writeJSON(metaPath, metadata);
 }
-void linkSiblings(const std::string &source, const std::string &destination, const std::string &except) {
+void linkSiblings(const std::string &source, const std::string &destination, const std::set<std::string> &except) {
 	directory(real(source), "CLT_MISSING"); privateDir(destination);
-	for (const auto &name : entries(source)) if (name != except) {
+	for (const auto &name : entries(source)) if (!except.count(name)) {
 		const std::string from = join(source, name), to = join(destination, name);
 		need(::symlink(from.c_str(), to.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Command Line Tools overlay.");
+	}
+}
+void copyToolBin(const std::string &source, const std::string &destination, const std::string &entry) {
+	linkSiblings(source, destination, {"bin"});
+	const std::string fromBin = join(source, "bin"), toBin = privateDir(join(destination, "bin"));
+	directory(real(fromBin), "CLT_MISSING");
+	regular(join(fromBin, entry), "CLT_MISSING", EXECUTABLE_LIMIT);
+	for (const auto &name : entries(fromBin)) {
+		checkInterrupted();
+		const std::string from = join(fromBin, name), to = join(toBin, name);
+		struct stat st{};
+		need(::lstat(from.c_str(), &st) == 0, "CLT_MISSING", "A required Command Line Tools launcher is inaccessible.");
+		if (S_ISREG(st.st_mode)) {
+			// The official CLI realpaths its explicit entries. Copy bin siblings
+			// too, preserving relative imports and signed ELF bytes unchanged.
+			privateWrite(to, readBytes(from, "CLT_MISSING", EXECUTABLE_LIMIT));
+			privateMode(to, (entry == "node" && name == entry) || (st.st_mode & 0111) ? 0700 : 0600, false, EXECUTABLE_LIMIT);
+		} else {
+			need(::symlink(from.c_str(), to.c_str()) == 0, "PRIVATE_STORAGE_REQUIRED", "Cannot prepare the private Command Line Tools launcher siblings.");
+		}
 	}
 }
 std::string prepareOverlay(Context &ctx) {
 	if (!ctx.overlay.empty()) return ctx.overlay;
 	const std::string original = field(ctx.request, "commandLineToolsRoot");
 	const std::string overlay = privateDir(join(ctx.work, "clt-overlay"));
-	linkSiblings(original, overlay, "sdk");
-	linkSiblings(join(original, "sdk"), join(overlay, "sdk"), "default");
-	linkSiblings(join(original, "sdk/default"), join(overlay, "sdk/default"), "openharmony");
-	linkSiblings(join(original, "sdk/default/openharmony"), join(overlay, "sdk/default/openharmony"), "toolchains");
+	linkSiblings(original, overlay, {"sdk", "node", "ohpm", "hvigor"});
+	for (const auto &tool : {std::make_pair("node", "node"), std::make_pair("ohpm", "pm-cli.js"), std::make_pair("hvigor", "hvigorw.js")}) {
+		copyToolBin(join(original, tool.first), join(overlay, tool.first), tool.second);
+	}
+	linkSiblings(join(original, "sdk"), join(overlay, "sdk"), {"default"});
+	linkSiblings(join(original, "sdk/default"), join(overlay, "sdk/default"), {"openharmony"});
+	linkSiblings(join(original, "sdk/default/openharmony"), join(overlay, "sdk/default/openharmony"), {"toolchains"});
 	const std::string toolchains = join(overlay, "sdk/default/openharmony/toolchains");
-	linkSiblings(join(original, "sdk/default/openharmony/toolchains"), toolchains, "hdc");
+	linkSiblings(join(original, "sdk/default/openharmony/toolchains"), toolchains, {"hdc"});
 	// Copy the already signed executable without modifying any bytes. A native
 	// executable cannot be replaced with a script under the broker's namespace.
 	const std::string proxy = join(toolchains, "hdc");

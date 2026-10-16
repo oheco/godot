@@ -67,7 +67,7 @@ $XDG_CONFIG_HOME/godot-openharmony-signing/
     project/...
 ```
 
-Generated private directories use 0700; private files use 0600. Files must be caller-owned, regular, single-linked, bounded in size, and free of symlink traversal where they are used as signing material. Reads use `O_NOFOLLOW` and compare opened-file identity. Writes verify ownership/link count and effective permissions before truncation. The generated HDC proxy executable is the sole executable-file exception: it is a single-linked 0700 copy of the already signed worker. The read-only original login files are not chmodded or rewritten.
+Generated private directories use 0700; private files use 0600. Files must be caller-owned, regular, single-linked, bounded in size, and free of symlink traversal where they are used as signing material. Reads use `O_NOFOLLOW` and compare opened-file identity. Writes verify ownership/link count and effective permissions before truncation. Executable overlay copies use 0700: the signed worker at the HDC proxy path, the original signed CLT Node, and bin siblings whose source has executable bits. Their bytes remain unchanged; Node and other copied launchers have a separate 128 MiB bound. The read-only original tool and login files are not chmodded or rewritten.
 
 Only existing `token.enc`, `token.dek`, KEK v1/v2/v3, and optional `.harmony/{hdckey,hdckey.key,hdckey.pub}` are copied. Source size, mtime and SHA-256 determine when to refresh copies; removed source files remove their obsolete private copies. The source login directory must not be inside the worker's destination cache. Auth status must prove a verified CLI login even when the CLI exits zero.
 
@@ -83,7 +83,11 @@ The worker's own environment and original HOME sources are unchanged. The select
 
 ## Native HDC proxy and CLT overlay
 
-The official CLI locates HDC at `COMMAND_LINE_TOOL_PATH/sdk/default/openharmony/toolchains/hdc`. A private CLI HOME must not create a new HDC shared-service identity. Before the first CLI invocation, the worker therefore creates a temporary CLT overlay, with real 0700 ancestor directories down to `toolchains`, symlinks for every original sibling, and an unchanged byte copy of the signed worker at `toolchains/hdc`. This preserves `version.txt`, SDK metadata, hms, libraries and other original components without modifying the installed CLT/SDK/CLI.
+The official CLI locates HDC at `COMMAND_LINE_TOOL_PATH/sdk/default/openharmony/toolchains/hdc`. A private CLI HOME must not create a new HDC shared-service identity. Before the first CLI invocation, the worker therefore creates a temporary CLT overlay with real 0700 ancestor directories down to `toolchains` and an unchanged byte copy of the signed worker at `toolchains/hdc`.
+
+Official CLI 1.3.5's OpenHarmony provider realpaths the explicit `node/bin/node`, `ohpm/bin/pm-cli.js`, `hvigor/bin/hvigorw.js`, `sdk`, and `sdk/default/openharmony/toolchains/hdc` entries and requires them to remain within the CLT root. Its emulator and Java paths are empty; clangd and LSP paths are not part of this guard. A symlink for any of the three guarded tool entries would resolve outside the temporary root and fail initialization before HDC or generation. The overlay therefore uses real `node`, `ohpm`, `hvigor` and `bin` directories and native byte copies of their regular bin files, including launcher siblings needed for relative imports. The Node copy retains its original ELF signature bytes and receives effective 0700 permissions. Its dynamic libraries still come from the selected CLT via the existing Node child runtime environment described above.
+
+Non-guarded siblings, including `node_modules`, `engine`, `plugins`, `lib`, `version.txt`, SDK metadata and hms, may remain symlinks to the original read-only components. Only explicit guarded paths must resolve within the overlay. No installed CLT, SDK or CLI component is modified, and no guard is disabled.
 
 Only CLI subprocesses receive `COMMAND_LINE_TOOL_PATH=<temporary overlay>`. Builds explicitly receive the **original selected CLT**. No overlay is used as a build toolchain selection.
 

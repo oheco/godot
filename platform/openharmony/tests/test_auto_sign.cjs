@@ -114,6 +114,28 @@ if(args.join(' ')==='auth status'){
   console.log('Id'.padEnd(width)+'  Name');console.log('-'.repeat(width)+'  ----');
   for(const id of teams)console.log(id.padEnd(width)+'  Local Team Name With Spaces');
 }else if(args[0]==='signature'&&args[1]==='generate'){
+  // Official CLI 1.3.5 buildOpenHarmonyProvider calls this before any HDC or
+  // generation. Its OpenHarmony emulatorPath/javaPath are empty (no guard).
+  const clt=process.env.COMMAND_LINE_TOOL_PATH,toolchainRoot=fs.realpathSync(clt);
+  const tools={node:'node/bin/node',ohpm:'ohpm/bin/pm-cli.js',hvigor:'hvigor/bin/hvigorw.js',sdk:'sdk',hdc:'sdk/default/openharmony/toolchains/hdc'};
+  const checked=[];
+  for(const [name,relative] of Object.entries(tools)){
+    const file=path.join(clt,relative),resolved=fs.realpathSync(file),within=path.relative(toolchainRoot,resolved);
+    if(path.isAbsolute(within)||within==='..'||within.startsWith('..'+path.sep))throw new Error('Unsafe toolchain path: '+name+' resolves outside the toolchain root');
+    const stat=fs.lstatSync(file),original=path.join(process.env.FIXTURE_ORIGINAL_CLT,relative);
+    checked.push({name,path:file,resolved,isFile:stat.isFile(),isDirectory:stat.isDirectory(),isSymlink:stat.isSymbolicLink(),links:stat.nlink,owner:stat.uid,mode:stat.mode&0o7777,...(['node','ohpm','hvigor'].includes(name)?{sameBytes:fs.readFileSync(file).equals(fs.readFileSync(original)),distinctOriginal:resolved!==fs.realpathSync(original)}:{})});
+  }
+  log('toolchain-containment',{root:toolchainRoot,checked});
+  if(control.cliLauncherProbe){
+    const cp=require('node:child_process');
+    for(const name of ['ohpm','hvigor']){
+      const result=cp.spawnSync(path.join(clt,tools.node),[path.join(clt,tools[name])],{encoding:'utf8'});
+      if(result.error||result.status!==0||result.stdout.trim()!=='FAKE_'+name.toUpperCase()+'_OK')throw new Error('copied launcher dependency resolution failed: '+name);
+      log('cli-launcher-probe',{name});
+    }
+    const links=['node/lib','ohpm/lib','ohpm/node_modules','hvigor/engine','hvigor/plugins','hvigor/node_modules'];
+    log('toolchain-dependency-links',{links:links.map(relative=>({relative,isSymlink:fs.lstatSync(path.join(clt,relative)).isSymbolicLink(),resolved:fs.realpathSync(path.join(clt,relative))})),binSiblings:['ohpm/bin/launcher.cjs','hvigor/bin/launcher.cjs'].map(relative=>{const file=path.join(clt,relative),original=path.join(process.env.FIXTURE_ORIGINAL_CLT,relative);return{relative,isFile:fs.lstatSync(file).isFile(),isSymlink:fs.lstatSync(file).isSymbolicLink(),sameBytes:fs.readFileSync(file).equals(fs.readFileSync(original))};})});
+  }
   if(control.cliHdcProbe)await probeChildren();
   log('generate',{locks:fs.readdirSync(path.join(process.env.FIXTURE_SIGNING_ROOT,'locks')).sort()});
   if(!args.includes('--team-id')||args.includes('--force'))throw new Error('invalid generate arguments');
@@ -203,6 +225,21 @@ function fixture(t, initial = {}) {
   const home=path.join(root,'original home'),config=path.join(root,'private config'),tmp=path.join(root,'private tmp');
   const project=path.join(root,'export with spaces; $ no shell'),clt=path.join(root,'CLT with spaces'),sdk=path.join(clt,'sdk');
   for(const dir of [home,config,tmp,project,sdk])fs.mkdirSync(dir,{recursive:true,mode:0o700});
+  // Every fake CLT has the real provider's explicit paths and runnable launcher
+  // dependencies. The fixed-SDK case uses the actual signed Node ELF (>4 MiB).
+  const cltNode=path.join(clt,'node/bin/node');
+  if(NATIVE&&initial.cliLauncherProbe){fs.mkdirSync(path.dirname(cltNode),{recursive:true,mode:0o700});fs.copyFileSync(process.execPath,cltNode);fs.chmodSync(cltNode,0o500);}
+  else executable(cltNode,"const result=require('node:child_process').spawnSync(process.execPath,process.argv.slice(2),{stdio:'inherit'});if(result.error)throw result.error;process.exit(result.status===null?1:result.status);");
+  write(path.join(clt,'node/lib/fixture-runtime.txt'),'selected CLT runtime');
+  write(path.join(clt,'ohpm/bin/pm-cli.js'),"require('./launcher.cjs')();\n");
+  write(path.join(clt,'ohpm/bin/launcher.cjs'),"module.exports=()=>{if(require('../lib/index.cjs')!=='ohpm'||require('fixture-dependency')!=='dependency')throw new Error('ohpm dependencies');console.log('FAKE_OHPM_OK');};\n");
+  write(path.join(clt,'ohpm/lib/index.cjs'),"module.exports='ohpm';\n");
+  write(path.join(clt,'hvigor/bin/hvigorw.js'),"require('./launcher.cjs')();\n");
+  write(path.join(clt,'hvigor/bin/launcher.cjs'),"module.exports=()=>{if(require('../engine/index.cjs')!=='hvigor'||require('../plugins/plugin.cjs')!=='plugin'||require('fixture-dependency')!=='dependency')throw new Error('hvigor dependencies');console.log('FAKE_HVIGOR_OK');};\n");
+  write(path.join(clt,'hvigor/engine/index.cjs'),"module.exports='hvigor';\n");
+  write(path.join(clt,'hvigor/plugins/plugin.cjs'),"module.exports='plugin';\n");
+  for(const tool of ['ohpm','hvigor'])write(path.join(clt,tool,'node_modules/fixture-dependency/index.js'),"module.exports='dependency';\n");
+  write(path.join(clt,'version.txt'),'Version: 26.0.0\n');
   const permissionDefinitions={definePermissions:[
     ...['ohos.permission.TEST_ACL','ohos.permission.NEW_ACL','ohos.permission.kernel.ALLOW_WRITABLE_CODE_MEMORY','ohos.permission.kernel.LOAD_INDEPENDENT_LIBRARY'].map(name=>({name,availableLevel:'system_basic',availableType:'NORMAL',provisionEnable:true,since:14})),
     ...['ohos.permission.INTERNET','ohos.permission.MICROPHONE','ohos.permission.FILE_ACCESS_PERSIST','ohos.permission.READ_WRITE_DOWNLOAD_DIRECTORY','ohos.permission.READ_WRITE_DOCUMENTS_DIRECTORY'].map(name=>({name,availableLevel:'normal',availableType:'NORMAL',provisionEnable:false,since:9})),
@@ -238,7 +275,7 @@ console.log('OTHER_CHILD_OK');
   write(identity,'[application]\nconfig/name="Original source"\n');write(preset,originalPreset);
   const request={schemaVersion:1,projectDir:project,projectIdentity:identity,nodePath:process.execPath,
     commandLineToolsRoot:clt,sdkRoot:sdk,hdcPath:NATIVE&&control.cliUseSDK?path.join(sdk,'default/openharmony/toolchains/hdc'):hdc,target:'serial-is-not-udid',format:'hap',buildMode:'debug',cliPath:cli,teamId:'',loginDataDir:''};
-  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE};
+  const env={...process.env,HOME:home,XDG_CONFIG_HOME:config,TMPDIR:tmp,FIXTURE_CONTROL:controlFile,FIXTURE_SIGNING_ROOT:path.join(config,'godot-openharmony-signing'),DEVECO_CLI_DATA_DIR:login,HDC_SERVER:'127.0.0.1:39999',OHOS_HDC_SERVER_PORT:'8710',FIXTURE_ORIGINAL_HOME:home,FIXTURE_ORIGINAL_CLT:clt,FIXTURE_HDC_PATH:hdc,FIXTURE_NATIVE_WORKER:NATIVE};
   function run(changes={}, envChanges={}){
     const command=invocation(['--request-json',JSON.stringify({...request,...changes})]);
     return receipt(spawnSync(command.file,command.args,{encoding:'utf8',env:{...env,...envChanges},timeout:20000,maxBuffer:1024*1024}));
@@ -341,11 +378,32 @@ test('CLI HDC children share host HOME through CJS, ESM and promisified subproce
   assert.equal(fs.readFileSync(path.join(home,'.harmony/hdckey.key'),'utf8'),'original-hdc-component');
   f.assertClean();
 });
-test('official SDK fixed HDC path is allowed while the extra HDC key component remains optional',t=>{
-  const f=fixture(t,{cliHdcProbe:true,cliUseSDK:true}),key=path.join(f.home,'.harmony/hdckey.key');
+test('official SDK fixed HDC path passes realpath containment and copied launchers while the extra HDC key remains optional',t=>{
+  const f=fixture(t,{cliHdcProbe:true,cliUseSDK:true,cliLauncherProbe:true}),key=path.join(f.home,'.harmony/hdckey.key');
   fs.unlinkSync(key);
   assert.equal(f.run().status,'ok');
-  const hdcs=f.events().filter(e=>e.kind==='hdc');
+  const events=f.events(),guard=events.find(e=>e.kind==='toolchain-containment');
+  assert.ok(guard);assert.deepEqual(guard.checked.map(e=>e.name),['node','ohpm','hvigor','sdk','hdc']);
+  for(const entry of guard.checked){
+    const relative=path.relative(guard.root,entry.resolved);
+    assert.equal(path.isAbsolute(relative),false);assert.notEqual(relative,'..');assert.equal(relative.startsWith('..'+path.sep),false);
+    assert.equal(entry.isSymlink,false);assert.equal(entry.name==='sdk'?entry.isDirectory:entry.isFile,true);
+    if(['node','ohpm','hvigor'].includes(entry.name)){
+      assert.equal(entry.sameBytes,true);assert.equal(entry.distinctOriginal,!!NATIVE);
+      if(NATIVE){assert.equal(entry.links,1);assert.equal(entry.owner,process.getuid());assert.equal(entry.mode,entry.name==='node'?0o700:0o600);}
+    }
+  }
+  assert.deepEqual(events.filter(e=>e.kind==='cli-launcher-probe').map(e=>e.name),['ohpm','hvigor']);
+  const dependencies=events.find(e=>e.kind==='toolchain-dependency-links');
+  for(const entry of dependencies.links){assert.equal(entry.isSymlink,!!NATIVE);assert.equal(entry.resolved,fs.realpathSync(path.join(f.clt,entry.relative)));}
+  for(const entry of dependencies.binSiblings){assert.equal(entry.isFile,true);assert.equal(entry.isSymlink,false);assert.equal(entry.sameBytes,true);}
+  if(NATIVE){
+    const node=path.join(f.clt,'node/bin/node');assert.ok(fs.statSync(node).size>4*1024*1024);assert.deepEqual(fs.readFileSync(node),fs.readFileSync(process.execPath),'original signed Node bytes changed');assert.equal(fs.statSync(node).mode&0o7777,0o500,'read-only source mode changed');
+    const proxies=events.filter(e=>e.kind==='native-proxy');assert.ok(proxies.length);
+    for(const proxy of proxies){assert.equal(proxy.sameWorker,true);assert.equal(proxy.magic,'7f454c46');assert.equal(proxy.mode,0o700);assert.equal(proxy.isSymlink,false);assert.equal(proxy.configMode,0o600);assert.equal(proxy.configIsSymlink,false);assert.deepEqual(proxy.config,{schemaVersion:1,hdcPath:path.join(f.sdk,'default/openharmony/toolchains/hdc'),hostEnvironment:{HOME:f.home,HDC_SERVER:f.env.HDC_SERVER,OHOS_HDC_SERVER_PORT:f.env.OHOS_HDC_SERVER_PORT}});}
+    assert.equal(fs.existsSync(guard.root),false,'overlay must be cleaned');
+  }
+  const hdcs=events.filter(e=>e.kind==='hdc');
   assert.equal(hdcs.length,9);
   assert.equal(hdcs.filter(e=>e.file===path.join(f.sdk,'default/openharmony/toolchains/hdc')).length,NATIVE?9:7);
   assert.equal(hdcs.filter(e=>e.file===f.hdc).length,NATIVE?0:2);
