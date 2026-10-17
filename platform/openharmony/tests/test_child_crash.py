@@ -63,6 +63,10 @@ def main():
                 print(result.stderr, end='')
             if result.returncode or 'CHILD_CRASH_PASS' not in result.stdout:
                 raise SystemExit(result.returncode or 1)
+            persisted = (root / 'parent.log').read_text()
+            if 'The editor is still running.' not in persisted or 'REAL_GAME_LAST_ERROR_中文' not in persisted:
+                raise SystemExit('Quiet-mode crash diagnostics were not persisted in the parent engine log')
+            print('PASS quiet-mode parent log preserves the native crash report and final game error')
         finally:
             if root.parent != temporary_root or root.resolve(strict=True) != Path(temporary).resolve(strict=True):
                 raise RuntimeError('Unexpected child-crash fixture cleanup target')

@@ -149,9 +149,9 @@ void OpenHarmonyChildProcessDiagnostics::report(ProcessID p_pid, const Child &p_
 	if (EditorNode::get_singleton() && EditorNode::get_log()) {
 		EditorNode::get_log()->add_message(heading, EditorLog::MSG_TYPE_ERROR);
 		EditorNode::get_log()->add_message(context, EditorLog::MSG_TYPE_STD);
-		// Also persist the report in the parent's log without printing it to
+		// Error logging also persists under --quiet, without printing it to
 		// EditorLog twice through EditorNode's global print handler.
-		OS::get_singleton()->print("%s\n", (heading + "\n" + context).utf8().get_data());
+		OS::get_singleton()->printerr("%s\n", (heading + "\n" + context).utf8().get_data());
 	} else {
 		print_error(heading);
 		print_line(context);
