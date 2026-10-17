@@ -10,6 +10,7 @@ import { HostConfig, instancesEnabled, validateArguments } from './Config';
 // Only parent-attached launches need the old keep-alive behavior. An independent
 // editor instance must never make its project manager stay alive.
 let childPid: number = 0;
+let childLogDirectory: string = '';
 
 interface LaunchResponse {
   pid: number;
@@ -20,6 +21,24 @@ interface LaunchResponse {
 
 export function spawnedChildPid(): number {
   return childPid;
+}
+
+export function spawnedChildLogDirectory(): string {
+  return childLogDirectory;
+}
+
+function requestedLogDirectory(args: string[]): string {
+  // The editor's native launcher has already normalized --log-file to an
+  // absolute path. Match the native host's first engine-side occurrence.
+  for (let index: number = 0; index < args.length; index++) {
+    if (args[index] === '--' || args[index] === '++') { break; }
+    if (args[index] !== '--log-file' || index + 1 >= args.length) { continue; }
+    const path: string = args[index + 1];
+    if (!path.startsWith('/')) { return ''; }
+    const slash: number = path.lastIndexOf('/');
+    return slash === 0 ? '/' : path.substring(0, slash);
+  }
+  return '';
 }
 
 export function logInstanceState(context: common.UIAbilityContext, event: string): void {
@@ -65,7 +84,9 @@ export function reportExit(context: common.UIAbilityContext): void {
 }
 
 export function childHasExited(context: common.UIAbilityContext, pid: number): boolean {
-  return pid > 0 && exists(exitMarker(context, pid));
+  // Fatal exits cannot write the orderly-exit marker. Query process liveness
+  // as well, including when two different children crash in the same second.
+  return pid > 0 && (exists(exitMarker(context, pid)) || !plugin.processIsRunning(pid));
 }
 
 function publishLaunchResponse(context: common.UIAbilityContext, key: string, phase: string, error: string): void {
@@ -178,7 +199,10 @@ export async function launchInstance(context: common.UIAbilityContext, request: 
           throw new Error('Unexpected attached launch response');
         }
         record(`spawn ${request}: handoff accepted mode=${independent ? 'multiInstance' : 'attached'} parentPid=${parentPid} parentInstance='${parentInstance}' targetPid=${result.pid} targetInstance='${result.instanceKey}' phase=${result.phase}`);
-        if (!independent) { childPid = result.pid; }
+        if (!independent) {
+          childPid = result.pid;
+          childLogDirectory = requestedLogDirectory(args);
+        }
         // Godot quits its project manager only after create_instance succeeds.
         plugin.spawnResult(request, result.pid);
         return;

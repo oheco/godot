@@ -284,6 +284,9 @@ function testCrashMonitoring(root) {
   assert.equal(f.diagnostics.crashLogTime(505), 0, 'Missing attached PID must not fall back to another PID');
   assertAbsent(f.diagnostics.readCrashLog(), 'crash');
 
+  let attachedPid = childPid;
+  let attachedDirectory = '';
+  let childExited = false;
   // Exercise the actual attached-child poller as in test_arkts_host.cjs: exclude
   // only ArkUI build()/decorators, not updateEngineState or crashLogTime logic.
   const { Index } = load('pages/Index.ets', {
@@ -294,8 +297,9 @@ function testCrashMonitoring(root) {
     '../runtime/LocalizedStrings': { localizedUIString: (_context, resource) => resource },
     // This fixture exercises the crash poller, not input (covered separately).
     '../runtime/TouchInput': { TouchInput: class {} },
+    '../runtime/AxisInput': { AxisInput: class {} },
     '../runtime/Launch': {
-      spawnedChildPid: () => childPid, childHasExited: () => false, logInstanceState: () => {}, reportExit: () => {},
+      spawnedChildPid: () => attachedPid, spawnedChildLogDirectory: () => attachedDirectory, childHasExited: () => childExited, logInstanceState: () => {}, reportExit: () => {},
     },
   }, {
     XComponentController: class {}, AppStorage: { get: () => false }, $r: (key) => key, setInterval: () => 1, clearInterval: () => {},
@@ -306,6 +310,9 @@ function testCrashMonitoring(root) {
   });
   const page = new Index();
   page.getUIContext = () => ({});
+  page.ready = true;
+  page.engineReadyReported = true;
+  page.engineRunning = true;
   page.instanceSupport = true;
   page.crashTime = f.diagnostics.crashLogTime();
   page.updateEngineState(f.context);
@@ -316,12 +323,53 @@ function testCrashMonitoring(root) {
   f.put('crash', childPid, 'NEW ATTACHED CHILD CRASH', startSeconds + 2);
   assert.equal(f.diagnostics.crashLogTime(childPid), startSeconds + 2);
   page.updateEngineState(f.context);
-  assert.equal(page.crashed, true, 'New attached-child crash must still trigger');
-  assert.equal(page.showLog, true);
-  assert.match(page.logText, /attached child crash detected pid=303/);
-  assertAbsent(page.logText, 'crash');
-  assert.match(page.logText, /===== attached child crash log \(pid=303\) =====/);
-  assert.match(page.logText, /NEW ATTACHED CHILD CRASH/, 'The detected attached-child crash body must remain available');
+  assert.equal(page.crashed, false, 'A child crash cannot mark a live parent as crashed');
+  assert.equal(page.ready, true, 'Keep the parent XComponent mounted');
+  assert.equal(page.showStatus, false, 'Do not cover the editor with a host failure page');
+  assert.equal(page.showLog, false, 'The native editor receives the report in Output');
+  assert.equal(page.crashedChildPid, childPid);
+  page.updateEngineState(f.context);
+  assert.equal(page.ready, true, 'Repeated polls must leave the editor usable');
+  const fallback = new Index();
+  fallback.getUIContext = () => ({});
+  fallback.instanceSupport = true;
+  fallback.crashTime = startSeconds - 10;
+  const originalState = f.plugin.state;
+  f.plugin.state = () => 3;
+  fallback.updateEngineState(f.context);
+  assert.equal(fallback.crashed, true, 'An already exited parent retains host fallback diagnostics');
+  assert.equal(fallback.showLog, true);
+  assert.match(fallback.logText, /attached child crash detected pid=303/);
+  assertAbsent(fallback.logText, 'crash');
+  assert.match(fallback.logText, /===== attached child crash log \(pid=303\) =====/);
+  assert.match(fallback.logText, /NEW ATTACHED CHILD CRASH/, 'Fallback preserves the child report');
+  // Another game can crash in the same Unix second. Its PID liveness must
+  // allow editor exit even if the seconds-only timestamp did not advance.
+  attachedPid = 606;
+  f.put('crash', attachedPid, 'SECOND CHILD SAME SECOND', startSeconds + 2);
+  childExited = true;
+  let terminated = false;
+  page.terminateHost = () => { terminated = true; };
+  page.updateEngineState(f.context);
+  assert.equal(page.crashed, false, 'Normal editor exit must not replay an already consumed child crash');
+  assert.equal(terminated, true, 'A consumed child crash cannot keep the exited editor alive forever');
+  attachedPid = 909;
+  attachedDirectory = path.join(f.paths.filesDir, 'custom logs 中文');
+  fs.mkdirSync(attachedDirectory);
+  const customPath = path.join(attachedDirectory, 'godot-909-crash.log');
+  fs.writeFileSync(customPath, 'CUSTOM DIRECTORY FATAL REPORT');
+  fs.utimesSync(customPath, startSeconds - 20, startSeconds - 20);
+  assert.equal(f.diagnostics.crashLogTime(attachedPid, attachedDirectory), 0, 'Old custom-directory history is not a current child crash');
+  fs.utimesSync(customPath, startSeconds + 3, startSeconds + 3);
+  const customFallback = new Index();
+  customFallback.getUIContext = () => ({});
+  customFallback.instanceSupport = true;
+  customFallback.crashTime = startSeconds - 10;
+  customFallback.updateEngineState(f.context);
+  assert.equal(customFallback.crashed, true, 'Exited-parent fallback uses the actual child log directory');
+  assert.ok(customFallback.logText.includes(customPath));
+  assert.match(customFallback.logText, /CUSTOM DIRECTORY FATAL REPORT/);
+  f.plugin.state = originalState;
   assert.ok(!f.diagnostics.readFullDiagnostics().includes('NEW ATTACHED CHILD CRASH'), 'Default display still belongs to the parent session');
   assert.equal(f.diagnostics.crashLogTime(), startSeconds + 2);
   f.failures.add(f.file('crash', childPid));
@@ -333,7 +381,7 @@ function testCrashMonitoring(root) {
   assertAbsent(legacy.diagnostics.readCrashLog(), 'crash');
   f.assertClosed();
   legacy.assertClosed();
-  console.log('PASS crash monitoring: multi-process/legacy baseline; empty/missing/error cases; real Index ignores independent crashes and detects attached child');
+  console.log('PASS crash isolation: live editor stays mounted; consumed child crash is not replayed on normal exit; exited-parent fallback preserves the child report');
 }
 
 function main() {

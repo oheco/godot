@@ -43,3 +43,5 @@ export const windowModeStatus: (mode: number) => void;
 export const windowModeResult: (requestId: number, actualMode: number) => void;
 export const openTerminal: (directoryUri: string) => Promise<void>;
 export const processId: () => number;
+// Process liveness remains available after the local engine has exited.
+export const processIsRunning: (pid: number) => boolean;

@@ -6,7 +6,7 @@
 //
 // No dependencies are downloaded. Supply an existing SDK TypeScript compiler:
 //   node platform/openharmony/tests/test_arkts_host.cjs --compiler /path/to/typescript.js
-// Or set GODOT_ARKTS_TYPESCRIPT. TMPDIR must name an existing temporary directory.
+// Or set GODOT_ARKTS_TYPESCRIPT. Filesystem fixtures stay in memory.
 'use strict';
 
 const assert = require('node:assert/strict');
@@ -20,7 +20,7 @@ function compilerPath() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: node test_arkts_host.cjs [--compiler /path/to/typescript.js]\n' +
-      'Compiler fallback: GODOT_ARKTS_TYPESCRIPT. Temporary files: TMPDIR. No network access.');
+      'Compiler fallback: GODOT_ARKTS_TYPESCRIPT. In-memory filesystem fixtures. No network access.');
     process.exit(0);
   }
   if (args.length !== 0 && (args.length !== 2 || args[0] !== '--compiler')) {
@@ -459,6 +459,7 @@ async function testIndex() {
       '../runtime/NativeArguments': nativeArguments,
       '../runtime/LocalizedStrings': localizedStrings,
       '../runtime/TouchInput': touchInput,
+      '../runtime/AxisInput': load('runtime/AxisInput.ets', {}),
       '../runtime/Permissions': permissions,
       '../runtime/Runtime': {
         prepareRuntime: async () => { calls.push(['runtime']); return '/private/runtime'; },
@@ -466,7 +467,7 @@ async function testIndex() {
       '../runtime/Diagnostics': hostDiagnostics,
       '../runtime/ExternalApps': { openExternal: async () => {} },
       '../runtime/Launch': {
-        spawnedChildPid: () => { calls.push(['child-query']); return 0; }, childHasExited: () => false,
+        spawnedChildPid: () => { calls.push(['child-query']); return 0; }, spawnedChildLogDirectory: () => '', childHasExited: () => false,
         reportExit: () => calls.push(['exit-marker']), logInstanceState: () => calls.push(['instance-state']),
       },
     };
@@ -495,7 +496,7 @@ async function testIndex() {
     assert.equal(page.ready, true, `${mode}: native setup failed: ${page.message}`);
     assert.ok(calls.some((call) => call[0] === 'setup'), `${mode}: setup must reach the plain-array native boundary`);
     assert.deepEqual(plain(calls.find((call) => call[0] === 'configure')),
-      ['configure', paths.filesDir, paths.cacheDir, mode === 'editor-sdk' ? '/private/runtime' : '', mode === 'editor-sdk' ? 'sdk' : 'none']);
+      ['configure', paths.filesDir, paths.cacheDir, mode === 'editor-sdk' ? '/private/runtime' : '', mode === 'editor-sdk' ? 'sdk' : 'none', paths.tempDir]);
     assert.deepEqual(plain(calls.find((call) => call[0] === 'setup')),
       ['setup', plain(storage.godotArguments), granted, mode === 'game']);
     assert.equal(calls.some((call) => call[0] === 'runtime'), mode === 'editor-sdk');
@@ -602,6 +603,10 @@ async function testLauncher() {
     { name: 'PM editor independent', pm: true, args: ['--editor'], independent: true },
     { name: 'PM game attached', pm: true, args: ['--path', '/game'], independent: false },
     { name: 'editor game attached', pm: false, args: ['--path', '/game'], independent: false },
+    { name: 'custom child logs', pm: false, args: ['--log-file', '/custom logs 中文/engine.log'], independent: false, logDirectory: '/custom logs 中文' },
+    { name: 'root child logs', pm: false, args: ['--log-file', '/engine.log'], independent: false, logDirectory: '/' },
+    { name: 'first log switch', pm: false, args: ['--log-file', '/first/engine.log', '--log-file', '/later/engine.log'], independent: false, logDirectory: '/first' },
+    { name: 'user log switch ignored', pm: false, args: ['++', '--log-file', '/foreign/engine.log'], independent: false },
     { name: 'user arguments ignored', pm: true, args: ['--', '--editor'], independent: false },
     { name: 'ability fallback', pm: true, args: ['-e'], independent: true, fallback: true },
     { name: 'game blocked', pm: true, args: ['-e'], blocked: true, profile: gameProfile() },
@@ -610,6 +615,7 @@ async function testLauncher() {
     { name: 'max count blocked', pm: true, args: ['-e'], blocked: true, full: true },
   ];
   for (const scenario of scenarios) {
+    let childAlive = true;
     const files = new Map();
     const calls = [];
     const results = [];
@@ -637,7 +643,7 @@ async function testLauncher() {
         statSync: (file) => ({ isFile: () => true, size: files.get(file).length }),
         readTextSync: (file) => files.get(file), unlinkSync: (file) => files.delete(file),
       } },
-      'libentry.so': { default: { processId: () => 11, spawnResult: (request, pid) => results.push([request, pid]) } },
+      'libentry.so': { default: { processId: () => 11, spawnResult: (request, pid) => results.push([request, pid]), processIsRunning: () => childAlive } },
       './Diagnostics': diagnostics, './FileSystem': { ensureDirectory: () => {}, exists: (file) => files.has(file) }, './Config': config,
     }, { console: { ...console, error: () => {} } });
     await launch.launchInstance(context, 77, scenario.args, scenario.pm, scenario.profile || profile);
@@ -648,116 +654,207 @@ async function testLauncher() {
     assert.equal(!!calls[0].want.parameters['create-key'], scenario.independent);
     assert.equal(calls[0].options === undefined, scenario.independent);
     assert.equal(launch.spawnedChildPid(), scenario.independent ? 0 : 123);
+    assert.equal(launch.spawnedChildLogDirectory(), scenario.independent ? '' : scenario.logDirectory || '', 'Child crash lookup follows the actual engine log directory');
+    assert.equal(launch.childHasExited(context, 123), false, 'Live child has no exit marker');
+    childAlive = false;
+    assert.equal(launch.childHasExited(context, 123), true, 'Fatal exit without a marker is still detected');
+    childAlive = true;
+    files.set('/private/cache/godot-launch/exited-123', '');
+    assert.equal(launch.childHasExited(context, 123), true, 'Orderly exit marker takes effect immediately');
+    assert.equal(launch.childHasExited(context, 0), false, 'No attached PID is not queried');
   }
   console.log(`PASS launcher: ${scenarios.length} scenarios; dynamic target; PM independent/game attached; policy/Want/maxCount gates`);
 }
 
 async function testRuntime() {
-  if (!process.env.TMPDIR) { throw new Error('TMPDIR is required for runtime filesystem fixtures'); }
-  const temporary = fs.mkdtempSync(path.join(process.env.TMPDIR, 'godot-host-tests-'));
-  try {
-    const app = path.join(temporary, 'app');
-    const temp = path.join(temporary, 'temp');
-    fs.mkdirSync(app); fs.mkdirSync(temp);
-    const payload = Buffer.from('runtime-archive-fixture-with-partial-write-test');
-    const sha = crypto.createHash('sha256').update(payload).digest('hex');
-    const source = path.join(temporary, 'runtime.zip');
-    fs.writeFileSync(source, payload);
-    const manifest = { version: 'fixture-v1', sha256: sha, size: payload.length };
-    const logs = [];
-    const offsets = new Map();
-    const stagingPaths = [];
-    const archives = [];
-    let rawOpens = 0;
-    let rawCloses = 0;
-    let decompressions = 0;
-    const fileIo = {
-      OpenMode: { CREATE: fs.constants.O_CREAT, WRITE_ONLY: fs.constants.O_WRONLY, TRUNC: fs.constants.O_TRUNC },
-      WhenceType: { SEEK_SET: 0 }, accessSync: (file) => fs.existsSync(file), statSync: (file) => fs.statSync(file),
-      mkdirSync: (file) => fs.mkdirSync(file, { recursive: true }), listFileSync: (file) => fs.readdirSync(file),
-      rmdirSync: (file) => fs.rmdirSync(file), unlinkSync: (file) => fs.unlinkSync(file), renameSync: (from, to) => fs.renameSync(from, to),
-      openSync: (file, flags) => ({ fd: fs.openSync(file, flags) }), closeSync: (file) => fs.closeSync(file.fd),
-      lseek: (fd, offset) => offsets.set(fd, offset),
-      read: async (fd, buffer, options) => {
-        const count = fs.readSync(fd, Buffer.from(buffer), 0, options.length, offsets.get(fd));
-        offsets.set(fd, offsets.get(fd) + count);
-        return count;
-      },
-      write: async (fd, buffer) => fs.writeSync(fd, Buffer.from(buffer).subarray(0, 7)),
-      writeSync: (fd, value) => fs.writeSync(fd, value),
-      readTextSync: (file, options) => {
-        const buffer = fs.readFileSync(file);
-        const offset = options?.offset ?? 0;
-        return buffer.subarray(offset, options?.length ? offset + options.length : undefined).toString();
-      },
-    };
-    let release;
-    const gate = new Promise((resolve) => { release = resolve; });
-    const zlib = { decompressFile: async (archive, staging) => {
-      archives.push(archive); stagingPaths.push(staging); decompressions++;
-      if (decompressions === 2) { release(); }
-      await gate;
-      fs.writeFileSync(path.join(staging, 'runtime.data'), fs.readFileSync(archive));
-    } };
-    const helpers = load('runtime/FileSystem.ets', { '@kit.CoreFileKit': { fileIo } });
-    const runtime = (pid) => load('runtime/Runtime.ets', {
-      '@kit.AbilityKit': {},
-      '@kit.CoreFileKit': { fileIo, hash: { hash: async (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') } },
-      '@kit.BasicServicesKit': { zlib }, '@kit.ArkTS': { util }, 'libentry.so': { default: { processId: () => pid } },
-      './Diagnostics': { ...diagnostics, record: (message) => logs.push(message) }, './FileSystem': helpers,
-    });
-    const context = () => {
-      let fd;
-      return { filesDir: app, cacheDir: temp, tempDir: temp, resourceManager: {
-        getRawFileContent: async () => Buffer.from(JSON.stringify(manifest)),
-        getRawFd: async () => { rawOpens++; fd = fs.openSync(source, 'r'); return { fd, offset: 0, length: payload.length }; },
-        closeRawFd: async () => { rawCloses++; fs.closeSync(fd); },
-      } };
-    };
-    // Two isolated module scopes model independent processes and share a real
-    // temporary filesystem. A barrier guarantees both reach first extraction.
-    const a = runtime(101);
-    const b = runtime(202);
-    const ca = context();
-    const cb = context();
-    const foreign = path.join(app, 'runtimes', `v1-${sha}.extracting-foreign`);
-    fs.mkdirSync(foreign, { recursive: true }); fs.writeFileSync(path.join(foreign, 'keep'), 'foreign');
-    let timeout;
-    let results;
-    try {
-      results = await Promise.race([
-        Promise.all([a.prepareRuntime(ca), a.prepareRuntime(ca), b.prepareRuntime(cb)]),
-        new Promise((resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error('Runtime race did not finish within 5 seconds')), 5000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timeout);
+  const expected = {
+    schemaVersion: 1, engineVersion: '4.7.2', hostAbiVersion: 4,
+    managedVersion: '4.7.2-ohos.3', architecture: 'arm64-v8a', engineLibrarySha256: 'a'.repeat(64),
+  };
+  const manifest = {
+    ...expected, managedRoot: 'share/godot', templatesRoot: 'share/godot/templates', templateSetSha256: 'b'.repeat(64),
+  };
+  const root = '/external/development kit 中文';
+  const fallbackRoot = '/external/another kit';
+  const candidate = (kitRoot = root, value = manifest) => ({ root: kitRoot, manifest: JSON.stringify(value) });
+  const assets = [
+    'bin/libgodot.so', 'share/godot/GodotSharp/Api/Debug/GodotSharp.dll',
+    ...['Godot.NET.Sdk', 'Godot.SourceGenerators', 'GodotSharp', 'GodotSharpEditor'].map(
+      (name) => `share/godot/GodotSharp/Tools/nupkgs/${name}.${expected.managedVersion}.nupkg`),
+    'share/godot/templates/.ready', 'share/godot/templates/openharmony_debug_arm64-v8a.zip',
+    'share/godot/templates/openharmony_release_arm64-v8a.zip',
+  ];
+  const fixtures = [];
+  function fixture(candidates = [candidate()]) {
+    const files = new Map();
+    for (const kitRoot of [root, fallbackRoot]) {
+      for (const name of assets) { files.set(`${kitRoot}/${name}`, 'fixture asset'); }
+      files.set(`${kitRoot}/share/godot/templates/.ready`, `${manifest.templateSetSha256}\n`);
     }
-    assert.equal(new Set(results).size, 1);
-    assert.equal(rawOpens, 2); assert.equal(rawCloses, 2);
-    assert.equal(new Set(stagingPaths).size, 2); assert.equal(new Set(archives).size, 2);
-    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(results[0], '.ready'), 'utf8')), manifest);
-    assert.equal(fs.readFileSync(path.join(results[0], 'runtime.data'), 'utf8'), payload.toString());
-    assert.ok(fs.existsSync(path.join(foreign, 'keep')));
-    for (const file of [...archives, ...stagingPaths]) { assert.ok(!fs.existsSync(file), file); }
-    assert.ok(logs.some((message) => message.includes('won by another process')));
-    assert.equal(await a.prepareRuntime(ca), results[0]); assert.equal(rawOpens, 2);
-    fs.writeFileSync(path.join(results[0], '.ready'), '{}');
-    await assert.rejects(a.prepareRuntime(ca), /Invalid published runtime/);
-    assert.ok(fs.existsSync(path.join(results[0], 'runtime.data')));
-    assert.ok(fs.existsSync(path.join(foreign, 'keep')));
-    // Hash mismatch must clean up this operation without publishing or deleting
-    // either the other process's staging directory or the previous destination.
-    manifest.sha256 = '0'.repeat(64);
-    await assert.rejects(runtime(303).prepareRuntime(context()), /checksum mismatch/);
-    assert.equal(fs.readdirSync(temp).length, 0);
-    assert.deepEqual(fs.readdirSync(path.join(app, 'runtimes')).sort(),
-      [path.basename(foreign), path.basename(results[0])].sort());
-    console.log('PASS runtime: first-publication race; local coalescing; partial writes; ready validation; checksum failure; foreign staging preserved');
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
+    const state = { candidates, applicationManifest: JSON.stringify(expected) };
+    const logs = [], steps = [], resources = [], inspected = [], reads = [], unexpected = [];
+    const calls = { discovery: 0 };
+    // Runtime discovery is read-only. Keep assets in memory and detect unexpected
+    // filesystem APIs even when the production error boundary catches the error.
+    const fileIo = new Proxy({
+      statSync: (file) => {
+        inspected.push(file);
+        if (!files.has(file)) { throw new Error(`ENOENT: ${file}`); }
+        const value = files.get(file);
+        if (value instanceof Error) { throw value; }
+        return { isFile: () => typeof value === 'string', size: typeof value === 'string' ? Buffer.byteLength(value) : 0 };
+      },
+      readTextSync: (file, options) => {
+        reads.push([file, plain(options)]);
+        if (state.readError) { throw state.readError; }
+        return files.get(file).slice(0, options.length);
+      },
+    }, { get: (target, key) => {
+      if (Object.hasOwn(target, key)) { return target[key]; }
+      unexpected.push(String(key));
+      throw new Error(`Unexpected Runtime filesystem API: ${String(key)}`);
+    } });
+    const runtime = load('runtime/Runtime.ets', {
+      '@kit.CoreFileKit': { fileIo }, '@kit.ArkTS': { util },
+      'libentry.so': { default: { developmentKits: () => {
+        calls.discovery++;
+        if (state.discoveryError) { throw state.discoveryError; }
+        return state.candidates;
+      } } },
+      './Diagnostics': { ...diagnostics, record: (message) => logs.push(message), setStep: (step) => steps.push(step) },
+    });
+    const context = { ...hostContext(), resourceManager: { getRawFileContent: async (name) => {
+      resources.push(name);
+      if (state.gate) { await state.gate; }
+      if (state.resourceError) { throw state.resourceError; }
+      return Buffer.from(state.applicationManifest);
+    } } };
+    const result = { runtime, context, state, files, logs, steps, resources, inspected, reads, unexpected, calls };
+    fixtures.push(result);
+    return result;
   }
+  const prepare = (test) => test.runtime.prepareRuntime(test.context);
+  const uses = (test, kitRoot) => test.logs.includes(`using external development kit: ${kitRoot}`);
+
+  // Concurrent callers share only the in-flight discovery, not a permanent cache.
+  const concurrent = fixture([candidate(), candidate(fallbackRoot)]);
+  let release;
+  concurrent.state.gate = new Promise((resolve) => { release = resolve; });
+  const pending = [prepare(concurrent), prepare(concurrent), prepare(concurrent)];
+  assert.equal(concurrent.resources.length, 1);
+  assert.equal(concurrent.calls.discovery, 0);
+  release();
+  assert.deepEqual(await Promise.all(pending), new Array(3).fill(`${root}/share/godot`));
+  assert.equal(concurrent.calls.discovery, 1);
+  assert.equal(uses(concurrent, root), true);
+  assert.deepEqual([...new Set(concurrent.inspected)].sort(), assets.map((name) => `${root}/${name}`).sort());
+  assert.deepEqual(concurrent.reads, [[`${root}/share/godot/templates/.ready`, { length: 65 }]]);
+  concurrent.state.candidates = [];
+  assert.equal(await prepare(concurrent), '', 'a removed kit is not cached after discovery completes');
+  assert.equal(concurrent.calls.discovery, 2);
+  concurrent.state.candidates = [candidate(fallbackRoot)];
+  assert.equal(await prepare(concurrent), `${fallbackRoot}/share/godot`, 'a newly installed kit is discovered on retry');
+  assert.equal(concurrent.calls.discovery, 3);
+
+  // Native discovery owns ordering and explicit-root selection. ArkTS must skip
+  // incompatible candidates without probing assets and accept the next good kit.
+  const incompatible = [
+    null, [], {}, { ...manifest, schemaVersion: 2 }, { ...manifest, engineVersion: 'other' },
+    { ...manifest, hostAbiVersion: 5 }, { ...manifest, managedVersion: 'other' },
+    { ...manifest, architecture: 'x86_64' }, { ...manifest, engineLibrarySha256: 'c'.repeat(64) },
+    { ...manifest, managedRoot: 'elsewhere' }, { ...manifest, templatesRoot: 'elsewhere' },
+    { ...manifest, templateSetSha256: 'B'.repeat(64) },
+  ];
+  for (const value of incompatible) {
+    const test = fixture([candidate('/external/incompatible', value), candidate()]);
+    assert.equal(await prepare(test), `${root}/share/godot`, JSON.stringify(value));
+    assert.ok(test.logs.includes('development kit incompatible with this Editor: /external/incompatible'));
+    assert.ok(test.inspected.every((file) => file.startsWith(root + '/')));
+  }
+  for (const bad of [
+    { root: 'relative/kit', manifest: JSON.stringify(manifest) },
+    { root: '/external/bad\0kit', manifest: JSON.stringify(manifest) },
+    { root: '/external/no manifest', manifest: '' }, { root: '/external/bad json', manifest: '{' },
+  ]) {
+    const test = fixture([bad, candidate()]);
+    assert.equal(await prepare(test), `${root}/share/godot`);
+    assert.ok(test.logs.some((message) => message.includes(bad.root) && /unavailable|rejected/.test(message)));
+    assert.ok(test.inspected.every((file) => file.startsWith(root + '/')));
+  }
+
+  // Every required asset matters. A missing file or a directory in its place
+  // rejects that candidate while preserving discovery of the next complete kit.
+  for (const name of assets) {
+    for (const kind of ['missing', 'directory']) {
+      const test = fixture([candidate(), candidate(fallbackRoot)]);
+      if (kind === 'missing') { test.files.delete(`${root}/${name}`); } else { test.files.set(`${root}/${name}`, null); }
+      assert.equal(await prepare(test), `${fallbackRoot}/share/godot`, `${kind}: ${name}`);
+      assert.equal(uses(test, root), false, `${kind}: ${name}`);
+      assert.equal(uses(test, fallbackRoot), true, `${kind}: ${name}`);
+      assert.ok(test.logs.some((message) => message.startsWith(kind === 'missing' ?
+        `development kit rejected (${root}):` : `development kit assets incomplete: ${root}`)));
+    }
+  }
+  for (const marker of ['', manifest.templateSetSha256, 'c'.repeat(64) + '\n', manifest.templateSetSha256 + '\nextra']) {
+    const test = fixture([candidate(), candidate(fallbackRoot)]);
+    test.files.set(`${root}/share/godot/templates/.ready`, marker);
+    assert.equal(await prepare(test), `${fallbackRoot}/share/godot`, `invalid ready marker: ${JSON.stringify(marker)}`);
+    assert.ok(test.logs.includes(`development kit assets incomplete: ${root}`));
+  }
+  for (const operation of ['stat', 'read']) {
+    const test = fixture([candidate()]);
+    if (operation === 'stat') { test.files.set(`${root}/bin/libgodot.so`, new Error('EACCES fixture')); }
+    else { test.state.readError = new Error('EACCES fixture'); }
+    assert.equal(await prepare(test), '');
+    assert.ok(test.logs.some((message) => message.startsWith(`development kit rejected (${root}):`) && message.includes('EACCES fixture')));
+    test.files.set(`${root}/bin/libgodot.so`, 'fixture asset');
+    delete test.state.readError;
+    assert.equal(await prepare(test), `${root}/share/godot`, `${operation} failure must not poison later discovery`);
+  }
+
+  const absent = fixture([]);
+  assert.equal(await prepare(absent), '');
+  assert.ok(absent.logs.some((message) => message.startsWith('No compatible godot-editor development kit found;')));
+  assert.deepEqual(absent.inspected, []);
+  // Native test_development_kit_discovery.py checks that an explicit invalid root
+  // yields only this empty-manifest candidate. A compatible kit exists in the
+  // fixture filesystem, but ArkTS must not independently scan or select it.
+  const explicit = fixture([{ root: '/explicit/invalidroot', manifest: '' }]);
+  assert.equal(await prepare(explicit), '');
+  assert.ok(explicit.logs.includes('development kit unavailable: /explicit/invalidroot'));
+  assert.deepEqual(explicit.inspected, []);
+  assert.equal(explicit.calls.discovery, 1);
+
+  const invalidRequirements = [
+    '{', ...[null, [], {}, { ...expected, schemaVersion: 2 }, { ...expected, engineVersion: '' },
+      { ...expected, hostAbiVersion: 0 }, { ...expected, hostAbiVersion: 1.5 }, { ...expected, managedVersion: '' },
+      { ...expected, architecture: 'x86_64' }, { ...expected, engineLibrarySha256: 'A'.repeat(64) }].map((value) => JSON.stringify(value)),
+  ];
+  for (const requirement of invalidRequirements) {
+    const test = fixture();
+    test.state.applicationManifest = requirement;
+    assert.equal(await prepare(test), '', requirement);
+    assert.equal(test.calls.discovery, 0, 'invalid application requirements must not reach native discovery');
+    assert.deepEqual(test.inspected, []);
+    assert.ok(test.logs.some((message) => message.startsWith('Development-kit discovery unavailable; starting the native Editor:')));
+  }
+  for (const failure of ['resourceError', 'discoveryError']) {
+    const test = fixture();
+    test.state[failure] = new Error(`fixture ${failure}`);
+    assert.equal(await prepare(test), '', `${failure} must fall back to the native Editor`);
+    assert.equal(test.calls.discovery, failure === 'resourceError' ? 0 : 1);
+    assert.deepEqual(test.inspected, []);
+    assert.ok(test.logs.some((message) => message.startsWith('Development-kit discovery unavailable;') && message.includes(`fixture ${failure}`)));
+    delete test.state[failure];
+    assert.equal(await prepare(test), `${root}/share/godot`, `${failure} must not leave a stale in-flight promise`);
+  }
+  for (const test of fixtures) {
+    assert.ok(test.resources.length > 0);
+    assert.ok(test.resources.every((name) => name === 'development-kit.json'), 'only the compatibility record is read from raw resources');
+    assert.deepEqual(test.steps, new Array(test.resources.length).fill('runtime:discover-development-kit'));
+    assert.deepEqual(test.unexpected, [], 'discovery must use only read-only filesystem APIs');
+  }
+  console.log('PASS runtime: compatible ordered discovery; every required asset/ready validation; no-kit and explicit-invalid-root fallback; local coalescing and rediscovery; candidate/resource/native error boundaries');
 }
 
 async function main() {

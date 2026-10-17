@@ -5,6 +5,30 @@ native temporary filesystem; fixtures clean up their own temporary directories.
 Persistent build evidence belongs in a separate cache/output directory, not the
 source template or a user's configured DevEco project.
 
+## Child-game crash isolation and Output
+
+```sh
+python3 platform/openharmony/tests/test_child_crash.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY"
+```
+
+This native fixture links the rebuilt editor, uses the real UIAbility
+`create_instance` path with a controlled launcher, and checks the actual Output
+RichTextLabel. It covers an early crash before the launcher returns, reused PIDs,
+historical log prefixes, a shorter fresh engine log, repeated polls, later runs,
+ordinary exits, empty crash files, foreign editor/user arguments and failed
+launches. It also execs signed native game subprocesses: crash, normal run, then
+another crash, while the same parent EditorNode continues iterating. Both the
+final UTF-8 error and the production signal-handler backtrace must reach Output,
+even with the parent in `--quiet` mode. The host diagnostics fixture separately
+checks that a live parent's surface stays mounted and no status overlay appears;
+CompileArkTS and application runtime acceptance remain separate checks.
+
+Only newly written nonempty native crash logs identify a fatal crash. SIGKILL,
+OS termination, and failures before the crash handler can write a report cannot
+be diagnosed from this file channel. The report includes bounded 64 KiB tails
+and the full log paths; normal debugger output is not continuously replayed.
+
 ## Configuration and migration
 
 ```sh

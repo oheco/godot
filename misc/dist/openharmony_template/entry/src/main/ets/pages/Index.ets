@@ -13,7 +13,7 @@ import { nativeStringArray } from '../runtime/NativeArguments';
 import { TouchInput } from '../runtime/TouchInput';
 import { AxisInput } from '../runtime/AxisInput';
 import { localizedUIString } from '../runtime/LocalizedStrings';
-import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
+import { childHasExited, logInstanceState, reportExit, spawnedChildPid, spawnedChildLogDirectory } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
   onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
@@ -43,6 +43,9 @@ struct Index {
   private imeWindow: window.Window | undefined = undefined;
   private imeGeometryChanged: () => void = (): void => this.updateImeSurfacePosition();
   private crashTime: number = 0;
+  private crashedChildPid: number = 0;
+  private childCrashBaseline: number = 0;
+  private childCrashDirectory: string = '';
   private spawnedPid: number = 0;
   private childRunning: boolean = false;
   private terminating: boolean = false;
@@ -216,14 +219,26 @@ struct Index {
       logInstanceState(context, `after-handoff-engine-state-${state}`);
     }
     const attachedPid = spawnedChildPid();
-    if (attachedPid > 0 && !this.crashed && crashLogTime(attachedPid) > this.crashTime) {
+    const attachedDirectory: string = spawnedChildLogDirectory();
+    const attachedCrashTime: number = attachedPid > 0 ? crashLogTime(attachedPid, attachedDirectory) : 0;
+    if (attachedPid > 0 && !this.crashed && attachedCrashTime > this.crashTime) {
       record(`attached child crash detected pid=${attachedPid}`);
-      this.crashed = true;
-      this.ready = false;
-      this.showStatus = true;
-      this.message = localizedUIString(this.getUIContext(), $r('app.string.host_child_crashed'));
-      this.logText = readFullDiagnostics(attachedPid, this.crashTime);
-      this.showLog = true;
+      this.crashedChildPid = attachedPid;
+      this.childCrashBaseline = this.crashTime;
+      this.childCrashDirectory = attachedDirectory;
+      this.crashTime = attachedCrashTime;
+      // The running parent engine collects this run's diagnostics into Output.
+      // Keep its surface mounted and consume the crash so a later normal editor
+      // exit cannot replay it as a host failure. Only an already exited engine
+      // needs the ArkUI fallback page.
+      if (state === 3) {
+        this.crashed = true;
+        this.ready = false;
+        this.showStatus = true;
+        this.message = localizedUIString(this.getUIContext(), $r('app.string.host_child_crashed'));
+        this.logText = readFullDiagnostics(attachedPid, this.childCrashBaseline, this.childCrashDirectory);
+        this.showLog = true;
+      }
     }
     if (state === 3 && !this.crashed) {
       // PM -> editor is independent. Only running games launched with
@@ -385,12 +400,12 @@ struct Index {
       if (this.showStatus) {
         Column({ space: 16 }) {
           Text(this.message).fontColor('#eeeeee').padding(24).copyOption(CopyOptions.LocalDevice)
-          if (this.crashed) {
+          if (this.crashed && this.crashedChildPid === 0) {
             Text($r('app.string.host_previous_crash')).fontSize(14).fontColor('#ffb366')
               .padding({ left: 24, right: 24 }).copyOption(CopyOptions.LocalDevice)
           }
           Button($r('app.string.host_show_logs')).onClick(() => {
-            this.logText = readFullDiagnostics();
+            this.logText = readFullDiagnostics(this.crashed ? this.crashedChildPid : 0, this.childCrashBaseline, this.childCrashDirectory);
             this.showLog = !this.showLog;
           })
           if (this.showLog) {

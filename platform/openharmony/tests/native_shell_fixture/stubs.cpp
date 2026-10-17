@@ -77,6 +77,11 @@ int32_t godot_host_open_terminal(const char *uri, char *diagnostic, uint32_t cap
 	}
 	return 0;
 }
+// Window-mode dispatch is covered by its own engine fixture; these callbacks
+// are needed by the current shared binding, including teardown before startup.
+void godot_host_set_window_mode_callback(GodotSetWindowModeCallback) {}
+void godot_host_window_mode_status(int32_t) {}
+void godot_host_window_mode_result(uint32_t, int32_t) {}
 void godot_host_set_create_instance_callback(GodotCreateInstanceCallback) {}
 int32_t godot_host_create_instance(int, const char *const *) {
 	return -1;

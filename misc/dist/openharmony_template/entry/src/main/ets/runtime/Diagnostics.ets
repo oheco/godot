@@ -109,8 +109,9 @@ export function engineLogPath(pid: number): string {
   return `${directory}/godot-${pid}-engine.log`;
 }
 
-function crashLogPath(pid: number): string {
-  return `${directory}/godot-${pid}-crash.log`;
+function crashLogPath(pid: number, childDirectory: string = ''): string {
+  const base: string = childDirectory.length > 0 ? childDirectory : directory;
+  return `${base.endsWith('/') ? base.substring(0, base.length - 1) : base}/godot-${pid}-crash.log`;
 }
 
 // Dumps the paths whose state decides whether the native runtime configuration
@@ -217,11 +218,12 @@ export function readCrashLog(): string {
 // With a PID, watch only that parent-attached child: independent application
 // instances must not react to each other's crashes. Without a PID, take the
 // initial timestamp baseline from the newest existing crash log.
-export function crashLogTime(pid: number = 0): number {
-  const path: string = pid > 0 ? crashLogPath(pid) : newestLog('crash', true);
+export function crashLogTime(pid: number = 0, childDirectory: string = ''): number {
+  const path: string = pid > 0 ? crashLogPath(pid, childDirectory) : newestLog('crash', true);
   if (path.length === 0) { return 0; }
   try {
     const info = fs.statSync(path);
+    if (childDirectory.length > 0 && info.mtime < sessionStartTime) { return 0; }
     return info.size > 0 ? info.mtime : 0;
   } catch (ignored) {
     return 0;
@@ -230,10 +232,10 @@ export function crashLogTime(pid: number = 0): number {
 
 // Only the caller that detected an attached child's new crash may request its
 // backtrace. Never scan for a child or substitute its old engine output.
-function readAttachedChildCrashLog(pid: number, baseline: number): string {
+function readAttachedChildCrashLog(pid: number, baseline: number, childDirectory: string): string {
   const label = `attached child crash log (pid=${pid})`;
   if (directory.length === 0) { return `${label}: diagnostics are not initialised yet`; }
-  const path = crashLogPath(pid);
+  const path = crashLogPath(pid, childDirectory);
   const absent = `${label}: nothing recorded for this session after baseline=${baseline} (${path})`;
   try {
     if (!fs.accessSync(path)) { return absent; }
@@ -248,9 +250,9 @@ function readAttachedChildCrashLog(pid: number, baseline: number): string {
 // Engine output and native backtrace default to this process/session. A caller
 // may explicitly append a new attached-child crash without replacing parent logs.
 // The directory listing may include history, but is never a log-content fallback.
-export function readFullDiagnostics(childPid: number = 0, childCrashBaseline: number = 0): string {
+export function readFullDiagnostics(childPid: number = 0, childCrashBaseline: number = 0, childDirectory: string = ''): string {
   const childLog = childPid > 0 ? `===== attached child crash log (pid=${childPid}) =====\n` +
-    `${readAttachedChildCrashLog(childPid, childCrashBaseline)}\n\n` : '';
+    `${readAttachedChildCrashLog(childPid, childCrashBaseline, childDirectory)}\n\n` : '';
   return `${readDiagnostics()}\n\n===== engine log =====\n${readEngineLog()}\n\n` +
     `===== crash log =====\n${readCrashLog()}\n\n${childLog}===== log directory =====\n${listDirectory(directory)}`;
 }

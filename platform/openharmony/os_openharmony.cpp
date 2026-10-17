@@ -36,6 +36,7 @@
 #include "file_access_openharmony.h"
 #include "process_openharmony.h"
 
+#include "core/config/engine.h"
 #include "core/input/input.h"
 #include "core/os/mutex.h"
 #include "core/templates/list.h"
@@ -446,6 +447,9 @@ bool OS_OpenHarmony::main_loop_iterate() {
 		return false;
 	}
 	DisplayServer::get_singleton()->process_events();
+#ifdef TOOLS_ENABLED
+	child_diagnostics.poll();
+#endif
 	return Main::iteration();
 }
 
@@ -532,8 +536,15 @@ Error OS_OpenHarmony::create_instance(const List<String> &p_arguments, ProcessID
 	if (!ui_ability) {
 		return OS_Unix::create_process(get_executable_path(), p_arguments, r_child_id);
 	}
+	List<String> instance_arguments(p_arguments);
+#ifdef TOOLS_ENABLED
+	OpenHarmonyChildProcessDiagnostics::Launch diagnostic_launch;
+	if (Engine::get_singleton()->is_editor_hint() && !Engine::get_singleton()->is_project_manager_hint()) {
+		diagnostic_launch = child_diagnostics.prepare(instance_arguments, get_data_path());
+	}
+#endif
 	Vector<CharString> arguments;
-	for (const String &argument : p_arguments) {
+	for (const String &argument : instance_arguments) {
 		arguments.push_back(argument.utf8());
 	}
 	Vector<const char *> argv;
@@ -543,6 +554,9 @@ Error OS_OpenHarmony::create_instance(const List<String> &p_arguments, ProcessID
 	int32_t pid = godot_host_create_instance(argv.size(), argv.ptr());
 	ERR_FAIL_COND_V_MSG(pid <= 0, ERR_CANT_FORK, "The UIAbility could not start a separate Godot process.");
 	ability_processes.insert(pid);
+#ifdef TOOLS_ENABLED
+	child_diagnostics.started(pid, diagnostic_launch);
+#endif
 	if (r_child_id) {
 		*r_child_id = pid;
 	}

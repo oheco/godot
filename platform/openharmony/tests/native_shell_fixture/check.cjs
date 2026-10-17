@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const { createHash } = require('node:crypto');
 
 const dir = process.env.GODOT_NATIVE_TEST_DIR;
 if (!process.argv[2]) {
@@ -32,8 +33,8 @@ if (!process.argv[2]) {
     assert.equal(result.status, 0, `${mode}: ${result.stdout}${result.stderr}`);
   };
   for (const order of orders) run(order);
-  for (const mode of ['sdk', 'missingSdkAssets', 'unknown', 'failure', 'earlyDestroy', 'external', 'geometry']) run(mode);
-  console.log(`PASS: ${orders.size} startup orders + sdk/missing-assets/unknown/error/early-destroy; strict types, permissions, lifetime and release order`);
+  for (const mode of ['sdk', 'missingSdkAssets', 'tempDir', 'tempFallback', 'unknown', 'failure', 'earlyDestroy', 'external', 'geometry', 'process']) run(mode);
+  console.log(`PASS: ${orders.size} startup orders + sdk/missing-assets/temp-dir/temp-fallback/unknown/error/early-destroy/external/geometry/process; strict types, permissions, lifetime and release order`);
   process.exit(0);
 }
 
@@ -41,13 +42,36 @@ const addon = require(path.join(dir, 'entry.node'));
 const root = path.join(dir, `case-${process.pid}`);
 const files = path.join(root, 'files');
 const cache = path.join(root, 'cache');
-const runtime = path.join(root, 'runtime');
+const kit = path.join(root, 'development kit');
+const runtime = path.join(kit, 'share/godot');
+const temporary = path.join(root, 'tmp');
 const mode = process.argv[2];
-// SDK-mode tests must not inspect the user's real package-manager installation.
+// Every discovery/configuration path stays in this disposable test case.
 process.env.OHECO_ROOT = path.join(root, 'no-sdk');
 process.env.GODOT_OHOS_DOTNET_ROOT = path.join(root, 'no-sdk');
-for (const key of ['GODOT_SHARP_ROOT', 'DOTNET_ROOT', 'DOTNET_ROOT_ARM64', 'NUGET_PACKAGES', 'GODOT_NUGET_SOURCE']) {
+process.env.HOME = path.join(root, 'home');
+process.env.XDG_CONFIG_HOME = path.join(root, 'config');
+process.env.XDG_CACHE_HOME = path.join(root, 'xdg-cache');
+process.env.TMPDIR = temporary;
+fs.mkdirSync(temporary, { recursive: true });
+for (const key of ['GODOT_OHOS_DEVKIT_ROOT', 'GODOT_SHARP_ROOT', 'DOTNET_ROOT', 'DOTNET_ROOT_ARM64', 'NUGET_PACKAGES', 'GODOT_NUGET_SOURCE']) {
   delete process.env[key];
+}
+assert.deepEqual(addon.developmentKits(), []);
+assert.throws(() => addon.developmentKits('extra'), TypeError);
+if (mode === 'process') {
+  assert.equal(addon.processIsRunning(process.pid), true);
+  for (const value of [0, -1]) assert.throws(() => addon.processIsRunning(value), RangeError);
+  for (const value of [1.5, '1', NaN, Infinity]) assert.throws(() => addon.processIsRunning(value), TypeError);
+  assert.throws(() => addon.processIsRunning(), TypeError);
+  assert.throws(() => addon.processIsRunning(process.pid, 1), TypeError);
+  const child = cp.spawnSync(process.execPath, ['-e', ''], { timeout: 10000 });
+  assert.equal(child.status, 0);
+  assert.equal(addon.processIsRunning(child.pid), false, 'Reaped child is dead without an orderly exit marker');
+  addon.destroySurface();
+  assert.equal(addon.processIsRunning(process.pid), true, 'Process query survives local engine teardown');
+  console.log('PASS: native PID liveness, strict positive PID validation, fatal-exit fallback and post-engine query');
+  return;
 }
 if (mode === 'geometry') {
   assert.throws(() => addon.setSurfacePosition(0, 0), /missing window ID/);
@@ -123,21 +147,79 @@ if (mode === 'missingSdkAssets') {
   process.exit(0);
 }
 if (mode === 'sdk') {
-  fs.mkdirSync(path.join(runtime, 'GodotSharp/Api/Debug'), { recursive: true });
-  fs.writeFileSync(path.join(runtime, 'GodotSharp/Api/Debug/GodotSharp.dll'), 'fixture');
-  fs.mkdirSync(path.join(runtime, 'Examples/CSharpSmoke'), { recursive: true });
-  fs.writeFileSync(path.join(runtime, 'Examples/CSharpSmoke/project.godot'), 'fixture');
-  addon.configure(files, cache, runtime, 'sdk');
+  const write = (relative, contents) => {
+    const target = path.join(kit, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+  };
+  const digest = contents => createHash('sha256').update(contents).digest('hex');
+  const library = 'fixture engine library';
+  write('bin/godot', 'fixture launcher marker');
+  write('bin/libgodot.so', library);
+  write('share/godot/GodotSharp/Api/Debug/GodotSharp.dll', 'fixture managed API');
+  for (const name of ['Godot.NET.Sdk', 'Godot.SourceGenerators', 'GodotSharp', 'GodotSharpEditor']) {
+    write(`share/godot/GodotSharp/Tools/nupkgs/${name}.4.7.2-ohos.3.nupkg`, `fixture ${name}`);
+  }
+  const templateHashes = {};
+  for (const name of ['openharmony_debug_arm64-v8a.zip', 'openharmony_release_arm64-v8a.zip']) {
+    const contents = `fixture template ${name}`;
+    write(`share/godot/templates/${name}`, contents);
+    templateHashes[name] = digest(contents);
+  }
+  const templateSetSha256 = digest(JSON.stringify(templateHashes));
+  write('share/godot/templates/.ready', `${templateSetSha256}\n`);
+  const manifest = JSON.stringify({
+    schemaVersion: 1, engineVersion: '4.7.2', hostAbiVersion: 4,
+    managedVersion: '4.7.2-ohos.3', architecture: 'arm64-v8a',
+    engineLibrarySha256: digest(library), managedRoot: 'share/godot',
+    templatesRoot: 'share/godot/templates', templateSetSha256,
+  });
+  write('godot-devkit.json', manifest);
+  process.env.GODOT_OHOS_DEVKIT_ROOT = kit;
+  assert.deepEqual(addon.developmentKits(), [{ root: fs.realpathSync(kit), manifest }]);
+  const notice = addon.configure(files, cache, runtime, 'sdk');
+  assert.match(notice, /No installed \.NET SDK found/);
   assert.equal(process.env.GODOT_SHARP_ROOT, path.join(runtime, 'GodotSharp'));
+  assert.equal(process.env.GODOT_NUGET_SOURCE, path.join(runtime, 'GodotSharp/Tools/nupkgs'));
   assert.equal(process.env.DOTNET_ROOT, undefined);
-  assert.ok(fs.existsSync(path.join(files, 'Projects/NuGet.Config')));
-  assert.ok(fs.existsSync(path.join(files, 'Projects/CSharpSmoke-4.7.2-ohos.3/project.godot')));
+  assert.equal(process.env.NUGET_PACKAGES, path.join(files, 'nuget'));
+  assert.equal(process.env.DOTNET_CLI_HOME, path.join(files, 'dotnet-cli'));
+  assert.equal(process.env.TMPDIR, temporary);
+  assert.equal(process.env.DOTNET_OHOS_TMPDIR, temporary);
+  const projects = path.join(files, 'Projects');
+  const nugetConfig = fs.readFileSync(path.join(projects, 'NuGet.Config'), 'utf8');
+  assert.match(nugetConfig, /%GODOT_NUGET_SOURCE%/);
+  assert.match(nugetConfig, /https:\/\/api\.nuget\.org\/v3\/index\.json/);
+  // Development kits publish shared templates; startup no longer copies examples.
+  assert.deepEqual(fs.readdirSync(projects), ['NuGet.Config']);
+  const templates = path.join(files, 'export_templates');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(templates, 'current.json'), 'utf8')),
+    { schemaVersion: 1, sha256: templateSetSha256, source: 'oheco-devkit' });
+  const templateLink = path.join(templates, templateSetSha256);
+  assert.ok(fs.lstatSync(templateLink).isSymbolicLink());
+  assert.equal(fs.realpathSync(templateLink), fs.realpathSync(path.join(runtime, 'templates')));
+  addon.destroySurface();
+  process.exit(0);
+}
+if (mode === 'tempDir' || mode === 'tempFallback') {
+  const expected = mode === 'tempDir' ? path.join(root, 'explicit temp') : path.join(cache, 'tmp');
+  if (mode === 'tempDir') {
+    assert.equal(addon.configure(files, cache, '', 'none', expected), '');
+  } else {
+    delete process.env.TMPDIR;
+    assert.equal(addon.configure(files, cache, '', 'none'), '');
+  }
+  assert.equal(process.env.TMPDIR, expected);
+  assert.ok(fs.statSync(expected).isDirectory());
   addon.destroySurface();
   process.exit(0);
 }
 
 assert.throws(() => addon.configure(files, cache, '', 7), TypeError);
-assert.throws(() => addon.configure(files, cache, '', 'none', 'extra'), TypeError);
+assert.throws(() => addon.configure(files, cache, '', 'none', 7), TypeError);
+assert.throws(() => addon.configure(files, cache, '', 'none', temporary, 'extra'), TypeError);
+assert.throws(() => addon.configure(files, cache, ''), TypeError);
+assert.throws(() => addon.configure(files, cache, '', 'none', 'relative'), /absolute sandbox/);
 assert.throws(() => addon.configure('relative', cache, '', 'none'), /absolute sandbox/);
 assert.throws(() => addon.configure(files, cache, '', 'sdk'), /absolute sandbox/);
 assert.throws(() => addon.setup({ 0: '--editor', length: 1 }, [], false), /setup\.arguments: expected a native array/);
@@ -167,7 +249,8 @@ assert.throws(() => addon.inputTouch([{ type: 2, id: 0.5, x: 0, y: 0 }]), TypeEr
 assert.throws(() => addon.inputTouch([{ type: 2, id: 'bad', x: 0, y: 0 }]), TypeError);
 assert.throws(() => addon.inputTouch([{ type: 2, id: 0, x: NaN, y: 0 }]), TypeError);
 assert.throws(() => addon.inputMouse({ type: 2, button: 0, mask: 0, x: NaN, y: 0 }), TypeError);
-assert.throws(() => addon.sendWindowEvent(9), TypeError);
+for (const event of [0, 10, 1.5, '1']) assert.throws(() => addon.sendWindowEvent(event), TypeError);
+for (const event of [1, 9]) assert.doesNotThrow(() => addon.sendWindowEvent(event));
 assert.throws(() => addon.spawnResult('request-id', 123), TypeError);
 assert.equal(addon.state(), 0);
 assert.equal(addon.processId(), process.pid);
@@ -193,8 +276,8 @@ for (let i = 0; i < sequence.length; i++) {
 }
 assert.equal(process.env.GODOT_OHOS_DATA_DIR, files);
 assert.equal(process.env.GODOT_OHOS_CACHE_DIR, cache);
-assert.equal(process.env.TMPDIR, path.join(cache, 'tmp'));
-assert.ok(fs.existsSync(path.join(cache, 'tmp')));
+assert.equal(process.env.TMPDIR, temporary);
+assert.ok(fs.statSync(temporary).isDirectory());
 assert.equal(process.env.GODOT_SHARP_ROOT, undefined);
 assert.equal(process.env.DOTNET_ROOT, undefined);
 assert.equal(process.env.NUGET_PACKAGES, undefined);

@@ -27,6 +27,23 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
+## Editor updates in 4.7.2-ohos.8
+
+A native crash in a game launched by the Editor now leaves the parent Editor and
+its XComponent alive. The parent collects that run's final engine output and
+native backtrace into the Output dock, including a red crash summary and the
+original log paths. It does not depend on the dying game flushing its debugger
+connection, and reports still appear when stdout is disabled or `--quiet` is set.
+Ordinary Stop/exit and empty crash files do not create crash reports. Startup
+snapshots isolate appended crash data from historical/reused-PID logs, and each
+run is reported once. Reports contain bounded 64 KiB tails; the original files
+remain available. Failures which produce no native crash file, including
+SIGKILL, are outside this diagnostic channel.
+
+See the [native child-crash acceptance](<platform/openharmony/tests/README.md>)
+for the real EditorLog and signed subprocess checks. This change preserves the
+host ABI and managed API versions.
+
 ## Editor updates in 4.7.2-ohos.6
 
 This revision separates the thin Editor APP from its optional oo development kit.

@@ -5,8 +5,10 @@
 #include <napi/native_api.h>
 #include <native_window/external_window.h>
 #include <rawfile/raw_file_manager.h>
+#include <signal.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -804,6 +806,23 @@ napi_value process_id(napi_env env, napi_callback_info info) {
 	napi_create_int32(env, getpid(), &result);
 	return result;
 }
+napi_value process_is_running(napi_env env, napi_callback_info info) {
+	napi_value args[1];
+	int32_t pid;
+	if (!values(env, info, 1, args) || !integer_value(env, args[0], pid)) {
+		return nullptr;
+	}
+	if (pid <= 0) {
+		napi_throw_range_error(env, nullptr, "Process PID must be positive");
+		return nullptr;
+	}
+	// This query is independent of the engine lifetime. Only ESRCH proves
+	// exit; permission or transient failures must keep the attached parent alive.
+	const bool running = ::kill(pid, 0) == 0 || errno != ESRCH;
+	napi_value result;
+	napi_get_boolean(env, running, &result);
+	return result;
+}
 napi_value development_kits(napi_env env, napi_callback_info info) {
 	if (!values(env, info, 0, nullptr)) { return nullptr; }
 	const auto candidates = development_kit_candidates();
@@ -833,6 +852,7 @@ napi_value init(napi_env env, napi_value exports) {
 		METHOD("openTerminal", open_terminal),
 		METHOD("spawnResult", spawn_result),
 		METHOD("processId", process_id),
+		METHOD("processIsRunning", process_is_running),
 		METHOD("developmentKits", development_kits),
 		METHOD("configure", configure),
 		METHOD("setResourceManager", set_resources),

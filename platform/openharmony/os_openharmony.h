@@ -31,6 +31,7 @@
 #pragma once
 
 #include "audio_driver_openharmony.h"
+#include "child_process_diagnostics.h"
 
 #include "core/os/main_loop.h"
 #include "drivers/unix/os_unix.h"
@@ -49,6 +50,9 @@ class OS_OpenHarmony : public OS_Unix {
 	HashSet<String> allowed_permissions;
 	bool ui_ability = true;
 	HashSet<ProcessID> ability_processes;
+#ifdef TOOLS_ENABLED
+	OpenHarmonyChildProcessDiagnostics child_diagnostics;
+#endif
 
 	struct FontInfo {
 		String font_name;
