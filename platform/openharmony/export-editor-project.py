@@ -223,7 +223,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (notices / 'vulkan-dependencies/inputs.json').write_text(json.dumps(vulkan_inputs, indent=2) + '\n')
-    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.6',
+    provenance = {'upstream': 'Godot 4.7.2-stable', 'adaptation': '4.7.2-ohos.7',
                   'architecture': 'aarch64-linux-ohos', 'libgodot_sha256': library_digest,
                   'runtime': None, 'export_templates': None,
                   'development_kit': kit_requirement,

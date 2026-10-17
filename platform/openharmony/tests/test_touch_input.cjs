@@ -44,6 +44,7 @@ const TouchType = Object.freeze({ Down: 0, Up: 1, Move: 2, Cancel: 3,
   HOVER_ENTER: 9, HOVER_MOVE: 10, HOVER_EXIT: 11, HOVER_CANCEL: 12 });
 const MouseButton = Object.freeze({ Left: 0, Right: 1, Middle: 2, Back: 3, Forward: 4, None: 5 });
 const MouseAction = Object.freeze({ Press: 0, Release: 1, Move: 2, Hover: 3 });
+const AxisAction = Object.freeze({ NONE: 0, BEGIN: 1, UPDATE: 2, END: 3, CANCEL: 4 });
 const point = (id, x = 10, y = 20) => ({ id, x, y });
 const identity = (value) => value;
 const pixels = (value) => value * 2.5;
@@ -86,7 +87,7 @@ function load(file, dependencies, globals, temporary, transform = (source) => so
   const artifact = path.join(temporary, file.replaceAll('/', '_').replace(/\.ets$/, '.js'));
   fs.writeFileSync(artifact, result.outputText);
   const sandbox = {
-    exports: {}, console, SourceType, SourceTool, TouchType, MouseAction, MouseButton,
+    exports: {}, console, SourceType, SourceTool, TouchType, MouseAction, MouseButton, AxisAction,
     require: (id) => {
       assert.ok(Object.hasOwn(dependencies, id), `Unexpected runtime dependency ${id} in ${file}`);
       return dependencies[id];
@@ -315,77 +316,191 @@ function testPlainSnapshots(TouchInput) {
   console.log('PASS DTO ownership: nested observed proxies detached; plain fresh arrays/objects; consumer mutations and independent instances cannot corrupt state');
 }
 
-function testIndexWheel(Index, calls) {
-  // Model touchpad axis events with source=Mouse so only the SDK SourceTool
-  // discriminator, TOUCHPAD=4 (distinct from MOUSE=3), selects touchpad units.
-  const cases = [
-    { name: 'touchpad step 1, diagonal up/right', tool: SourceTool.TOUCHPAD, scrollStep: 1,
-      vertical: -12, horizontal: 3, expected: [[4, 0.1], [7, 0.025]] },
-    { name: 'touchpad step 0, diagonal down/left', tool: SourceTool.TOUCHPAD, scrollStep: 0,
-      vertical: 12, horizontal: -3, expected: [[5, 0.1], [6, 0.025]] },
-    { name: 'touchpad absent step, tiny vertical delta', tool: SourceTool.TOUCHPAD,
-      vertical: -0.3, horizontal: 0, expected: [[4, 0.0025]] },
-    { name: 'touchpad absent step, tiny horizontal delta', tool: SourceTool.TOUCHPAD,
-      vertical: 0, horizontal: -0.6, expected: [[6, 0.005]] },
-    { name: 'touchpad step 120, horizontal only', tool: SourceTool.TOUCHPAD, scrollStep: 120,
-      vertical: 0, horizontal: 0.6, expected: [[7, 0.005]] },
-    { name: 'touchpad arbitrary mouse step, no speed clamp', tool: SourceTool.TOUCHPAD, scrollStep: 65535,
-      vertical: 240, horizontal: -360, expected: [[5, 2], [6, 3]] },
-    { name: 'touchpad stationary axes', tool: SourceTool.TOUCHPAD, scrollStep: 1,
-      vertical: 0, horizontal: 0, expected: [] },
-    { name: 'mouse regular notches', tool: SourceTool.MOUSE, scrollStep: 120,
-      vertical: -120, horizontal: 120, expected: [[4, 1], [7, 1]] },
-    { name: 'mouse configured step, fractional/multiple notches', tool: SourceTool.MOUSE, scrollStep: 60,
-      vertical: 30, horizontal: -90, expected: [[5, 0.5], [6, 1.5]] },
-    { name: 'mouse step 1 still means one notch', tool: SourceTool.MOUSE, scrollStep: 1,
-      vertical: -1, horizontal: 1, expected: [[4, 1], [7, 1]] },
-    { name: 'mouse absent step keeps fallback', tool: SourceTool.MOUSE,
-      vertical: 120, horizontal: -120, expected: [[5, 1], [6, 1]] },
-    { name: 'mouse zero step keeps fallback', tool: SourceTool.MOUSE, scrollStep: 0,
-      vertical: -120, horizontal: 120, expected: [[4, 1], [7, 1]] },
-    { name: 'unknown tool keeps existing wheel policy', tool: SourceTool.Unknown, scrollStep: 60,
-      vertical: 30, horizontal: 0, expected: [[5, 0.5]] },
+function axisEvent(horizontal = 0, vertical = 0, options = {}) {
+  return {
+    source: SourceType.Mouse, sourceTool: SourceTool.MOUSE, x: 2, y: -4,
+    getVerticalAxisValue: () => vertical, getHorizontalAxisValue: () => horizontal,
+    getModifierKeyState: () => false, ...options,
+  };
+}
+
+function testIndexAxis(Index, calls) {
+  // Official MMI units: a wheel notch is 15 angular degrees, multiplied by
+  // the configured rows upstream. Godot's conventional wheel unit is 3 rows.
+  const wheels = [
+    { name: 'default three-row diagonal', vertical: -45, horizontal: 45, expected: [[4, 1], [7, 1]] },
+    { name: 'one configured row preserved once', scrollStep: 1, vertical: 15, horizontal: -30, expected: [[5, 1 / 3], [6, 2 / 3]] },
+    { name: 'five configured rows preserved once', scrollStep: 5, vertical: -75, horizontal: 150, expected: [[4, 5 / 3], [7, 10 / 3]] },
+    { name: 'fractional high-resolution wheel', scrollStep: 3, vertical: 22.5, horizontal: -11.25, expected: [[5, 0.5], [6, 0.25]] },
+    ...[0, 1, 120, 65535].map((scrollStep) => ({ name: `raw units independent of scrollStep=${scrollStep}`,
+      scrollStep, vertical: 45, horizontal: 0, expected: [[5, 1]] })),
+    { name: 'tiny wheel delta is not clamped', vertical: -0.45, horizontal: 0, expected: [[4, 0.01]] },
+    { name: 'stationary wheel', vertical: 0, horizontal: 0, expected: [] },
   ];
   const page = new Index();
   for (const scale of [1, 2.5]) {
-    page.getUIContext = () => ({ vp2px: (value) => value * scale });
+    page.getUIContext = () => ({ vp2px: (value) => value * scale, px2vp: (value) => value / scale });
     for (const modifiers of [[], ['Alt', 'Ctrl', 'Shift']]) {
-      // Use the real key handler's Meta snapshot and ensure wheel pulses leave
-      // both pressed-key state and held mouse-button mask intact.
       const meta = modifiers.length > 0;
       page.handleKey({ keyCode: 2076, type: meta ? 0 : 1, metaKey: meta ? 1 : 0 });
       page.mouseMask = meta ? 3 : 0;
-      for (const sample of cases) {
+      const base = { mask: page.mouseMask, x: 2 * scale, y: -4 * scale,
+        alt: meta, ctrl: meta, shift: meta, meta, doubleClick: false };
+      const options = { getModifierKeyState: (keys) => {
+        assert.ok(keys.every((name) => ['Alt', 'Ctrl', 'Shift'].includes(name)), 'SDK requires canonical modifier names');
+        return keys.every((name) => modifiers.includes(name));
+      } };
+      for (const sample of wheels) {
         calls.length = 0;
-        const axis = {
-          source: SourceType.Mouse, sourceTool: sample.tool, x: 2, y: -4,
-          getVerticalAxisValue: () => sample.vertical,
-          getHorizontalAxisValue: () => sample.horizontal,
-          getModifierKeyState: (keys) => {
-            assert.ok(keys.every((name) => ['Alt', 'Ctrl', 'Shift'].includes(name)), 'SDK requires canonical modifier names');
-            return keys.every((name) => modifiers.includes(name));
-          },
-        };
+        const axis = axisEvent(sample.horizontal, sample.vertical, options);
         if (Object.hasOwn(sample, 'scrollStep')) { axis.scrollStep = sample.scrollStep; }
         page.dispatchAxis(axis);
         const expected = sample.expected.flatMap(([button, factor]) => [0, 1].map((type) => ['mouse', {
-          type, button, mask: meta ? 3 : 0, x: 2 * scale, y: -4 * scale,
-          alt: meta, ctrl: meta, shift: meta, meta, doubleClick: false, factor,
+          ...base, type, button, mask: type === 0 ? base.mask | (1 << (button - 1)) : base.mask, factor,
           hasRelative: false, relativeX: 0, relativeY: 0,
         }]));
-        assert.deepEqual(calls, expected, `${sample.name}; vp2px scale=${scale}; modifiers=${modifiers}`);
-        assert.equal(page.mouseMask, meta ? 3 : 0, 'Wheel pulses must preserve held buttons');
-        assert.equal(page.metaPressed, meta, 'Wheel pulses must preserve Meta state');
-        assert.equal(page.pressedKeys.has(2076), meta, 'Wheel pulses must preserve physical key state');
+        assert.deepEqual(calls, expected, `${sample.name}; density=${scale}; modifiers=${modifiers}`);
+        assert.equal(page.mouseMask, base.mask, 'Wheel pulses preserve physical button state');
+        assert.equal(page.metaPressed, meta);
+        assert.equal(page.pressedKeys.has(2076), meta);
+      }
+      for (const [horizontal, vertical] of [[3, -12], [-3, 12], [0, -0.3], [-0.6, 0], [360, -240], [0, 0]]) {
+        for (const scrollStep of [undefined, 0, 1, 120]) {
+          calls.length = 0;
+          page.dispatchAxis(axisEvent(horizontal, vertical, { ...options, sourceTool: SourceTool.TOUCHPAD, scrollStep }));
+          assert.deepEqual(calls, horizontal === 0 && vertical === 0 ? [] : [['mouse', {
+            ...base, type: 3, button: 0, factor: 1, hasRelative: true,
+            relativeX: horizontal / scale * 0.03, relativeY: vertical / scale * 0.03,
+          }]], 'Touchpad pixels become one 2D pan in logical units, without wheel pulses or row scaling');
+          assert.equal(page.mouseMask, base.mask);
+        }
       }
     }
   }
+  page.getUIContext = () => ({ vp2px: pixels, px2vp: (value) => value / 2.5 });
+  const pinch = (scale, action = AxisAction.UPDATE, deviceId = 7) => {
+    calls.length = 0;
+    page.dispatchAxis(axisEvent(0, 0, { sourceTool: SourceTool.TOUCHPAD, action, deviceId,
+      getPinchAxisScaleValue: () => scale }));
+    return calls.filter((call) => call[0] === 'mouse').map((call) => call[1]);
+  };
+  const expectPinch = (scale, action, deviceId, expected) => {
+    const result = pinch(scale, action, deviceId);
+    assert.equal(result.length, expected === undefined ? 0 : 1);
+    if (expected !== undefined) {
+      assert.deepEqual(result[0], { type: 4, button: 0, mask: 3, x: 5, y: -10,
+        alt: false, ctrl: false, shift: false, meta: true, doubleClick: false,
+        factor: expected, hasRelative: false, relativeX: 0, relativeY: 0 });
+    }
+  };
+  expectPinch(1.2, AxisAction.BEGIN, 7, 1.2);
+  expectPinch(1.5, AxisAction.UPDATE, 7, 1.25);
+  expectPinch(1.5, AxisAction.UPDATE, 7, undefined);
+  expectPinch(1.1, AxisAction.UPDATE, 8, 1.1);
+  expectPinch(1.8, AxisAction.NONE, 7, 1.8 / 1.5);
+  expectPinch(1.8, AxisAction.END, 7, undefined);
+  expectPinch(1.25, AxisAction.UPDATE, 7, 1.25);
+  expectPinch(1.1, AxisAction.CANCEL, 8, undefined);
+  expectPinch(0.8, AxisAction.UPDATE, 8, 0.8);
+  expectPinch(0.9, AxisAction.BEGIN, 7, 0.9);
+  for (const invalid of [0, -1, NaN, Infinity]) { expectPinch(invalid, AxisAction.UPDATE, 7, undefined); }
+  expectPinch(1.8, AxisAction.UPDATE, 7, 2);
+  page.releaseInput();
+  // A missing BEGIN after focus returns still starts from a fresh scale of 1.
   calls.length = 0;
-  console.log('PASS real Index axis/wheel regression: SDK touchpad discriminator; step 1/0/absent; fractional deltas, both signs/axes and diagonal pulses; factor independent of DPI; modifiers/mask; mouse notches unchanged; no clamp');
+  page.dispatchAxis(axisEvent(0, 0, { sourceTool: SourceTool.TOUCHPAD, deviceId: 7, getPinchAxisScaleValue: () => 1.5 }));
+  assert.equal(calls[0][1].factor, 1.5, 'Blur resets the same device\'s accumulated pinch scale');
+  for (const action of [AxisAction.END, AxisAction.CANCEL, -1, 5, 99]) {
+    calls.length = 0;
+    page.dispatchAxis(axisEvent(45, -45, { action }));
+    page.dispatchAxis(axisEvent(10, -20, { action, sourceTool: SourceTool.TOUCHPAD, getPinchAxisScaleValue: () => 2 }));
+    assert.deepEqual(calls, [], 'Terminal or unknown action must not replay wheel, pan or pinch payloads');
+  }
+  for (const sourceTool of [undefined, SourceTool.Unknown]) {
+    calls.length = 0;
+    page.dispatchAxis(axisEvent(0, 45, { sourceTool }));
+    assert.equal(calls.length, 2, 'Legacy/unknown tool keeps mouse wheel compatibility');
+    assert.equal(calls[0][1].factor, 1);
+  }
+  for (const sourceTool of [SourceTool.Finger, SourceTool.Pen, SourceTool.JOYSTICK]) {
+    calls.length = 0;
+    page.dispatchAxis(axisEvent(45, -45, { sourceTool }));
+    assert.deepEqual(calls, [], 'Non-wheel tools must not synthesize scrolling');
+  }
+  calls.length = 0;
+  console.log('PASS real Index/AxisInput: MMI raw/45 wheel units, upstream rows once, symmetric fractional press/release factors and masks; touchpad single 2D logical pan; per-device incremental pinch, phase filtering and blur reset');
+}
+
+function testIndexPointer(Index, calls, clock) {
+  const mouse = (action, button, x = 2, y = 4, pressedButtons = undefined, extra = {}) => ({
+    action, button, x, y, pressedButtons, source: SourceType.Mouse, getModifierKeyState: () => false, ...extra,
+  });
+  const page = new Index();
+  page.getUIContext = () => ({ vp2px: pixels, px2vp: (value) => value / 2.5 });
+  let held = 0;
+  const buttons = [[MouseButton.Left, 1], [MouseButton.Right, 2], [MouseButton.Middle, 3], [MouseButton.Back, 8], [MouseButton.Forward, 9]];
+  for (const [sdk, godot] of buttons) {
+    calls.length = 0;
+    page.mouse(mouse(MouseAction.Press, sdk));
+    held |= 1 << (godot - 1);
+    assert.equal(calls[0][1].button, godot);
+    assert.equal(calls[0][1].mask, held);
+  }
+  calls.length = 0;
+  page.mouse(mouse(MouseAction.Move, MouseButton.None, 3, 5, [MouseButton.Right, MouseButton.Forward], { rawDeltaX: 70, rawDeltaY: -30 }));
+  assert.deepEqual(calls.map((call) => {
+    const { type, button, mask, x, y } = call[1]; return { type, button, mask, x, y };
+  }), [
+    { type: 1, button: 1, mask: 390, x: 7.5, y: 12.5 },
+    { type: 1, button: 3, mask: 386, x: 7.5, y: 12.5 },
+    { type: 1, button: 8, mask: 258, x: 7.5, y: 12.5 },
+    { type: 2, button: 0, mask: 258, x: 7.5, y: 12.5 },
+  ], 'Motion snapshot repairs all missed releases in order before motion at the current pointer position');
+  assert.equal(calls[3][1].hasRelative, true);
+  assert.equal(calls[3][1].relativeX, 70, 'Raw hardware counts remain unscaled for native captured-mode selection');
+  assert.equal(calls[3][1].relativeY, -30);
+  calls.length = 0;
+  page.mouse(mouse(MouseAction.Move, MouseButton.None, 4, 6, []));
+  assert.deepEqual(calls.map((call) => [call[1].type, call[1].button, call[1].mask]), [[1, 2, 256], [1, 9, 0], [2, 0, 0]]);
+  calls.length = 0;
+  page.mouse(mouse(MouseAction.Move, MouseButton.None, 4, 6, []));
+  assert.equal(calls.length, 1, 'Repeated empty snapshot does not repeat missing releases');
+  page.mouse(mouse(MouseAction.Press, MouseButton.Middle, 4, 6, []));
+  assert.equal(calls.at(-1)[1].mask, 4, 'Press includes its bit even if the SDK snapshot precedes the transition');
+  page.mouse(mouse(MouseAction.Release, MouseButton.Middle, 4, 6, [MouseButton.Middle]));
+  assert.equal(calls.at(-1)[1].mask, 0, 'Release clears its bit even if the SDK snapshot precedes the transition');
+
+  for (const scale of [1, 2.5, 4]) {
+    for (const [distance, expected] of [[4, true], [5, false], [5.1, false]]) {
+      const clicks = new Index();
+      clicks.getUIContext = () => ({ vp2px: (value) => value * scale, px2vp: (value) => value / scale });
+      clock.now += 1000;
+      clicks.mouse(mouse(MouseAction.Press, MouseButton.Left, 10, 20));
+      clicks.mouse(mouse(MouseAction.Release, MouseButton.Left, 10, 20));
+      clock.now += 100;
+      calls.length = 0;
+      clicks.mouse(mouse(MouseAction.Press, MouseButton.Left, 10 + distance, 20));
+      assert.equal(calls[0][1].doubleClick, expected, `Double-click threshold is 5vp at density ${scale}`);
+    }
+    const dragged = new Index();
+    dragged.getUIContext = () => ({ vp2px: (value) => value * scale, px2vp: (value) => value / scale });
+    clock.now += 1000;
+    dragged.mouse(mouse(MouseAction.Press, MouseButton.Left, 10, 20));
+    dragged.mouse(mouse(MouseAction.Move, MouseButton.None, 16, 20));
+    dragged.mouse(mouse(MouseAction.Move, MouseButton.None, 10, 20));
+    dragged.mouse(mouse(MouseAction.Release, MouseButton.Left, 10, 20));
+    clock.now += 100;
+    calls.length = 0;
+    dragged.mouse(mouse(MouseAction.Press, MouseButton.Left, 10, 20));
+    assert.equal(calls[0][1].doubleClick, false, 'Drag beyond tolerance cancels click sequence even after returning to origin');
+  }
+  calls.length = 0;
+  console.log('PASS real Index mouse: all five physical buttons; stale snapshots and ordered/idempotent missed-release repair; raw-count DTO; density-independent double-click distance; drag cancels sequence');
 }
 
 function testIndexIntegration(touchModule, temporary) {
   const calls = [];
+  const clock = { now: 100000 };
   const plugin = {
     inputTouch: (touches) => {
       expectNativeTouches(touches);
@@ -408,6 +523,7 @@ function testIndexIntegration(touchModule, temporary) {
     assert.match(build, /\.onMouse\(\(event:\s*MouseEvent\)\s*=>\s*this\.mouse\(event\)\)/);
     const axis = build.match(/\.onAxisEvent\(\(event:\s*AxisEvent\)\s*=>\s*\{([\s\S]*?)\n\s*\}\)/);
     assert.ok(axis, 'Retain the real onAxisEvent callback to verify both axes');
+    assert.match(axis[1], /^\s*this\.axis\(event\);?\s*$/, 'ArkUI axis callback delegates to the tested real method');
     return (source.slice(0, buildAt) + `  dispatchAxis(event: AxisEvent): void {${axis[1]}\n  }\n}\n`)
       .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
   };
@@ -417,18 +533,20 @@ function testIndexIntegration(touchModule, temporary) {
     KEYCODE_SHIFT_LEFT: 2047, KEYCODE_CTRL_LEFT: 2072, KEYCODE_CTRL_RIGHT: 2073,
     KEYCODE_META_LEFT: 2076, KEYCODE_META_RIGHT: 2077 });
   const keyModule = load('pages/KeyMap.ets', { '@kit.InputKit': { KeyCode } }, {}, temporary);
+  const axisModule = load('runtime/AxisInput.ets', {}, {}, temporary);
   const { Index } = load('pages/Index.ets', {
     'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode }, './KeyMap': keyModule,
     '@kit.ArkUI': {}, '@kit.AbilityKit': {}, '@kit.BasicServicesKit': {},
-    '../runtime/TouchInput': touchModule,
+    '../runtime/TouchInput': touchModule, '../runtime/AxisInput': axisModule,
     '../runtime/Config': {}, '../runtime/NativeArguments': {}, '../runtime/Permissions': {},
     '../runtime/Runtime': {}, '../runtime/Templates': {}, '../runtime/Diagnostics': {}, '../runtime/Launch': {},
     '../runtime/LocalizedStrings': {},
-  }, { XComponentController: class {}, KeyType: { Down: 0, Up: 1 },
+  }, { XComponentController: class {}, KeyType: { Down: 0, Up: 1 }, Date: { now: () => clock.now },
     clearInterval: () => calls.push(['clearInterval']) }, temporary, transform);
-  testIndexWheel(Index, calls);
+  testIndexAxis(Index, calls);
+  testIndexPointer(Index, calls, clock);
   const page = new Index();
-  page.getUIContext = () => ({ vp2px: pixels });
+  page.getUIContext = () => ({ vp2px: pixels, px2vp: (value) => value / 2.5 });
 
   // The matching ArkUI binary dispatches synthetic touch BEFORE onMouse.
   // Its compatibility path can expose either 1001 or 0 for a left click;
@@ -484,8 +602,13 @@ function testIndexIntegration(touchModule, temporary) {
   page.metaPressed = true;
   page.mouseMask = 3;
   page.releaseInput();
-  assert.deepEqual(calls, [['touch', [dto(3, 1, 10, 5), dto(3, 0, 25, 30), dto(3, 3, 20, 22.5)]], ['window', 3]],
-    'Blur must cancel all devices before native focus-out');
+  const blurRelease = (button, mask) => ['mouse', { type: 1, button, mask, x: 7.5, y: 12.5,
+    alt: false, ctrl: false, shift: false, meta: false, doubleClick: false,
+    factor: 1, hasRelative: false, relativeX: 0, relativeY: 0 }];
+  assert.deepEqual(calls, [
+    ['touch', [dto(3, 1, 10, 5), dto(3, 0, 25, 30), dto(3, 3, 20, 22.5)]],
+    blurRelease(1, 2), blurRelease(2, 0), ['window', 3],
+  ], 'Blur cancels touches, releases held buttons in order at the last mouse position, then sends focus-out');
   assert.equal(page.pressedKeys.size, 0);
   assert.equal(page.metaPressed, false);
   assert.equal(page.mouseMask, 0);
@@ -493,7 +616,7 @@ function testIndexIntegration(touchModule, temporary) {
   assert.equal(page.lastClickButton, 0);
   calls.length = 0;
   page.releaseInput();
-  assert.deepEqual(calls, [['window', 3]], 'Repeated blur must not send stale or empty touch arrays');
+  assert.deepEqual(calls, [['window', 3]], 'Repeated blur must not resend touch cancellations or button releases');
 
   calls.length = 0;
   page.touch(event(2, [point(-7)]));
@@ -513,19 +636,23 @@ function testIndexIntegration(touchModule, temporary) {
   assert.equal(calls.filter((call) => call[0] === 'touch').length, 0, 'Disappear cancellation is idempotent');
   calls.length = 0;
   page.touch(event(0, [point(88)]));
-  assert.deepEqual(calls, [], 'Disposed page must ignore late input');
+  page.mouse(mouse(MouseAction.Press, 3, 5));
+  page.dispatchAxis(axisEvent(45, -45, { getVerticalAxisValue: () => assert.fail('Disposed axis must not be read') }));
+  assert.deepEqual(calls, [], 'Disposed page must ignore late touch, mouse and axis input');
   expectTouches(page.touchInput.cancelAll(), []);
   const terminatingPage = new Index();
-  terminatingPage.getUIContext = () => ({ vp2px: pixels });
+  terminatingPage.getUIContext = () => ({ vp2px: pixels, px2vp: (value) => value / 2.5 });
   terminatingPage.terminating = true;
   terminatingPage.touch(event(0, [point(99)]));
-  assert.deepEqual(calls, [], 'Terminating page must ignore new input');
+  terminatingPage.mouse(mouse(MouseAction.Press, 3, 5));
+  terminatingPage.dispatchAxis(axisEvent(45, -45, { getVerticalAxisValue: () => assert.fail('Terminating axis must not be read') }));
+  assert.deepEqual(calls, [], 'Terminating page must ignore new touch, mouse and axis input');
   expectTouches(terminatingPage.touchInput.cancelAll(), []);
   console.log('PASS real Index methods: mouse+synthetic-touch sequence routed once; physical touch pixels/slots; blur clears state and cancels before focus-out; disappear cancels before destroy; late input ignored');
 
   const keyboardPage = new Index();
   const focusRequests = [];
-  keyboardPage.getUIContext = () => ({ vp2px: pixels,
+  keyboardPage.getUIContext = () => ({ vp2px: pixels, px2vp: (value) => value / 2.5,
     getFocusController: () => ({ requestFocus: (id) => focusRequests.push(id) }) });
   keyboardPage.requestSurfaceFocus();
   assert.deepEqual(focusRequests, [], 'No focus request before asynchronous surface readiness');

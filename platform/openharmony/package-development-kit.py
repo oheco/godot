@@ -27,7 +27,7 @@ def main():
     parser.add_argument('--release-template', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True, help='New package directory')
     parser.add_argument('--archive', type=Path, help='Optional new tar.gz; strip one directory when installing')
-    parser.add_argument('--version', default='4.7.2-ohos.6')
+    parser.add_argument('--version', default='4.7.2-ohos.7')
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[2]
     if args.output.exists() or (args.archive and args.archive.exists()):

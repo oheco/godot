@@ -3,8 +3,11 @@
 """Exercise real OHOS mouse/touch input and log selection on a hybrid display.
 
 Only the display/surface is headless; Input, Viewport, RichTextLabel, timer and
-ScrollBar are the actual signed native engine. --expect-original-bug proves the
-fixture catches the old competing mouse-pan and selection-scroll paths.
+ScrollBar are the actual signed native engine. Coverage includes stationary
+vertical autoscroll, live pointer polling, nearest-row horizontal selection beyond
+the control/window and in padding/gaps, plain/wrapped/RTL/table text, and release
+or focus cancellation. --expect-original-bug proves the fixture catches the old
+competing mouse-pan and selection-scroll paths.
 """
 import argparse
 import os
@@ -36,6 +39,9 @@ def main():
             (project / 'project.godot').write_text(
                 '[application]\nconfig/name="Native log selection fixture"\nrun/main_scene="res://main.tscn"\n')
             (project / 'main.tscn').write_text('[gd_scene format=3]\n[node name="Fixture" type="Node"]\n')
+            # The engine's SONAME is libgodot.so even for bin/libgodot.*.so.
+            # Resolve that name to the selected engine, not a library elsewhere.
+            (root / 'libgodot.so').symlink_to(library)
             unsigned, executable = root / 'fixture.unsigned', root / 'fixture'
             command = [str(compiler), '--target=aarch64-linux-ohos', '--sysroot=' + str(sdk / 'sysroot'),
                        '-std=c++17', '-DOPENHARMONY_ENABLED', '-DUNIX_ENABLED', '-DDEBUG_ENABLED',
@@ -44,7 +50,7 @@ def main():
                        '-I' + str(repo), '-I' + str(repo / 'platform/openharmony'),
                        str(repo / 'platform/openharmony/tests/native_log_selection.cpp'),
                        str(repo / 'platform/openharmony/bridge_openharmony.cpp'), str(library),
-                       '-Wl,-rpath,' + str(library.parent), '-o', str(unsigned)]
+                       '-Wl,-rpath,' + str(root), '-Wl,-rpath,' + str(library.parent), '-o', str(unsigned)]
             subprocess.run(command, cwd=repo, check=True)
             subprocess.run([signer, 'sign', '-selfSign', '1', '-inFile', str(unsigned), '-outFile', str(executable)], check=True)
             environment = dict(os.environ)
@@ -54,7 +60,7 @@ def main():
             else:
                 environment.pop('GODOT_EXPECT_LOG_DRAG_BUG', None)
             result = subprocess.run([str(executable), '--display-driver', 'hybrid-fixture', '--path', str(project)],
-                                    env=environment, text=True, capture_output=True, timeout=60)
+                                    env=environment, text=True, capture_output=True, timeout=120)
             print(result.stdout, end='')
             if result.stderr:
                 print(result.stderr, end='')

@@ -1803,10 +1803,18 @@ int RichTextLabel::_find_closest_line(ItemFrame *p_frame, int p_from_line, int p
 					closest_distance = distance;
 					closest_line = i;
 					r_line_ofs = ofs;
-					// Stay inside the row, including when its edge is fractional.
+					// Prefer the visible portion, including inside tall tables.
 					const int first_y = Math::floor(top) + 1;
-					const int last_y = MAX(first_y, int(Math::ceil(bottom)) - 1);
-					closest_y = CLAMP(r_click.y, first_y, last_y);
+					const int last_y = Math::ceil(bottom) - 1;
+					if (first_y <= last_y) {
+						closest_y = CLAMP(r_click.y, first_y, last_y);
+					} else {
+						// A fractional visible sliver may contain no integer pixel.
+						// Use the nearest valid pixel of the same shaped row.
+						const int row_first_y = Math::floor(y) + 1;
+						const int row_last_y = MAX(row_first_y, int(Math::ceil(y + height + p_frame->padding.size.y)) - 1);
+						closest_y = CLAMP(int(Math::round((top + bottom) * 0.5)), row_first_y, row_last_y);
+					}
 				}
 			}
 			y += height + theme_cache.line_separation + p_vsep;
@@ -2955,14 +2963,12 @@ void RichTextLabel::_notification(int p_what) {
 
 		case NOTIFICATION_WM_WINDOW_FOCUS_OUT: {
 			selection.click_item = nullptr;
-			selection.drag_attempt = false;
 			is_selecting_text = false;
 			click_select_held->stop();
 		} break;
 
 		case NOTIFICATION_FOCUS_EXIT: {
 			selection.click_item = nullptr;
-			selection.drag_attempt = false;
 			is_selecting_text = false;
 			click_select_held->stop();
 			if (deselect_on_focus_loss_enabled) {
@@ -3207,7 +3213,7 @@ void RichTextLabel::gui_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventPanGesture> pan_gesture = p_event;
 	if (pan_gesture.is_valid()) {
 		if (scroll_active) {
-			vscroll->scroll(vscroll->get_page() * pan_gesture->get_delta().y * 0.5 / 8);
+			vscroll->scroll(vscroll->get_page() * pan_gesture->get_delta().y / 8);
 			queue_accessibility_update();
 		}
 
