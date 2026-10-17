@@ -81,7 +81,13 @@ void godot_touch(GodotTouchEvent *p_event, int count) {
 
 void godot_mouse(GodotMouseEvent *p_event) {
 	static GodotMouseEvent last_mouse_event;
+	static bool has_mouse_position = false;
 	GodotMouseEvent &event = *p_event;
+	const MouseButton button = MouseButton(event.button);
+	const bool wheel = button >= MouseButton::WHEEL_UP && button <= MouseButton::WHEEL_RIGHT;
+	if ((event.type == 0 || event.type == 1) && (button == MouseButton::NONE || (wheel && !(event.factor > 0)))) {
+		return;
+	}
 	switch (event.type) {
 		case 0: { // Mouse down
 			Ref<InputEventMouseButton> ev;
@@ -89,8 +95,10 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev->set_pressed(true);
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
-			ev->set_button_index(MouseButton(event.button));
-			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
+			ev->set_button_index(button);
+			BitField<MouseButtonMask> mask(event.mask);
+			mask.set_flag(mouse_button_to_mask(button));
+			ev->set_button_mask(mask);
 			ev->set_double_click(event.double_click);
 			ev->set_factor(event.factor > 0 ? event.factor : 1.0);
 			ev->set_alt_pressed(event.alt);
@@ -105,8 +113,11 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev->set_pressed(false);
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
-			ev->set_button_index(MouseButton(event.button));
-			ev->set_button_mask(BitField<MouseButtonMask>(event.mask));
+			ev->set_button_index(button);
+			BitField<MouseButtonMask> mask(event.mask);
+			mask.clear_flag(mouse_button_to_mask(button));
+			ev->set_button_mask(mask);
+			ev->set_factor(event.factor > 0 ? event.factor : 1.0);
 			ev->set_alt_pressed(event.alt);
 			ev->set_ctrl_pressed(event.ctrl);
 			ev->set_shift_pressed(event.shift);
@@ -118,12 +129,12 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev.instantiate();
 			ev->set_position(Vector2(event.x, event.y));
 			ev->set_global_position(ev->get_position());
-			Vector2 relative(event.x - last_mouse_event.x, event.y - last_mouse_event.y);
-			const Vector2 raw_relative(event.relative_x, event.relative_y);
-			// ArkUI can report available raw deltas as zero for an absolute move.
-			// Retain nonzero raw motion when a captured pointer stays stationary.
-			if (event.has_relative && raw_relative != Vector2()) {
-				relative = raw_relative;
+			Vector2 relative = has_mouse_position ? Vector2(event.x - last_mouse_event.x, event.y - last_mouse_event.y) : Vector2();
+			// API 26 rawDelta values are hardware counts, not screen pixels. Use
+			// them only for captured input; visible/confined GUI motion follows
+			// the accelerated, density-converted absolute pointer coordinates.
+			if (event.has_relative && Input::get_singleton()->get_mouse_mode() == InputClassEnums::MOUSE_MODE_CAPTURED) {
+				relative = Vector2(event.relative_x, event.relative_y);
 			}
 			ev->set_relative(relative);
 			ev->set_relative_screen_position(relative);
@@ -138,8 +149,31 @@ void godot_mouse(GodotMouseEvent *p_event) {
 			ev->set_meta_pressed(event.meta);
 			Input::get_singleton()->parse_input_event(ev);
 		} break;
+		case 3: { // Continuous two-finger touchpad scrolling.
+			Ref<InputEventPanGesture> ev;
+			ev.instantiate();
+			ev->set_position(Vector2(event.x, event.y));
+			ev->set_delta(Vector2(event.relative_x, event.relative_y));
+			ev->set_alt_pressed(event.alt);
+			ev->set_ctrl_pressed(event.ctrl);
+			ev->set_shift_pressed(event.shift);
+			ev->set_meta_pressed(event.meta);
+			Input::get_singleton()->parse_input_event(ev);
+		} break;
+		case 4: { // Incremental touchpad pinch ratio.
+			Ref<InputEventMagnifyGesture> ev;
+			ev.instantiate();
+			ev->set_position(Vector2(event.x, event.y));
+			ev->set_factor(event.factor);
+			ev->set_alt_pressed(event.alt);
+			ev->set_ctrl_pressed(event.ctrl);
+			ev->set_shift_pressed(event.shift);
+			ev->set_meta_pressed(event.meta);
+			Input::get_singleton()->parse_input_event(ev);
+		} break;
 	}
 	last_mouse_event = event;
+	has_mouse_position = true;
 }
 
 void godot_key(GodotKeyEvent *p_event) {

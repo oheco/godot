@@ -51,6 +51,9 @@ typedef struct GodotKeyEvent {
 	bool echo;
 } GodotKeyEvent;
 
+// Additive event types keep the host ABI layout: 0=press, 1=release,
+// 2=motion, 3=pan (relative_x/y are normalized scroll deltas),
+// 4=magnify (factor is an incremental scale ratio).
 typedef struct GodotMouseEvent {
 	uint32_t type;
 	uint32_t button;

@@ -31,6 +31,7 @@
 #include "rich_text_label.h"
 #include "rich_text_label.compat.inc"
 
+#include "core/input/input.h"
 #include "core/input/input_map.h"
 #include "core/io/resource_loader.h"
 #include "core/math/math_defs.h"
@@ -1778,7 +1779,45 @@ int RichTextLabel::_draw_line(ItemFrame *p_frame, int p_line, const Vector2 &p_o
 	return line_count;
 }
 
-void RichTextLabel::_find_click(ItemFrame *p_frame, const Point2i &p_click, ItemFrame **r_click_frame, int *r_click_line, Item **r_click_item, int *r_click_char, bool *r_outside, bool p_meta) {
+int RichTextLabel::_find_closest_line(ItemFrame *p_frame, int p_from_line, int p_to_line, const Vector2 &p_ofs, float p_vsep, Point2i &r_click, Vector2 &r_line_ofs) {
+	// Project only the vertical coordinate onto a visible visual line. Keep x
+	// intact for the normal shaped-text (including bidi and table) hit test.
+	const Rect2 text_rect = _get_text_rect();
+	float closest_distance = 0;
+	int closest_line = -1;
+	int closest_y = r_click.y;
+	Vector2 ofs = p_ofs;
+	for (int i = p_from_line; i < p_to_line && ofs.y < text_rect.get_end().y; i++) {
+		const Line &l = p_frame->lines[i];
+		MutexLock lock(l.text_buf->get_mutex());
+		const Ref<TextParagraph> &text_buf = l.text_buf_disp.is_valid() ? l.text_buf_disp : l.text_buf;
+		float y = ofs.y;
+		for (int j = 0; j < text_buf->get_line_count(); j++) {
+			RID rid = text_buf->get_line_rid(j);
+			const float height = TS->shaped_text_get_size(rid).y;
+			const float top = MAX(y, text_rect.position.y);
+			const float bottom = MIN(y + height + p_frame->padding.size.y, text_rect.get_end().y);
+			if (top < bottom) {
+				const float distance = Math::abs(r_click.y - CLAMP(float(r_click.y), top, bottom));
+				if (closest_line < 0 || distance < closest_distance) {
+					closest_distance = distance;
+					closest_line = i;
+					r_line_ofs = ofs;
+					// Stay inside the row, including when its edge is fractional.
+					const int first_y = Math::floor(top) + 1;
+					const int last_y = MAX(first_y, int(Math::ceil(bottom)) - 1);
+					closest_y = CLAMP(r_click.y, first_y, last_y);
+				}
+			}
+			y += height + theme_cache.line_separation + p_vsep;
+		}
+		ofs.y += l.text_buf->get_size().y + l.text_buf->get_line_count() * (theme_cache.line_separation + p_vsep) + theme_cache.paragraph_separation;
+	}
+	r_click.y = closest_y;
+	return closest_line;
+}
+
+void RichTextLabel::_find_click(ItemFrame *p_frame, const Point2i &p_click, ItemFrame **r_click_frame, int *r_click_line, Item **r_click_item, int *r_click_char, bool *r_outside, bool p_meta, bool p_closest) {
 	if (r_click_item) {
 		*r_click_item = nullptr;
 	}
@@ -1796,6 +1835,9 @@ void RichTextLabel::_find_click(ItemFrame *p_frame, const Point2i &p_click, Item
 
 	// Search for the first line.
 	int to_line = main->first_invalid_line.load();
+	if (to_line == 0) {
+		return;
+	}
 	int from_line = _find_first_line(0, to_line, vofs);
 
 	int total_height = INT32_MAX;
@@ -1834,6 +1876,18 @@ void RichTextLabel::_find_click(ItemFrame *p_frame, const Point2i &p_click, Item
 	}
 
 	Point2 ofs = text_rect.get_position() + Vector2(0, vbegin + main->lines[from_line].offset.y - vofs);
+	if (p_closest) {
+		Point2i click = p_click;
+		Vector2 line_ofs;
+		const int line = _find_closest_line(p_frame, from_line, to_line, ofs, vsep, click, line_ofs);
+		if (line >= 0) {
+			_find_click_in_line(p_frame, line, line_ofs, text_rect.size.x, vsep, click, r_click_frame, r_click_line, r_click_item, r_click_char, false, false, true);
+			if (r_outside != nullptr) {
+				*r_outside = false;
+			}
+		}
+		return;
+	}
 	while (ofs.y < size.height && from_line < to_line) {
 		MutexLock lock(main->lines[from_line].text_buf->get_mutex());
 		_find_click_in_line(p_frame, from_line, ofs, text_rect.size.x, vsep, p_click, r_click_frame, r_click_line, r_click_item, r_click_char, false, p_meta);
@@ -1848,7 +1902,7 @@ void RichTextLabel::_find_click(ItemFrame *p_frame, const Point2i &p_click, Item
 	}
 }
 
-float RichTextLabel::_find_click_in_line(ItemFrame *p_frame, int p_line, const Vector2 &p_ofs, int p_width, float p_vsep, const Point2i &p_click, ItemFrame **r_click_frame, int *r_click_line, Item **r_click_item, int *r_click_char, bool p_table, bool p_meta) {
+float RichTextLabel::_find_click_in_line(ItemFrame *p_frame, int p_line, const Vector2 &p_ofs, int p_width, float p_vsep, const Point2i &p_click, ItemFrame **r_click_frame, int *r_click_line, Item **r_click_item, int *r_click_char, bool p_table, bool p_meta, bool p_closest) {
 	Vector2 off;
 
 	bool line_clicked = false;
@@ -1954,8 +2008,16 @@ float RichTextLabel::_find_click_in_line(ItemFrame *p_frame, int p_line, const V
 										}
 									}
 									if (crect.has_point(p_click)) {
-										for (int j = 0; j < (int)frame->lines.size(); j++) {
-											_find_click_in_line(frame, j, rect.position + Vector2(0.0, frame->lines[j].offset.y), rect.size.x, 0, p_click, &table_click_frame, &table_click_line, &table_click_item, &table_click_char, true, p_meta);
+										int first_line = 0;
+										int end_line = frame->lines.size();
+										Point2i click = p_click;
+										Vector2 line_ofs;
+										if (p_closest) {
+											first_line = _find_closest_line(frame, 0, end_line, rect.position + Vector2(0.0, frame->lines[0].offset.y), 0, click, line_ofs);
+											end_line = first_line + 1;
+										}
+										for (int j = first_line; j >= 0 && j < end_line; j++) {
+											_find_click_in_line(frame, j, p_closest ? line_ofs : rect.position + Vector2(0.0, frame->lines[j].offset.y), rect.size.x, 0, click, &table_click_frame, &table_click_line, &table_click_item, &table_click_char, true, p_meta, p_closest);
 											if (table_click_frame && table_click_item) {
 												// Save cell detected cell hit data.
 												table_range = Vector2i(INT32_MAX, 0);
@@ -2891,7 +2953,18 @@ void RichTextLabel::_notification(int p_what) {
 			}
 		} break;
 
+		case NOTIFICATION_WM_WINDOW_FOCUS_OUT: {
+			selection.click_item = nullptr;
+			selection.drag_attempt = false;
+			is_selecting_text = false;
+			click_select_held->stop();
+		} break;
+
 		case NOTIFICATION_FOCUS_EXIT: {
+			selection.click_item = nullptr;
+			selection.drag_attempt = false;
+			is_selecting_text = false;
+			click_select_held->stop();
 			if (deselect_on_focus_loss_enabled) {
 				deselect();
 			}
@@ -3286,8 +3359,7 @@ void RichTextLabel::gui_input(const Ref<InputEvent> &p_event) {
 
 	Ref<InputEventMouseMotion> m = p_event;
 	if (m.is_valid()) {
-		local_mouse_pos = get_local_mouse_position();
-		last_clamped_mouse_pos = local_mouse_pos.clamp(Vector2(), get_size());
+		const Vector2 local_mouse_pos = get_local_mouse_position();
 
 		Item *c_item = nullptr;
 		bool outside = false;
@@ -3321,6 +3393,15 @@ void RichTextLabel::gui_input(const Ref<InputEvent> &p_event) {
 }
 
 void RichTextLabel::_update_selection() {
+	if (!is_selecting_text || !selection.enabled || !selection.click_item || !Input::get_singleton()->is_mouse_button_pressed(MouseButton::LEFT)) {
+		selection.click_item = nullptr;
+		is_selecting_text = false;
+		click_select_held->stop();
+		return;
+	}
+	// Motion may no longer be delivered to this control while dragging outside
+	// its viewport or window. Poll the live position on every selection tick.
+	const Vector2 local_mouse_pos = get_local_mouse_position();
 	ItemFrame *c_frame = nullptr;
 	int c_line = 0;
 	Item *c_item = nullptr;
@@ -3345,7 +3426,7 @@ void RichTextLabel::_update_selection() {
 	}
 
 	// Update selection area.
-	_find_click(main, last_clamped_mouse_pos, &c_frame, &c_line, &c_item, &c_index, &outside, false);
+	_find_click(main, local_mouse_pos, &c_frame, &c_line, &c_item, &c_index, &outside, false, true);
 	if (selection.click_item && c_item) {
 		selection.from_frame = selection.click_frame;
 		selection.from_line = selection.click_line;

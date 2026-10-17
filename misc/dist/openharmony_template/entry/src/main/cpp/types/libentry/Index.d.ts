@@ -5,6 +5,9 @@ export interface SimplifiedKeyEvent {
   code: number; unicode: number; pressed: boolean; echo: boolean;
   alt: boolean; ctrl: boolean; shift: boolean; meta: boolean;
 }
+// type: 0=press, 1=release, 2=motion, 3=pan, 4=magnify.
+// Pan uses relativeX/Y for normalized 2D scroll; magnify uses incremental factor.
+// Native always queues this fixed-layout host-ABI DTO onto the engine thread.
 export interface SimplifiedMouseEvent {
   type: number; button: number; mask: number; x: number; y: number;
   alt: boolean; ctrl: boolean; shift: boolean; meta: boolean;

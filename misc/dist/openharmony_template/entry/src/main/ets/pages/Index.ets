@@ -11,6 +11,7 @@ import { HostConfig, hostStorage, instancesEnabled } from '../runtime/Config';
 import { grantedPermissions, requestUserPermissions } from '../runtime/Permissions';
 import { nativeStringArray } from '../runtime/NativeArguments';
 import { TouchInput } from '../runtime/TouchInput';
+import { AxisInput } from '../runtime/AxisInput';
 import { localizedUIString } from '../runtime/LocalizedStrings';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid } from '../runtime/Launch';
 
@@ -48,6 +49,9 @@ struct Index {
   private engineReadyReported: boolean = false;
   private instanceCheckAt: number = 0;
   private mouseMask: number = 0;
+  private mouseX: number = 0;
+  private mouseY: number = 0;
+  private axisInput: AxisInput = new AxisInput();
   private metaPressed: boolean = false;
   private pressedKeys: Set<number> = new Set<number>();
   private lastClickTime: number = 0;
@@ -262,18 +266,36 @@ struct Index {
     if (event.action === MouseAction.Press) { this.requestSurfaceFocus(); }
     const button = this.button(event.button);
     const type = event.action === MouseAction.Press ? 0 : event.action === MouseAction.Release ? 1 : 2;
+    if (type !== 2 && button === 0) { return; }
+    const x = this.getUIContext().vp2px(event.x);
+    const y = this.getUIContext().vp2px(event.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) { return; }
+    this.mouseX = x; this.mouseY = y;
+    if (event.pressedButtons !== undefined) {
+      let observed: number = 0;
+      for (const pressed of event.pressedButtons) {
+        const mapped: number = this.button(pressed);
+        if (mapped > 0) { observed |= 1 << (mapped - 1); }
+      }
+      // Recover a release outside the surface when the next native snapshot
+      // says the button is up. Clear GUI capture with real release events.
+      if (type === 2) { this.releaseMouseButtons(this.mouseMask & ~observed); }
+      this.mouseMask = observed;
+    }
     if (button > 0) {
       const bit = 1 << (button - 1);
       if (type === 0) { this.mouseMask |= bit; }
       if (type === 1) { this.mouseMask &= ~bit; }
     }
-    const x = this.getUIContext().vp2px(event.x);
-    const y = this.getUIContext().vp2px(event.y);
     const now = Date.now();
+    const clickTolerance = this.getUIContext().vp2px(5);
+    if (type === 2 && (Math.abs(x - this.lastClickX) >= clickTolerance || Math.abs(y - this.lastClickY) >= clickTolerance)) {
+      this.lastClickTime = 0;
+    }
     let doubleClick = false;
     if (type === 0) {
       doubleClick = button === this.lastClickButton && now - this.lastClickTime < 500 &&
-        Math.abs(x - this.lastClickX) < 5 && Math.abs(y - this.lastClickY) < 5;
+        Math.abs(x - this.lastClickX) < clickTolerance && Math.abs(y - this.lastClickY) < clickTolerance;
       this.lastClickTime = doubleClick ? 0 : now;
       this.lastClickButton = button; this.lastClickX = x; this.lastClickY = y;
     }
@@ -288,22 +310,24 @@ struct Index {
     };
     plugin.inputMouse(input);
   }
-  private wheel(event: AxisEvent, value: number, negative: number, positive: number): void {
-    if (value === 0) { return; }
-    // scrollStep is mouse-wheel-only; touchpad axes are vp, not notch counts.
-    // Keep the existing 120-unit normalization for smooth Godot wheel factors.
-    // Only cursor coordinates need vp2px; the factor is independent of DPI.
-    const step: number = event.sourceTool === SourceTool.TOUCHPAD ? 120 : (event.scrollStep || 120);
-    const input: SimplifiedMouseEvent = {
-      type: 0, button: value < 0 ? negative : positive, mask: this.mouseMask,
-      x: this.getUIContext().vp2px(event.x), y: this.getUIContext().vp2px(event.y),
-      alt: event.getModifierKeyState?.(['Alt']) ?? false,
-      ctrl: event.getModifierKeyState?.(['Ctrl']) ?? false,
-      shift: event.getModifierKeyState?.(['Shift']) ?? false,
-      meta: this.metaPressed, doubleClick: false, factor: Math.abs(value) / step,
-      hasRelative: false, relativeX: 0, relativeY: 0
-    };
-    plugin.inputMouse(input); input.type = 1; plugin.inputMouse(input);
+  private axis(event: AxisEvent): void {
+    if (this.disposed || this.terminating) { return; }
+    const ui = this.getUIContext();
+    for (const input of this.axisInput.convert(event, this.mouseMask, this.metaPressed,
+      (value: number): number => ui.vp2px(value), (value: number): number => ui.px2vp(value))) {
+      plugin.inputMouse(input);
+    }
+  }
+  private releaseMouseButtons(mask: number): void {
+    for (const button of [1, 2, 3, 8, 9]) {
+      const bit = 1 << (button - 1);
+      if ((mask & bit) === 0) { continue; }
+      this.mouseMask &= ~bit;
+      const input: SimplifiedMouseEvent = { type: 1, button: button, mask: this.mouseMask, x: this.mouseX, y: this.mouseY,
+        alt: false, ctrl: false, shift: false, meta: false, doubleClick: false,
+        factor: 1, hasRelative: false, relativeX: 0, relativeY: 0 };
+      plugin.inputMouse(input);
+    }
   }
   private handleKey(event: KeyEvent): boolean {
     if (this.disposed || this.terminating) { return false; }
@@ -332,6 +356,8 @@ struct Index {
     if (cancelled.length > 0) { plugin.inputTouch(cancelled); }
     this.pressedKeys.clear();
     this.metaPressed = false;
+    this.releaseMouseButtons(this.mouseMask);
+    this.axisInput.reset();
     this.mouseMask = 0;
     this.lastClickTime = 0;
     this.lastClickButton = 0;
@@ -350,8 +376,7 @@ struct Index {
           .onKeyEvent((event: KeyEvent) => this.handleKey(event))
           .onMouse((event: MouseEvent) => this.mouse(event))
           .onAxisEvent((event: AxisEvent) => {
-            this.wheel(event, event.getVerticalAxisValue(), 4, 5);
-            this.wheel(event, event.getHorizontalAxisValue(), 6, 7);
+            this.axis(event);
           })
           .onTouch((event: TouchEvent) => this.touch(event))
           .onBlur(() => this.releaseInput())

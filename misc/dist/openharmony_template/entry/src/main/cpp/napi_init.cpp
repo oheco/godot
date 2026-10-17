@@ -610,8 +610,9 @@ napi_value input_mouse(napi_env env, napi_callback_info info) {
 			!number(env, value, "relativeX", event.relative_x, !event.has_relative) || !number(env, value, "relativeY", event.relative_y, !event.has_relative)) {
 		return nullptr;
 	}
-	if (event.type > 2) {
-		type_error(env, "Mouse type is out of range");
+	if (event.type > 4 || ((event.type == 0 || event.type == 1) && (event.button < 1 || event.button > 9)) ||
+			(event.type == 3 && !event.has_relative) || (event.type == 4 && event.factor <= 0)) {
+		type_error(env, "Mouse or gesture type/payload is out of range");
 		return nullptr;
 	}
 	godot_host_mouse(&event);
