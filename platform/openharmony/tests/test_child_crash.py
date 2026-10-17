@@ -55,9 +55,18 @@ def main():
             environment = dict(os.environ)
             environment.update(GODOT_OHOS_DATA_DIR=str(data), GODOT_OHOS_CACHE_DIR=str(root / 'cache'),
                                GODOT_OHOS_CONFIG_DIR=str(root / 'config'))
-            result = subprocess.run([str(executable), '--headless', '--editor', '--quiet',
-                                     '--path', str(project), '--log-file', str(root / 'parent.log')],
-                                    env=environment, text=True, capture_output=True, timeout=120)
+            try:
+                result = subprocess.run([str(executable), '--headless', '--editor', '--quiet',
+                                         '--path', str(project), '--log-file', str(root / 'parent.log')],
+                                        env=environment, text=True, capture_output=True, timeout=120)
+            except subprocess.TimeoutExpired as error:
+                for captured in (error.stdout, error.stderr):
+                    if captured:
+                        print(captured.decode('utf-8', 'replace') if isinstance(captured, bytes) else captured, end='')
+                parent_log = root / 'parent.log'
+                if parent_log.is_file():
+                    print('\nPARENT ENGINE LOG AT TIMEOUT:\n' + parent_log.read_text(errors='replace')[-131072:])
+                raise SystemExit('Native child-crash acceptance timed out; captured diagnostics printed above')
             print(result.stdout, end='')
             if result.stderr:
                 print(result.stderr, end='')

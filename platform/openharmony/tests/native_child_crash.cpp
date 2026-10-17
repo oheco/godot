@@ -18,6 +18,7 @@
 
 #include <spawn.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 #include <csignal>
 #include <cstdio>
@@ -107,7 +108,7 @@ int32_t spawn(int p_argc, const char *const *p_argv) {
 	}
 	const String crash = engine.get_base_dir().path_join(vformat("godot-%d-crash.log", fake_pid));
 	if (mode == EARLY) {
-		write(engine, large_context ? "DROP_LARGE_CONTEXT_PREFIX\n" + String("padding \u4e2d\u6587 context\n").repeat(10000) + "BOUNDED_FINAL_UTF8_\u4e2d\u6587\n" : "CURRENT RUN: final resource load error before fatal signal\n");
+		write(engine, large_context ? "DROP_LARGE_CONTEXT_PREFIX\n" + String(U"padding \u4e2d\u6587 context\n").repeat(10000) + U"BOUNDED_FINAL_UTF8_\u4e2d\u6587\n" : "CURRENT RUN: final resource load error before fatal signal\n");
 		if (!FileAccess::exists(crash)) {
 			write(crash, String());
 		}
@@ -178,12 +179,14 @@ void synthetic(OS_OpenHarmony &p_os) {
 	split_crash = true;
 	large_context = true;
 	p_os.create_instance(arguments(), &pid);
-	pump(p_os, 20);
+	// Force at least one 250 ms diagnostics poll before closing the report.
+	OS::get_singleton()->delay_usec(300000);
+	p_os.main_loop_iterate();
 	check(reports() == 2, "partial fatal report waits for the live writer to finish");
 	write(custom_log.get_base_dir().path_join(vformat("godot-%d-crash.log", fake_pid)), end_marker, true);
 	pump(p_os);
 	check(reports() == 3, "completed split crash is published exactly once");
-	check(output().contains("BOUNDED_FINAL_UTF8_\u4e2d\u6587") && !output().contains("DROP_LARGE_CONTEXT_PREFIX"), "large UTF-8 engine output is limited to the final 64 KiB");
+	check(output().contains(U"BOUNDED_FINAL_UTF8_\u4e2d\u6587") && !output().contains("DROP_LARGE_CONTEXT_PREFIX"), "large UTF-8 engine output is limited to the final 64 KiB");
 	split_crash = false;
 	large_context = false;
 }
@@ -198,7 +201,7 @@ int child(int p_argc, char **p_argv) {
 	}
 	os.main_loop_begin();
 	pump(os, 4);
-	print_error("REAL_GAME_LAST_ERROR_\u4e2d\u6587");
+	print_error(U"REAL_GAME_LAST_ERROR_\u4e2d\u6587");
 	if (crash) {
 		::raise(SIGSEGV);
 		return 81;
@@ -210,20 +213,29 @@ int child(int p_argc, char **p_argv) {
 } // namespace
 
 int main(int argc, char **argv) {
+	std::setvbuf(stdout, nullptr, _IONBF, 0);
+	std::setvbuf(stderr, nullptr, _IONBF, 0);
+	std::printf("FIXTURE_START pid=%d\n", static_cast<int>(::getpid()));
 	if (argc > 2 && std::strcmp(argv[1], "--fixture-child") == 0) {
 		return child(argc, argv);
 	}
 	executable = String::utf8(argv[0]);
 	OS_OpenHarmony os(true); // false would bypass UIAbility create_instance.
-	if (Main::setup(argv[0], argc - 1, argv + 1) != OK || Main::start() != EXIT_SUCCESS) {
+	std::printf("FIXTURE_PARENT_SETUP\n");
+	if (Main::setup(argv[0], argc - 1, argv + 1) != OK) {
 		return 70;
 	}
+	std::printf("FIXTURE_PARENT_START\n");
+	if (Main::start() != EXIT_SUCCESS) {
+		return 70;
+	}
+	std::printf("FIXTURE_PARENT_LOOP\n");
 	os.main_loop_begin();
 	pump(os, 4);
 	EditorNode *editor = EditorNode::get_singleton();
 	check(editor && EditorNode::get_log(), "real EditorNode and Output dock are initialized");
 	fake_pid = os.get_process_id() + 10000000;
-	custom_log = os.get_data_path().path_join("custom logs \u4e2d\u6587/engine with spaces.log");
+	custom_log = os.get_data_path().path_join(U"custom logs \u4e2d\u6587/engine with spaces.log");
 	check(DirAccess::make_dir_recursive_absolute(custom_log.get_base_dir()) == OK, "create a custom log directory separate from the default data directory");
 	godot_host_set_create_instance_callback(spawn);
 	synthetic(os);
@@ -250,7 +262,7 @@ int main(int argc, char **argv) {
 		check(EditorNode::get_singleton() == editor && os.get_main_loop(), "the same parent editor remains usable after the child exits");
 	}
 	check(reports() == before + 2, "two real native crashes reported, intervening normal run stayed clean");
-	check(output().contains("REAL_GAME_LAST_ERROR_\u4e2d\u6587") && output().contains("signal=11"), "real crash report and final UTF-8 game error reach Output");
+	check(output().contains(U"REAL_GAME_LAST_ERROR_\u4e2d\u6587") && output().contains("signal=11"), "real crash report and final UTF-8 game error reach Output");
 	godot_host_set_create_instance_callback(nullptr);
 	std::printf("%s launches=%d failures=%d\n", failures ? "CHILD_CRASH_FAIL" : "CHILD_CRASH_PASS", launches, failures);
 	os.main_loop_end();
