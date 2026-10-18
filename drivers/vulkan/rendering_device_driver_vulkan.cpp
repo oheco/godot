@@ -3718,6 +3718,25 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 	VkResult err = functions.GetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface->vk_surface, &surface_capabilities);
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't get Vulkan surface capabilities (VkResult error %d).", err));
 
+#ifdef OPENHARMONY_ENABLED
+	print_verbose(vformat("OHOS swapchain: window=%dx%d current=%dx%d transform=%d supported=%d", surface->window_width, surface->window_height, surface_capabilities.currentExtent.width, surface_capabilities.currentExtent.height, surface_capabilities.currentTransform, surface_capabilities.supportedTransforms));
+#endif
+
+	VkExtent2D extent;
+#ifdef OPENHARMONY_ENABLED
+	// OHOS currentExtent reflects the previous buffer geometry after a
+	// pre-rotated swapchain is created. Always derive the new image size from
+	// the latest XComponent size, including rebuilds without a resize event.
+	extent.width = surface->window_width;
+	extent.height = surface->window_height;
+	if (surface_capabilities.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) {
+		SWAP(extent.width, extent.height);
+	}
+	extent.width = CLAMP(extent.width, surface_capabilities.minImageExtent.width, surface_capabilities.maxImageExtent.width);
+	extent.height = CLAMP(extent.height, surface_capabilities.minImageExtent.height, surface_capabilities.maxImageExtent.height);
+	surface->width = extent.width;
+	surface->height = extent.height;
+#else
 	// No swapchain yet, this is the first time we're creating it.
 	if (!swap_chain->vk_swapchain) {
 		if (surface_capabilities.currentExtent.width == 0xFFFFFFFF) {
@@ -3738,7 +3757,6 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 		}
 	}
 
-	VkExtent2D extent;
 	if (surface_capabilities.currentExtent.width == 0xFFFFFFFF) {
 		// The current extent is currently undefined, so the current surface width and height will be clamped to the surface's capabilities.
 		// We can only be here on the second call to swap_chain_resize(), by which time surface->width & surface->height should already be swapped if needed.
@@ -3750,6 +3768,7 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 		surface->width = extent.width;
 		surface->height = extent.height;
 	}
+#endif
 
 	if (surface->width == 0 || surface->height == 0) {
 		// The surface doesn't have valid dimensions, so we can't create a swap chain.
@@ -3848,6 +3867,9 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 	swap_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	swap_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swap_create_info.preTransform = surface_transform_bits;
+#ifdef OPENHARMONY_ENABLED
+	print_verbose(vformat("OHOS swapchain: image=%dx%d preTransform=%d", extent.width, extent.height, surface_transform_bits));
+#endif
 	switch (swap_create_info.preTransform) {
 		case VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR:
 			swap_chain->pre_transform_rotation_degrees = 0;

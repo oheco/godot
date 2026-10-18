@@ -162,6 +162,9 @@ public:
 		VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
 		uint32_t width = 0;
 		uint32_t height = 0;
+		// Keep the window's logical size independent of the rotated swapchain image.
+		uint32_t window_width = 0;
+		uint32_t window_height = 0;
 		DisplayServerEnums::VSyncMode vsync_mode = DisplayServerEnums::VSYNC_ENABLED;
 		bool needs_resize = false;
 

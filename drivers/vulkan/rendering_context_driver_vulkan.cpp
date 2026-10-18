@@ -964,6 +964,8 @@ void RenderingContextDriverVulkan::surface_set_size(SurfaceID p_surface, uint32_
 	Surface *surface = (Surface *)(p_surface);
 	surface->width = p_width;
 	surface->height = p_height;
+	surface->window_width = p_width;
+	surface->window_height = p_height;
 	surface->needs_resize = true;
 }
 

@@ -451,7 +451,10 @@ async function testIndex() {
         releasedGeometryEvents.push(name);
       },
     };
+    const deviceInfo = { deviceType: '2in1' };
+    const surfaceUpdates = [];
     const dependencies = {
+      '@kit.BasicServicesKit': { deviceInfo },
       '@kit.AbilityKit': {},
       '@kit.ArkUI': { window: { getLastWindow: async () => hostWindow } },
       'libentry.so': { default: plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
@@ -481,7 +484,10 @@ async function testIndex() {
     let density = 2.5;
     let framePresent = true;
     const { Index } = load('pages/Index.ets', dependencies, {
-      XComponentController: class { getXComponentSurfaceRect() { return surfaceRect; } },
+      XComponentController: class {
+        getXComponentSurfaceRect() { return surfaceRect; }
+        setXComponentSurfaceRect(rect) { surfaceUpdates.push(plain(rect)); Object.assign(surfaceRect, rect); }
+      },
       AppStorage: { get: (key) => storage[key] }, $r: stringResource, setInterval: () => 1, clearInterval: () => {},
     }, transform);
     const page = new Index();
@@ -564,6 +570,34 @@ async function testIndex() {
       assert.equal(geometrySnapshots.length, previous + 1, 'density/rect ordering always refreshes geometry');
       assertGeometry([26.375, 20.8125], 1, 'new reflow position applies current density once, without scaling px offsets');
     }
+    // Immersive mobile surfaces use window pixels, including system bars.
+    // Desktop content sizing and non-immersive layouts must remain untouched.
+    const savedSurface = { ...surfaceRect };
+    const savedExpansion = page.expandSystemArea;
+    page.expandSystemArea = true;
+    for (const type of ['phone', 'tablet']) {
+      deviceInfo.deviceType = type;
+      Object.assign(surfaceRect, savedSurface);
+      const before = surfaceUpdates.length;
+      page.updateImeSurfacePosition();
+      assert.equal(surfaceUpdates.length, before + 1, `${type} expands the actual surface`);
+      assert.deepEqual(surfaceUpdates.at(-1), { offsetX: 0, offsetY: 0,
+        surfaceWidth: sdkWindowRect.width, surfaceHeight: sdkWindowRect.height }, 'window size is already px');
+      page.updateImeSurfacePosition();
+      assert.equal(surfaceUpdates.length, before + 1, 'identical geometry does not recreate the surface');
+    }
+    deviceInfo.deviceType = '2in1';
+    Object.assign(surfaceRect, savedSurface);
+    const beforeDesktop = surfaceUpdates.length;
+    page.updateImeSurfacePosition();
+    assert.equal(surfaceUpdates.length, beforeDesktop, 'desktop retains its content size');
+    deviceInfo.deviceType = 'phone';
+    page.expandSystemArea = false;
+    page.updateImeSurfacePosition();
+    assert.equal(surfaceUpdates.length, beforeDesktop, 'non-immersive phone retains its safe-area layout');
+    deviceInfo.deviceType = '2in1';
+    page.expandSystemArea = savedExpansion;
+    Object.assign(surfaceRect, savedSurface);
     const beforeGuardedEvents = geometrySnapshots.length;
     framePresent = false;
     for (const event of geometryEvents) { fireGeometry(event); }

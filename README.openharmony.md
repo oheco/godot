@@ -27,6 +27,19 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
+## Mobile surface correction in 4.7.2-ohos.9
+
+OpenHarmony Vulkan swapchains retain the logical window dimensions separately
+from image extents. Recreation derives the rotated image extent from that stable
+size, including when the WSI `currentExtent` already reflects the previous
+buffer. This fixes cropped or half-height phone rendering after surface changes.
+
+Immersive phone and tablet hosts explicitly expand the XComponent surface to the
+complete window in pixels, including the status and navigation regions. Existing
+desktop content geometry and non-immersive safe areas remain intact. Host
+regression tests cover dimensions, deduplication and both device policies. Host
+ABI stays 4 and managed API/NuGet versions stay `4.7.2-ohos.3`.
+
 ## Editor updates in 4.7.2-ohos.8
 
 A native crash in a game launched by the Editor now leaves the parent Editor and

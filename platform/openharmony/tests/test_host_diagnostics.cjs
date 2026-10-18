@@ -292,6 +292,7 @@ function testCrashMonitoring(root) {
   const { Index } = load('pages/Index.ets', {
     'libentry.so': { default: f.plugin }, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
     '@kit.ArkUI': { window: {} },
+    '@kit.BasicServicesKit': { deviceInfo: { deviceType: '2in1' } },
     '../runtime/Diagnostics': f.diagnostics, '../runtime/Config': {}, '../runtime/Permissions': {}, '../runtime/Runtime': {},
     '../runtime/NativeArguments': {},
     '../runtime/LocalizedStrings': { localizedUIString: (_context, resource) => resource },

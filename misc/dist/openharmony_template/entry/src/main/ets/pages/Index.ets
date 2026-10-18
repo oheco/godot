@@ -2,7 +2,7 @@
 import plugin, { SimplifiedTouchEvent, SimplifiedMouseEvent, SimplifiedKeyEvent } from 'libentry.so';
 import { common } from '@kit.AbilityKit';
 import { window } from '@kit.ArkUI';
-import { BusinessError } from '@kit.BasicServicesKit';
+import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { KeyCode } from '@kit.InputKit';
 import { mapKeyCode } from './KeyMap';
 import { prepareRuntime } from '../runtime/Runtime';
@@ -179,7 +179,22 @@ struct Index {
       // The native IME mapper subtracts the current display's physical origin.
       // FrameNode positions are vp; SurfaceRect offsets are already px.
       const position = node.getGlobalPositionOnDisplay();
-      const surface = this.controller.getXComponentSurfaceRect();
+      let surface = this.controller.getXComponentSurfaceRect();
+      if (this.expandSystemArea && this.imeWindow !== undefined &&
+        (deviceInfo.deviceType === 'phone' || deviceInfo.deviceType === 'tablet')) {
+        // expandSafeArea changes the component's display area, but XComponent
+        // keeps a separate surface rect which otherwise excludes system bars.
+        const rect = this.imeWindow.getWindowProperties().windowRect;
+        if (rect.width > 0 && rect.height > 0 &&
+          (surface.surfaceWidth !== rect.width || surface.surfaceHeight !== rect.height ||
+            (surface.offsetX ?? 0) !== 0 || (surface.offsetY ?? 0) !== 0)) {
+          this.controller.setXComponentSurfaceRect({
+            offsetX: 0, offsetY: 0, surfaceWidth: rect.width, surfaceHeight: rect.height
+          });
+          surface = this.controller.getXComponentSurfaceRect();
+          record(`immersive surface: ${JSON.stringify(surface)}`);
+        }
+      }
       plugin.setSurfacePosition(ui.vp2px(position.x) + (surface.offsetX ?? 0),
         ui.vp2px(position.y) + (surface.offsetY ?? 0));
     } catch (error) {
