@@ -16,11 +16,60 @@ import { localizedUIString } from '../runtime/LocalizedStrings';
 import { childHasExited, logInstanceState, reportExit, spawnedChildPid, spawnedChildLogDirectory } from '../runtime/Launch';
 
 class GodotSurface extends XComponentController {
-  onSurfaceCreated(surfaceId: string): void { plugin.setSurfaceId(BigInt(surfaceId)); }
-  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
-    plugin.changeSurface(BigInt(surfaceId), rect.surfaceWidth, rect.surfaceHeight);
+  prepareSurfaceRect: () => SurfaceRect | undefined = (): SurfaceRect | undefined => undefined;
+  private surfaceId: string = '';
+  private destroyed: boolean = false;
+  private confirmedSurfaceId: string = '';
+  private confirmedRect: SurfaceRect | undefined = undefined;
+  private publishedSurfaceId: string = '';
+  private publishedWidth: number = 0;
+  private publishedHeight: number = 0;
+  onSurfaceCreated(surfaceId: string): void {
+    if (this.destroyed || (this.surfaceId.length > 0 && this.surfaceId !== surfaceId)) { return; }
+    this.surfaceId = surfaceId;
+    this.refreshSurfaceRect();
+    plugin.setSurfaceId(BigInt(surfaceId));
   }
-  onSurfaceDestroyed(surfaceId: string): void { plugin.destroySurface(); }
+  onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
+    if (this.destroyed || (this.surfaceId.length > 0 && this.surfaceId !== surfaceId)) { return; }
+    this.confirmedSurfaceId = surfaceId;
+    this.confirmedRect = { surfaceWidth: rect.surfaceWidth, surfaceHeight: rect.surfaceHeight };
+    this.refreshSurfaceRect();
+  }
+  refreshSurfaceRect(): void {
+    if (this.destroyed) { return; }
+    const target = this.prepareSurfaceRect();
+    const rect = this.confirmedRect;
+    if (this.surfaceId.length === 0 || this.confirmedSurfaceId !== this.surfaceId ||
+      rect === undefined || rect.surfaceWidth <= 0 || rect.surfaceHeight <= 0) { return; }
+    if (target !== undefined && (target.surfaceWidth <= 0 || target.surfaceHeight <= 0 ||
+      rect.surfaceWidth !== target.surfaceWidth || rect.surfaceHeight !== target.surfaceHeight)) {
+      // Publishing the first size can start the engine. Wait for ArkUI's
+      // confirmation instead of drawing the boot image into an inset surface.
+      return;
+    }
+    if (this.publishedSurfaceId === this.confirmedSurfaceId &&
+      this.publishedWidth === rect.surfaceWidth && this.publishedHeight === rect.surfaceHeight) { return; }
+    plugin.changeSurface(BigInt(this.confirmedSurfaceId), rect.surfaceWidth, rect.surfaceHeight);
+    this.publishedSurfaceId = this.confirmedSurfaceId;
+    this.publishedWidth = rect.surfaceWidth;
+    this.publishedHeight = rect.surfaceHeight;
+  }
+  onSurfaceDestroyed(surfaceId: string): void {
+    if (this.surfaceId.length > 0 && this.surfaceId !== surfaceId) { return; }
+    this.releaseSurface();
+  }
+  releaseSurface(): void {
+    if (this.destroyed) { return; }
+    this.destroyed = true;
+    this.surfaceId = '';
+    this.confirmedSurfaceId = '';
+    this.confirmedRect = undefined;
+    this.publishedSurfaceId = '';
+    this.publishedWidth = 0;
+    this.publishedHeight = 0;
+    plugin.destroySurface();
+  }
 }
 
 @Entry
@@ -38,6 +87,7 @@ struct Index {
   private instanceSupport: boolean = false;
   private disposed: boolean = false;
   private controller: GodotSurface = new GodotSurface();
+  private requestingSurfaceRect: boolean = false;
   private touchInput: TouchInput = new TouchInput();
   private timer: number = -1;
   private imeWindow: window.Window | undefined = undefined;
@@ -77,7 +127,7 @@ struct Index {
     }
     if (this.timer !== -1) { clearInterval(this.timer); this.timer = -1; }
     this.releaseInput();
-    plugin.destroySurface();
+    this.controller.releaseSurface();
   }
   private async terminateHost(context: common.UIAbilityContext): Promise<void> {
     if (this.terminating) { return; }
@@ -144,6 +194,10 @@ struct Index {
       } catch (error) {
         record(`IME window geometry listener unavailable: ${describe(error as BusinessError)}`);
       }
+      if (this.expandSystemArea && this.imeWindow === undefined &&
+        (deviceInfo.deviceType === 'phone' || deviceInfo.deviceType === 'tablet')) {
+        throw new Error('Immersive startup requires the main window geometry');
+      }
       const args = AppStorage.get<string[]>('godotArguments');
       if (args === undefined) { throw new Error('Host launch arguments are missing'); }
       setStep('host:start-engine');
@@ -155,6 +209,7 @@ struct Index {
       const nativeArgs = nativeStringArray(args, 'setup.arguments');
       const nativePermissions = nativeStringArray(permissions, 'setup.grantedPermissions');
       record(`native setup snapshot: arguments=${nativeArgs.length} permissions=${nativePermissions.length}`);
+      this.controller.prepareSurfaceRect = (): SurfaceRect | undefined => this.prepareSurfaceRect();
       plugin.setup(nativeArgs, nativePermissions, packagedGame);
       record('engine setup accepted; waiting for surface/start state');
       this.ready = true;
@@ -169,9 +224,47 @@ struct Index {
       this.message = localizedUIString(this.getUIContext(), $r('app.string.host_start_failed'), cause.message);
     }
   }
+  private prepareSurfaceRect(): SurfaceRect | undefined {
+    if (!this.expandSystemArea ||
+      (deviceInfo.deviceType !== 'phone' && deviceInfo.deviceType !== 'tablet')) { return undefined; }
+    const target: SurfaceRect = { offsetX: 0, offsetY: 0, surfaceWidth: 0, surfaceHeight: 0 };
+    if (this.disposed || this.terminating || this.imeWindow === undefined) { return target; }
+    try {
+      const rect = this.imeWindow.getWindowProperties().windowRect;
+      target.surfaceWidth = rect.width;
+      target.surfaceHeight = rect.height;
+      if (rect.width <= 0 || rect.height <= 0) { return target; }
+      // This also runs in the surface callbacks, before its first size can
+      // start native initialization; it must not depend on FrameNode layout.
+      const surface = this.controller.getXComponentSurfaceRect();
+      if (!this.requestingSurfaceRect && (surface.surfaceWidth !== rect.width || surface.surfaceHeight !== rect.height ||
+        (surface.offsetX ?? 0) !== 0 || (surface.offsetY ?? 0) !== 0)) {
+        // A synchronous size callback may re-enter this method from the setter.
+        this.requestingSurfaceRect = true;
+        try {
+          this.controller.setXComponentSurfaceRect(target);
+        } finally {
+          this.requestingSurfaceRect = false;
+        }
+        record(`immersive surface: ${JSON.stringify(target)}`);
+        // A nested callback may observe a newer window during the request.
+        const latest = this.imeWindow.getWindowProperties().windowRect;
+        target.surfaceWidth = latest.width;
+        target.surfaceHeight = latest.height;
+      }
+    } catch (error) {
+      // Keep the startup gate closed until a later geometry event succeeds.
+      target.surfaceWidth = 0;
+      target.surfaceHeight = 0;
+      record(`immersive surface geometry unavailable: ${describe(error as BusinessError)}`);
+    }
+    return target;
+  }
   private updateImeSurfacePosition(): void {
     if (!this.ready || this.disposed || this.terminating) { return; }
     try {
+      // Recheck the last actual size if window geometry was temporarily unavailable.
+      this.controller.refreshSurfaceRect();
       const ui = this.getUIContext();
       const node = ui.getFrameNodeById('godot-surface');
       if (node === null) { return; }
@@ -179,22 +272,7 @@ struct Index {
       // The native IME mapper subtracts the current display's physical origin.
       // FrameNode positions are vp; SurfaceRect offsets are already px.
       const position = node.getGlobalPositionOnDisplay();
-      let surface = this.controller.getXComponentSurfaceRect();
-      if (this.expandSystemArea && this.imeWindow !== undefined &&
-        (deviceInfo.deviceType === 'phone' || deviceInfo.deviceType === 'tablet')) {
-        // expandSafeArea changes the component's display area, but XComponent
-        // keeps a separate surface rect which otherwise excludes system bars.
-        const rect = this.imeWindow.getWindowProperties().windowRect;
-        if (rect.width > 0 && rect.height > 0 &&
-          (surface.surfaceWidth !== rect.width || surface.surfaceHeight !== rect.height ||
-            (surface.offsetX ?? 0) !== 0 || (surface.offsetY ?? 0) !== 0)) {
-          this.controller.setXComponentSurfaceRect({
-            offsetX: 0, offsetY: 0, surfaceWidth: rect.width, surfaceHeight: rect.height
-          });
-          surface = this.controller.getXComponentSurfaceRect();
-          record(`immersive surface: ${JSON.stringify(surface)}`);
-        }
-      }
+      const surface = this.controller.getXComponentSurfaceRect();
       plugin.setSurfacePosition(ui.vp2px(position.x) + (surface.offsetX ?? 0),
         ui.vp2px(position.y) + (surface.offsetY ?? 0));
     } catch (error) {
@@ -433,10 +511,13 @@ struct Index {
       } else if (!this.engineRunning) {
         // Keep the surface mounted while native initialization runs underneath.
         // Startup is a splash; diagnostic controls appear only for a failure.
+        // The overlay must expand independently of the native surface below it.
         Column() {
           Image(this.editorHost ? $r('app.media.godot_splash') : $r('app.media.foreground')).width(256).height(256).objectFit(ImageFit.Contain)
             .accessibilityText('Godot')
         }.width('100%').height('100%').justifyContent(FlexAlign.Center).backgroundColor('#242424')
+          .expandSafeArea(this.expandSystemArea ? [SafeAreaType.SYSTEM] : [],
+            this.expandSystemArea ? [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM, SafeAreaEdge.START, SafeAreaEdge.END] : [])
       }
     }.width('100%').height('100%').backgroundColor('#242424')
       .expandSafeArea(this.expandSystemArea ? [SafeAreaType.SYSTEM] : [],

@@ -27,6 +27,22 @@ scene or unsigned HAP build does not establish permission, Vulkan, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
 
+## Mobile startup correction in 4.7.2-ohos.10
+
+The ArkTS loading overlay now expands into the system safe area independently
+of the native surface, so its background also covers the navigation region.
+Immersive phone and tablet hosts request the complete window surface before
+native startup and forward only positive sizes observed in actual ArkUI
+callbacks that match the current window. This avoids initializing the engine's
+boot image with an inset size and expanding its output afterwards.
+
+Surface reconciliation retains the latest observed size across temporary
+geometry-query failures, handles reentrant callbacks and ignores callbacks for
+destroyed or foreign surfaces. Desktop and non-immersive content sizing remain
+unchanged. This host-only revision reuses the signed native engine binaries from
+`4.7.2-ohos.9`; their embedded source revision remains `74c63111f`.
+Host ABI stays 4 and managed API/NuGet versions stay `4.7.2-ohos.3`.
+
 ## Mobile surface correction in 4.7.2-ohos.9
 
 OpenHarmony Vulkan swapchains retain the logical window dimensions separately

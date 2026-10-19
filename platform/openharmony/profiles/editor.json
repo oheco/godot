@@ -3,8 +3,8 @@
     "bundleId": "org.oheco.godoteditor",
     "displayName": "Godot Editor",
     "vendor": "oheco",
-    "versionCode": 4070209,
-    "versionName": "4.7.2.9",
+    "versionCode": 4070210,
+    "versionName": "4.7.2.10",
     "deviceTypes": ["2in1"],
     "orientation": "system"
   },

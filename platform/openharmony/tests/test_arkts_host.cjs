@@ -369,6 +369,12 @@ async function testPermissions() {
   console.log('PASS permissions: empty/duplicate filtering; system grants; live token truth; cancellation; fail closed');
 }
 
+function indexLogic(source) {
+  assert.ok(source.includes('  build() {'), 'Index structure changed; update the logic-only test transformation');
+  return (source.slice(0, source.indexOf('  build() {')) + '}\n')
+    .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
+}
+
 async function testIndex() {
   for (const mode of ['game', 'editor-none', 'editor-sdk']) {
     const profile = mode === 'game' ? gameProfile() : editorProfile(mode === 'editor-sdk' ? 'sdk' : 'none');
@@ -474,11 +480,6 @@ async function testIndex() {
         reportExit: () => calls.push(['exit-marker']), logInstanceState: () => calls.push(['instance-state']),
       },
     };
-    const transform = (source) => {
-      assert.ok(source.includes('  build() {'), 'Index structure changed; update the logic-only test transformation');
-      return (source.slice(0, source.indexOf('  build() {')) + '}\n')
-        .replace('@Entry\n@Component\nstruct Index', 'export class Index').replaceAll('@State ', '');
-    };
     const surfaceRect = { surfaceWidth: 800, surfaceHeight: 600, offsetX: 13.25, offsetY: -4.5 };
     let framePosition = { x: 125.5, y: 50.25 };
     let density = 2.5;
@@ -489,7 +490,7 @@ async function testIndex() {
         setXComponentSurfaceRect(rect) { surfaceUpdates.push(plain(rect)); Object.assign(surfaceRect, rect); }
       },
       AppStorage: { get: (key) => storage[key] }, $r: stringResource, setInterval: () => 1, clearInterval: () => {},
-    }, transform);
+    }, indexLogic);
     const page = new Index();
     page.getUIContext = () => ({
       getHostContext: () => context, vp2px: (value) => value * density,
@@ -629,6 +630,246 @@ async function testIndex() {
     assert.equal(calls.length, count, 'destroyed pages and queued callbacks never publish surface geometry');
   }
   console.log('PASS Index logic: game/editor NAPI, logs and permission grants; rect/display/density subscription and cleanup, both event orders, same-rect display changes, density reflow and late callback guards; SDK-only runtime; no game child logic');
+}
+
+async function startupSurfaceFixture({ deviceType = 'phone', immersive = true, missingWindow = false } = {}) {
+  const profile = gameProfile();
+  profile.window.expandIntoSystemArea = immersive;
+  const context = { ...hostContext(), resourceManager: stringResourceManager() };
+  const storage = { godotHostConfig: profile, godotArguments: ['--verbose'] };
+  const state = {
+    windowRect: { left: 0, top: 0, width: 1080, height: 2400 },
+    getterRect: { offsetX: 0, offsetY: 100, surfaceWidth: 1080, surfaceHeight: 2200 },
+    windowError: undefined, surfaceError: undefined, setter: undefined, setterDepth: 0, maximumSetterDepth: 0,
+  };
+  const events = [], requests = [], callbacks = [], publications = [], starts = [], setupSnapshots = [], logs = [], failures = [];
+  const listeners = new Map();
+  let page, originalProvider, setupAccepted = false, nativeId, nativeSize;
+  // Observe only native start eligibility: accepted setup, bound surface ID and
+  // positive published size. The real source controller owns all reconciliation.
+  const observeStart = () => {
+    if (starts.length === 0 && setupAccepted && nativeSize && nativeId === nativeSize.id &&
+      nativeSize.width > 0 && nativeSize.height > 0) {
+      starts.push({ ...nativeSize, windowRect: { ...state.windowRect } });
+    }
+  };
+  const plugin = {
+    configure: () => '', setResourceManager: () => {}, setWindowId: () => {}, processId: () => 11,
+    setup: () => {
+      setupSnapshots.push({ ready: page.ready, providerInstalled: page.controller.prepareSurfaceRect !== originalProvider });
+      setupAccepted = true;
+      observeStart();
+    },
+    setSurfaceId: (id) => { events.push(['bind', String(id)]); nativeId = String(id); observeStart(); },
+    changeSurface: (id, width, height) => {
+      nativeSize = { id: String(id), width, height };
+      events.push(['size', String(id), width, height]);
+      publications.push({ ...nativeSize, windowRect: { ...state.windowRect },
+        windowError: !!state.windowError, callbacks: callbacks.slice() });
+      observeStart();
+    },
+    destroySurface: () => { events.push(['destroy']); nativeId = undefined; nativeSize = undefined; },
+    inputTouch: () => {}, sendWindowEvent: () => {},
+  };
+  const hostWindow = {
+    getWindowProperties: () => {
+      if (state.windowError) { throw state.windowError; }
+      return { windowRect: { ...state.windowRect } };
+    },
+    on: (name, listener) => { listeners.set(name, listener); listener({ staleRect: { width: 1, height: 1 } }); },
+    off: (name, listener) => { if (listeners.get(name) === listener) { listeners.delete(name); } },
+  };
+  const { Index } = load('pages/Index.ets', {
+    '@kit.AbilityKit': {}, '@kit.InputKit': { KeyCode: {} }, './KeyMap': { mapKeyCode: () => 0 },
+    '@kit.BasicServicesKit': { deviceInfo: { deviceType } },
+    '@kit.ArkUI': { window: { getLastWindow: async () => {
+      if (missingWindow) { throw new Error('fixture main window unavailable'); }
+      return hostWindow;
+    } } },
+    'libentry.so': { default: plugin }, '../runtime/Config': config,
+    '../runtime/NativeArguments': nativeArguments, '../runtime/LocalizedStrings': localizedStrings,
+    '../runtime/Permissions': { requestUserPermissions: async () => {}, grantedPermissions: () => [] },
+    '../runtime/Runtime': {}, '../runtime/Launch': {}, '../runtime/TouchInput': touchInput,
+    '../runtime/AxisInput': load('runtime/AxisInput.ets', {}),
+    '../runtime/Diagnostics': { ...diagnostics, record: (message) => logs.push(message), fail: (error) => failures.push(error) },
+  }, {
+    XComponentController: class {
+      getXComponentSurfaceRect() {
+        if (state.surfaceError) { throw state.surfaceError; }
+        return { ...state.getterRect };
+      }
+      setXComponentSurfaceRect(rect) {
+        // Requesting a rect does not confirm it or update the stale SDK getter.
+        requests.push(plain(rect));
+        state.maximumSetterDepth = Math.max(state.maximumSetterDepth, ++state.setterDepth);
+        try { state.setter?.(plain(rect)); } finally { state.setterDepth--; }
+      }
+    },
+    AppStorage: { get: (key) => storage[key] }, $r: stringResource,
+    setInterval: () => { events.push(['timer']); return 1; }, clearInterval: () => events.push(['clear-timer']),
+  }, indexLogic);
+  page = new Index();
+  originalProvider = page.controller.prepareSurfaceRect;
+  page.getUIContext = () => ({ getHostContext: () => context, getFrameNodeById: () => null });
+  await page.prepare();
+  return {
+    page, state, events, requests, callbacks, publications, starts, setupSnapshots, logs, failures, listeners,
+    immersive: immersive && ['phone', 'tablet'].includes(deviceType),
+    create: (id = '41') => page.controller.onSurfaceCreated(id),
+    changed: (width, height, id = '41') => {
+      callbacks.push({ id, width, height });
+      page.controller.onSurfaceChanged(id, { surfaceWidth: width, surfaceHeight: height });
+    },
+    geometry: (name = 'windowRectChange') => listeners.get(name)({ staleRect: { width: 1, height: 1 } }),
+    dispose: () => page.aboutToDisappear(),
+  };
+}
+
+function assertSurfacePublications(fixture, expected) {
+  assert.deepEqual(fixture.publications.map(({ id, width, height }) => [id, width, height]), expected);
+  for (const publication of fixture.publications) {
+    assert.ok(publication.callbacks.some(({ id, width, height }) => id === publication.id &&
+      width === publication.width && height === publication.height), 'publish an actual callback size, never a requested/getter size');
+    if (fixture.immersive) {
+      assert.equal(publication.windowError, false, 'window geometry failure keeps native publication closed');
+      assert.deepEqual([publication.width, publication.height], [publication.windowRect.width, publication.windowRect.height],
+        'every immersive publication matches the live SDK window at the native boundary');
+    }
+  }
+  assert.equal(fixture.starts.length, expected.length === 0 ? 0 : 1, 'native start eligibility is reached once, after a confirmed publication');
+  if (fixture.immersive && fixture.starts.length) {
+    const first = fixture.starts[0];
+    assert.deepEqual([first.width, first.height], [first.windowRect.width, first.windowRect.height], 'first native start uses the live full-size window');
+  }
+}
+
+async function testStartupSurface() {
+  const delayed = await startupSurfaceFixture();
+  assert.equal(delayed.page.ready, true, delayed.page.message);
+  assert.deepEqual(delayed.setupSnapshots, [{ ready: false, providerInstalled: true }], 'provider is installed before setup and ready');
+  delayed.create();
+  assert.deepEqual(delayed.requests[0], { offsetX: 0, offsetY: 0, surfaceWidth: 1080, surfaceHeight: 2400 });
+  for (const [width, height] of [[0, 0], [-1, 2400], [1080, 2200]]) { delayed.changed(width, height); }
+  assertSurfacePublications(delayed, []);
+  delayed.state.windowRect.height = 2500;
+  delayed.changed(1080, 2400);
+  assertSurfacePublications(delayed, []); // An old requested target is no longer current.
+  delayed.changed(1080, 2500);
+  assertSurfacePublications(delayed, [['41', 1080, 2500]]);
+  delayed.changed(1080, 2500);
+  for (const name of delayed.listeners.keys()) { delayed.geometry(name); }
+  delayed.changed(1080, 2200); // Late inset callback must not undo the correct size.
+  delayed.geometry();
+  delayed.changed(1080, 2500);
+  assertSurfacePublications(delayed, [['41', 1080, 2500]]);
+  delayed.state.windowRect = { left: 0, top: 0, width: 2500, height: 1080 };
+  delayed.geometry();
+  assertSurfacePublications(delayed, [['41', 1080, 2500]]);
+  delayed.changed(2500, 1080);
+  assertSurfacePublications(delayed, [['41', 1080, 2500], ['41', 2500, 1080]]);
+  delayed.dispose();
+
+  const early = await startupSurfaceFixture({ deviceType: 'tablet' });
+  early.changed(1080, 2400);
+  assertSurfacePublications(early, []);
+  early.create();
+  assertSurfacePublications(early, [['41', 1080, 2400]]);
+  const beforeForeign = [early.events.length, early.requests.length];
+  early.create('99');
+  early.changed(400, 300, '99');
+  early.page.controller.onSurfaceDestroyed('99');
+  assert.deepEqual([early.events.length, early.requests.length], beforeForeign, 'foreign lifecycle callbacks cannot publish, bind, resize or destroy');
+  const lateListeners = [...early.listeners.values()];
+  early.dispose();
+  assert.equal(early.listeners.size, 0);
+  assert.equal(early.events.filter(([name]) => name === 'destroy').length, 1);
+  const afterDisposal = [early.events.length, early.requests.length];
+  early.create();
+  early.changed(1080, 2400);
+  early.page.controller.refreshSurfaceRect();
+  early.page.controller.onSurfaceDestroyed('41');
+  for (const listener of lateListeners) { listener(); }
+  assert.deepEqual([early.events.length, early.requests.length], afterDisposal, 'disposed controllers and queued window callbacks have no native effects');
+
+  const foreignCache = await startupSurfaceFixture();
+  foreignCache.changed(1080, 2400, '99');
+  foreignCache.create();
+  assertSurfacePublications(foreignCache, []);
+  foreignCache.changed(1080, 2400);
+  assertSurfacePublications(foreignCache, [['41', 1080, 2400]]);
+  foreignCache.dispose();
+
+  const reentrant = await startupSurfaceFixture();
+  reentrant.state.setter = (rect) => reentrant.changed(rect.surfaceWidth, rect.surfaceHeight);
+  reentrant.create();
+  assert.equal(reentrant.state.maximumSetterDepth, 1, 'a synchronous callback with a stale getter cannot recurse into another setter');
+  assert.equal(reentrant.requests.length, 1);
+  assertSurfacePublications(reentrant, [['41', 1080, 2400]]);
+  reentrant.geometry();
+  reentrant.changed(1080, 2200); // The nested correct callback supersedes this outer inset callback.
+  assertSurfacePublications(reentrant, [['41', 1080, 2400]]);
+  assert.equal(reentrant.state.maximumSetterDepth, 1);
+  assert.equal(reentrant.state.getterRect.surfaceHeight, 2200, 'getter intentionally remains stale after confirmed callbacks');
+  reentrant.dispose();
+
+  const movedDuringRequest = await startupSurfaceFixture();
+  movedDuringRequest.state.setter = (rect) => {
+    movedDuringRequest.state.windowRect.height = 2600;
+    movedDuringRequest.changed(rect.surfaceWidth, rect.surfaceHeight);
+  };
+  movedDuringRequest.create();
+  assertSurfacePublications(movedDuringRequest, []);
+  movedDuringRequest.geometry();
+  assert.deepEqual(movedDuringRequest.requests.map((rect) => rect.surfaceHeight), [2400, 2600]);
+  assert.equal(movedDuringRequest.state.maximumSetterDepth, 1);
+  assertSurfacePublications(movedDuringRequest, [['41', 1080, 2600]]);
+  movedDuringRequest.dispose();
+
+  for (const failure of ['window', 'surface', 'zero-window']) {
+    const cached = await startupSurfaceFixture();
+    if (failure === 'window') { cached.state.windowError = new Error('fixture temporary window query failure'); }
+    if (failure === 'surface') { cached.state.surfaceError = new Error('fixture temporary surface query failure'); }
+    if (failure === 'zero-window') { cached.state.windowRect.width = 0; }
+    cached.create();
+    cached.changed(1080, 2400);
+    assertSurfacePublications(cached, []);
+    cached.state.windowError = undefined;
+    cached.state.surfaceError = undefined;
+    cached.state.windowRect.width = 1080;
+    const callbackCount = cached.callbacks.length;
+    cached.geometry('systemDensityChange');
+    assert.equal(cached.callbacks.length, callbackCount, 'recovery uses the cached actual callback without inventing a new one');
+    assertSurfacePublications(cached, [['41', 1080, 2400]]);
+    cached.geometry('displayIdChange');
+    assertSurfacePublications(cached, [['41', 1080, 2400]]);
+    if (failure !== 'zero-window') { assert.ok(cached.logs.some((message) => message.includes('immersive surface geometry unavailable'))); }
+    cached.dispose();
+  }
+
+  for (const deviceType of ['phone', 'tablet']) {
+    const missing = await startupSurfaceFixture({ deviceType, missingWindow: true });
+    assert.equal(missing.page.ready, false);
+    assert.equal(missing.page.showStatus, true, 'missing immersive window shows prepare failure UI');
+    assert.match(missing.page.message, /Immersive startup requires the main window geometry/);
+    assert.equal(missing.failures.length, 1);
+    assert.deepEqual(missing.setupSnapshots, [], 'missing window fails before native setup');
+    assert.equal(missing.events.some(([name]) => name === 'timer'), false);
+    missing.dispose();
+  }
+  for (const options of [{ deviceType: '2in1' }, { deviceType: 'phone', immersive: false },
+    { deviceType: '2in1', missingWindow: true }, { deviceType: 'tablet', immersive: false, missingWindow: true }]) {
+    const content = await startupSurfaceFixture(options);
+    assert.equal(content.page.ready, true, content.page.message);
+    content.create();
+    content.changed(0, 0);
+    assertSurfacePublications(content, []);
+    content.changed(800, 600);
+    content.changed(800, 600);
+    assertSurfacePublications(content, [['41', 800, 600]]);
+    assert.deepEqual(content.requests, [], 'desktop and nonimmersive content sizes are not forced to window dimensions');
+    content.dispose();
+  }
+  console.log('PASS startup surface: provider before ready; real matching callbacks before native start; zero/inset/stale/foreign gates; callback-before-created; synchronous stale-getter/new-window reentry; cached geometry recovery; deduplication, disposal, missing-window failure UI and desktop/nonimmersive sizing');
 }
 
 async function testLauncher() {
@@ -900,6 +1141,7 @@ async function main() {
   await testExternalApps();
   await testPermissions();
   await testIndex();
+  await testStartupSurface();
   await testLauncher();
   await testRuntime();
   console.log('PASS all ArkTS host logic regression tests');
