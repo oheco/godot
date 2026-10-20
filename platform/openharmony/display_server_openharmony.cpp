@@ -31,7 +31,6 @@
 #include "display_server_openharmony.h"
 
 #include "engine_host_openharmony.h"
-
 #include "os_openharmony.h"
 #include "rendering_context_driver_vulkan_openharmony.h"
 #include "wrapper_openharmony.h"
@@ -41,6 +40,12 @@
 #include "servers/display/native_menu.h"
 #include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
 #include "servers/rendering/rendering_device.h"
+
+#ifdef GLES3_ENABLED
+#include "gl_manager_openharmony.h"
+
+#include "drivers/gles3/rasterizer_gles3.h"
+#endif
 
 #include <database/pasteboard/oh_pasteboard.h>
 #include <database/udmf/udmf.h>
@@ -59,15 +64,17 @@ DisplayServerOpenHarmony *DisplayServerOpenHarmony::get_singleton() {
 Vector<String> DisplayServerOpenHarmony::get_rendering_drivers_func() {
 	Vector<String> drivers;
 	drivers.push_back("vulkan");
+#ifdef GLES3_ENABLED
+	drivers.push_back("opengl3");
+#endif
 	return drivers;
 }
 
 DisplayServer *DisplayServerOpenHarmony::create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
 	DisplayServer *ds = memnew(DisplayServerOpenHarmony(p_rendering_driver, p_mode, p_vsync_mode, p_flags, p_position, p_resolution, p_screen, p_context, p_parent_window, r_error));
 	if (r_error != OK) {
-		OS::get_singleton()->alert(
-				"Your device seems not to support the required Vulkan version.\n\n"
-				"Unable to initialize Vulkan video driver.");
+		const String driver_name = p_rendering_driver == "opengl3" ? "OpenGL ES 3" : p_rendering_driver;
+		OS::get_singleton()->alert(vformat("Unable to initialize the %s video driver. See the engine log for details.", driver_name));
 	}
 	return ds;
 }
@@ -87,53 +94,62 @@ DisplayServerOpenHarmony::DisplayServerOpenHarmony(const String &p_rendering_dri
 	// supports no global menu features.
 	native_menu = memnew(NativeMenu);
 
-	if (rendering_driver != "vulkan") {
-		ERR_PRINT(vformat("Failed to create %s context.", rendering_driver));
-		r_error = ERR_UNAVAILABLE;
-		return;
-	}
-
-	rendering_context = memnew(RenderingContextDriverVulkanOpenHarmony);
-
-	if (rendering_context->initialize() != OK) {
-		memdelete(rendering_context);
-		rendering_context = nullptr;
-		ERR_PRINT(vformat("Failed to initialize %s context.", rendering_driver));
-		r_error = ERR_UNAVAILABLE;
-		return;
-	}
-	RenderingContextDriverVulkanOpenHarmony::WindowPlatformData vulkan;
 	OHNativeWindow *native_window = OS_OpenHarmony::get_singleton()->get_native_window();
 	if (!native_window) {
-		r_error = ERR_UNAVAILABLE;
-		return;
-	}
-	vulkan.window = native_window;
-
-	if (rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, &vulkan) != OK) {
-		ERR_PRINT(vformat("Failed to create %s window.", rendering_driver));
-		memdelete(rendering_context);
-		rendering_context = nullptr;
+		ERR_PRINT("Cannot initialize a rendering driver without an OpenHarmony native window.");
 		r_error = ERR_UNAVAILABLE;
 		return;
 	}
 
-	Size2i display_size = OS_OpenHarmony::get_singleton()->get_display_size();
-	rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.width, display_size.height);
-	rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
+	if (rendering_driver == "vulkan") {
+		rendering_context = memnew(RenderingContextDriverVulkanOpenHarmony);
+		if (rendering_context->initialize() != OK) {
+			memdelete(rendering_context);
+			rendering_context = nullptr;
+			ERR_PRINT("Failed to initialize Vulkan context.");
+			r_error = ERR_UNAVAILABLE;
+			return;
+		}
+		RenderingContextDriverVulkanOpenHarmony::WindowPlatformData vulkan;
+		vulkan.window = native_window;
 
-	rendering_device = memnew(RenderingDevice);
-	if (rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID) != OK) {
-		memdelete(rendering_device);
-		rendering_device = nullptr;
-		memdelete(rendering_context);
-		rendering_context = nullptr;
+		if (rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, &vulkan) != OK) {
+			ERR_PRINT("Failed to create Vulkan window.");
+			memdelete(rendering_context);
+			rendering_context = nullptr;
+			r_error = ERR_UNAVAILABLE;
+			return;
+		}
+
+		Size2i display_size = OS_OpenHarmony::get_singleton()->get_display_size();
+		rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.width, display_size.height);
+		rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
+
+		rendering_device = memnew(RenderingDevice);
+		if (rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID) != OK) {
+			memdelete(rendering_device);
+			rendering_device = nullptr;
+			memdelete(rendering_context);
+			rendering_context = nullptr;
+			r_error = ERR_UNAVAILABLE;
+			return;
+		}
+		rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
+		RendererCompositorRD::make_current();
+#ifdef GLES3_ENABLED
+	} else if (rendering_driver == "opengl3") {
+		gl_manager = memnew(GLManagerOpenHarmony);
+		r_error = gl_manager->initialize(native_window, p_vsync_mode);
+		if (r_error != OK) {
+			return;
+		}
+		RasterizerGLES3::make_current(false);
+#endif
+	} else {
+		ERR_PRINT(vformat("Unsupported OpenHarmony rendering driver: %s.", rendering_driver));
 		r_error = ERR_UNAVAILABLE;
 		return;
 	}
-	rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
-
-	RendererCompositorRD::make_current();
 
 	Input::get_singleton()->set_event_dispatch_function(_dispatch_input_events);
 
@@ -154,10 +170,63 @@ DisplayServerOpenHarmony::~DisplayServerOpenHarmony() {
 	if (rendering_context) {
 		memdelete(rendering_context);
 	}
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		memdelete(gl_manager);
+	}
+#endif
 	if (native_menu) {
 		memdelete(native_menu);
 		native_menu = nullptr;
 	}
+}
+
+void DisplayServerOpenHarmony::release_rendering_thread() {
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		gl_manager->release_current();
+	}
+#endif
+}
+
+void DisplayServerOpenHarmony::gl_window_make_current(DisplayServerEnums::WindowID p_window_id) {
+	ERR_FAIL_COND(p_window_id != DisplayServerEnums::MAIN_WINDOW_ID);
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		gl_manager->make_current();
+	}
+#endif
+}
+
+void DisplayServerOpenHarmony::swap_buffers() {
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		gl_manager->swap_buffers();
+	}
+#endif
+}
+
+int64_t DisplayServerOpenHarmony::window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window) const {
+	ERR_FAIL_COND_V(p_window != DisplayServerEnums::MAIN_WINDOW_ID, 0);
+	if (p_handle_type == DisplayServerEnums::WINDOW_HANDLE) {
+		return reinterpret_cast<int64_t>(OS_OpenHarmony::get_singleton()->get_native_window());
+	}
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		switch (p_handle_type) {
+			case DisplayServerEnums::DISPLAY_HANDLE:
+			case DisplayServerEnums::EGL_DISPLAY:
+				return reinterpret_cast<int64_t>(gl_manager->get_display());
+			case DisplayServerEnums::OPENGL_CONTEXT:
+				return reinterpret_cast<int64_t>(gl_manager->get_context());
+			case DisplayServerEnums::EGL_CONFIG:
+				return reinterpret_cast<int64_t>(gl_manager->get_config());
+			default:
+				break;
+		}
+	}
+#endif
+	return 0;
 }
 
 void DisplayServerOpenHarmony::_window_callback(const Callable &p_callable, const Variant &p_arg, bool p_deferred) const {
@@ -881,12 +950,24 @@ DisplayServerEnums::WindowMode DisplayServerOpenHarmony::window_get_mode(Display
 }
 
 void DisplayServerOpenHarmony::window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window) {
+	ERR_FAIL_COND(p_window != DisplayServerEnums::MAIN_WINDOW_ID);
 	if (rendering_context) {
 		rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
 	}
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		gl_manager->set_vsync_mode(p_vsync_mode);
+	}
+#endif
 }
 
 DisplayServerEnums::VSyncMode DisplayServerOpenHarmony::window_get_vsync_mode(DisplayServerEnums::WindowID p_window) const {
+	ERR_FAIL_COND_V(p_window != DisplayServerEnums::MAIN_WINDOW_ID, DisplayServerEnums::VSYNC_ENABLED);
+#ifdef GLES3_ENABLED
+	if (gl_manager) {
+		return gl_manager->get_vsync_mode();
+	}
+#endif
 	return rendering_context ? rendering_context->window_get_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID) : DisplayServerEnums::VSYNC_ENABLED;
 }
 

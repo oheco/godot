@@ -23,9 +23,38 @@ games retain their self-contained runtime and have no external SDK dependency.
 
 **Experimental.** Native/headless tests, mock boundary tests, compilation and
 signed HAP UI acceptance are separate validation scopes. A successful native C#
-scene or unsigned HAP build does not establish permission, Vulkan, input or
+scene or unsigned HAP build does not establish permission, graphics, input or
 multi-instance behaviour in the final signed application. Revalidate these
 application behaviours after changing the common host.
+
+## OpenGL ES and Vulkan in 4.7.2-ohos.11
+
+The Editor and both game templates compile the Compatibility (OpenGL ES 3.0+)
+and Vulkan backends together. Projects keep their renderer choice:
+`gl_compatibility` uses the `opengl3` driver through native EGL/GLES, while
+`mobile` and `forward_plus` use Vulkan. No project renderer setting is rewritten.
+The project manager follows Godot's normal Compatibility default when GLES is
+compiled in. Rendering overrides remain available through `--rendering-method`
+and `--rendering-driver`.
+
+OpenHarmony EGL uses the default display and requires EGL 1.4 or newer. Context
+creation, rendering-thread transfers, presentation and cleanup share the existing
+single-surface engine lifetime. Disabled/enabled VSync use swap intervals 0/1;
+adaptive and mailbox requests fall back to enabled VSync. This is OpenGL ES
+support, not a desktop OpenGL or ANGLE implementation. A custom build can retain
+Vulkan alone with `opengl3=no`; the official Editor/debug/release builds enable
+both. Native GLES context probes, complete Godot rendering and installed HAP
+acceptance are separate validation scopes.
+
+Export validation resolves the target platform's project feature overrides and
+checks the driver belonging to the selected renderer. Compatibility projects no
+longer need to change their rendering method to pass OpenHarmony export checks.
+The ETC2/ASTC import requirement is retained. Templates record their compiled
+`renderingDrivers`, and export checks the selected template's capabilities before
+building the app. Older templates without that metadata retain Vulkan support;
+Compatibility exports require the updated GLES-capable templates. Custom templates
+follow the same check. Host ABI stays 4 and managed API/NuGet versions stay
+`4.7.2-ohos.3`.
 
 ## Mobile startup correction in 4.7.2-ohos.10
 
@@ -263,7 +292,7 @@ Generate the game archive with the ordinary SCons target:
 
 ```sh
 python3 -m SCons platform=openharmony target=template_debug arch=arm64 \
-  module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=yes \
+  module_mono_enabled=yes vulkan=yes opengl3=yes generate_bundle=yes \
   debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j8
 ```
 
@@ -320,7 +349,7 @@ NATIVE_SDK=$OO_ROOT/packages/ohos-sdk-native/26.0.0.35-Beta
 DOTNET_SDK=$OO_ROOT/packages/dotnet-sdk/10.0.401-ohos.2
 
 python3 -m SCons platform=openharmony target=editor arch=arm64 \
-  module_mono_enabled=yes vulkan=yes opengl3=no generate_bundle=no \
+  module_mono_enabled=yes vulkan=yes opengl3=yes generate_bundle=no \
   debug_symbols=no dev_build=no OPENHARMONY_SDK_PATH="$NATIVE_SDK" -j8
 
 python3 platform/openharmony/build-cli.py \
@@ -572,8 +601,9 @@ downloads, verifies and extracts.
 
 Open the project root in DevEco, select the SDK, configure automatic signing with
 your own account, and build the `entry` module. The shell targets **2-in-1
-devices** with SDK API **26 or newer** and Vulkan only. The engine itself is
-compiled against the OpenHarmony native SDK, which is a separate input.
+devices** with SDK API **26 or newer** and supports Vulkan and native OpenGL ES
+3.0+. The engine itself is compiled against the OpenHarmony native SDK, which is
+a separate input.
 
 The Editor requests `ohos.permission.READ_WRITE_USER_FILE` at runtime to access
 user projects and the oo-installed SDK. Its approved `CUSTOM_SANDBOX` profile

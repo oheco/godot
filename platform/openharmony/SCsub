@@ -68,6 +68,7 @@ def generate_bundle(target, source, env):
             "nativeAotEnabled": bool(env["module_mono_enabled"]),
             "architecture": lib_arch_dir,
             "target": env["target"],
+            "renderingDrivers": [driver for driver in ("vulkan", "opengl3") if env[driver]],
             "automaticSigningBackend": {
                 "type": "native" if signer else "unavailable",
                 "protocolVersion": 1,

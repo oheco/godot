@@ -501,10 +501,44 @@ Error EditorExportPlatformOpenHarmony::export_project_helper(const Ref<EditorExp
 	const bool managed_runtime = has_export_feature(p_preset, p_debug, "dotnet");
 	host_options["dotnet"] = managed_runtime;
 	host_options["dotnet_native_aot"] = has_export_feature(p_preset, p_debug, "dotnet_native_aot");
+	Dictionary metadata;
+	const String metadata_path = project_dir.path_join("entry/src/main/resources/rawfile/godot_template.json");
+	if (FileAccess::exists(metadata_path) && OpenHarmonyProjectConfig::read_document(metadata_path, metadata) != OK) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("The OpenHarmony template has invalid godot_template.json metadata. Rebuild or install the current templates."));
+		return ERR_FILE_CORRUPT;
+	}
+	Array rendering_drivers;
+	bool valid_rendering_drivers = true;
+	if (metadata.has("renderingDrivers")) {
+		const Variant declared_drivers = metadata["renderingDrivers"];
+		valid_rendering_drivers = declared_drivers.get_type() == Variant::ARRAY;
+		if (valid_rendering_drivers) {
+			rendering_drivers = declared_drivers;
+			valid_rendering_drivers = !rendering_drivers.is_empty();
+			for (const Variant &driver : rendering_drivers) {
+				valid_rendering_drivers = valid_rendering_drivers && driver.get_type() == Variant::STRING && !String(driver).is_empty();
+			}
+		}
+	} else {
+		// Templates predating rendering capability metadata only supported Vulkan.
+		rendering_drivers.push_back("vulkan");
+	}
+	if (!valid_rendering_drivers) {
+		add_message(EXPORT_MESSAGE_ERROR, TTR("Export"), TTR("The OpenHarmony template has invalid renderingDrivers metadata. Expected a nonempty array of driver names. Rebuild or install the current templates."));
+		return ERR_FILE_CORRUPT;
+	}
+	const String rendering_method = get_project_setting(p_preset, "rendering/renderer/rendering_method");
+	const String required_driver = rendering_method == "gl_compatibility" ? "opengl3" : "vulkan";
+	if (!rendering_drivers.has(required_driver)) {
+		if (required_driver == "opengl3") {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Export GLES Project"), TTR("This Compatibility project requires an OpenHarmony template with the OpenGL ES 3 renderer. Update the OpenHarmony templates or rebuild them with opengl3=yes."));
+		} else {
+			add_message(EXPORT_MESSAGE_ERROR, TTR("Export Vulkan Project"), TTR("This Forward+ or Mobile project requires an OpenHarmony template with the Vulkan renderer. Update the OpenHarmony templates or rebuild them with vulkan=yes."));
+		}
+		return ERR_UNCONFIGURED;
+	}
 	if (managed_runtime) {
-		Dictionary metadata;
-		if (OpenHarmonyProjectConfig::read_document(project_dir.path_join("entry/src/main/resources/rawfile/godot_template.json"), metadata) != OK ||
-				!bool(metadata.get("monoEnabled", false))) {
+		if (!bool(metadata.get("monoEnabled", false))) {
 			add_message(EXPORT_MESSAGE_ERROR, TTR("Export .NET Project"), TTR("This C# project requires an OpenHarmony template built with module_mono_enabled=yes. Rebuild or install the current templates."));
 			return ERR_UNCONFIGURED;
 		}
@@ -1216,14 +1250,23 @@ bool EditorExportPlatformOpenHarmony::has_valid_project_configuration(const Ref<
 		err += TTR("ETC2/ASTC texture compression must be enabled for OpenHarmony export. Enable it in Project Settings (Rendering > Textures > VRAM Compression > Import ETC2 ASTC).") + "\n";
 	}
 
-	// Check if Vulkan renderer is being used (required for OpenHarmony)
-	String rendering_method = GLOBAL_GET("rendering/renderer/rendering_method.mobile");
-	String rendering_driver = GLOBAL_GET("rendering/rendering_device/driver.openharmony");
-
-	bool uses_vulkan = rendering_driver == "vulkan" && (rendering_method == "forward_plus" || rendering_method == "mobile");
-	if (!uses_vulkan) {
+	// Resolve feature overrides for the export target, rather than the editor host.
+	const String rendering_method = get_project_setting(p_preset, "rendering/renderer/rendering_method");
+	if (rendering_method == "gl_compatibility") {
+		const String rendering_driver = String(get_project_setting(p_preset, "rendering/gl_compatibility/driver")).to_lower();
+		if (rendering_driver != "opengl3") {
+			valid = false;
+			err += TTR("OpenHarmony Compatibility export requires the OpenGL 3 driver (OpenGL ES 3 on OpenHarmony). Set Rendering > GL Compatibility > Driver to 'opengl3' in Project Settings.") + "\n";
+		}
+	} else if (rendering_method == "forward_plus" || rendering_method == "mobile") {
+		const String rendering_driver = String(get_project_setting(p_preset, "rendering/rendering_device/driver")).to_lower();
+		if (rendering_driver != "vulkan") {
+			valid = false;
+			err += TTR("OpenHarmony Forward+ and Mobile export require the Vulkan rendering driver. Set Rendering > Rendering Device > Driver to 'vulkan' in Project Settings.") + "\n";
+		}
+	} else {
 		valid = false;
-		err += TTR("OpenHarmony export requires Vulkan renderer. Set rendering method to 'Forward+' or 'Mobile' and rendering driver to 'Vulkan' in Project Settings.") + "\n";
+		err += TTR("OpenHarmony export requires the Compatibility, Mobile or Forward+ rendering method. Set Rendering > Renderer > Rendering Method in Project Settings.") + "\n";
 	}
 
 	if (!err.is_empty()) {

@@ -40,7 +40,7 @@ def get_flags():
         "supported": ["mono"],
         "builtin_pcre2_with_jit": False,
         "vulkan": True,
-        "opengl3": False,
+        "opengl3": True,
     }
 
 
@@ -54,8 +54,8 @@ def configure(env):
     if not (native / "sysroot/usr/include").is_dir():
         print_error("Set OPENHARMONY_SDK_PATH to a prepared OpenHarmony SDK.")
         raise SystemExit(255)
-    if env["opengl3"] or not env["vulkan"]:
-        print_error("This OpenHarmony port requires vulkan=yes opengl3=no.")
+    if not env["vulkan"]:
+        print_error("This OpenHarmony port currently requires vulkan=yes; opengl3=yes enables the additional GLES3 backend.")
         raise SystemExit(255)
     env["OPENHARMONY_NATIVE_SDK"] = str(native)
     target = "aarch64-linux-ohos" if env["arch"] == "arm64" else "x86_64-linux-ohos"
@@ -75,6 +75,8 @@ def configure(env):
     env.Append(CPPPATH=["#platform/openharmony"])
     env.Append(CPPDEFINES=["OPENHARMONY_ENABLED", "UNIX_ENABLED", "__OPEN_HARMONY__", "_GNU_SOURCE", "VULKAN_ENABLED", "RD_ENABLED"])
     env.Append(LIBS=["m", "dl", "z", "hilog_ndk.z", "ace_ndk.z", "native_window", "ace_napi.z", "rawfile.z", "native_vsync", "ohaudio", "ohinput", "ohinputmethod", "native_display_manager", "native_window_manager", "native_drawing", "udmf", "pasteboard"])
+    if env["opengl3"]:
+        env.Append(CPPDEFINES=["GLES3_ENABLED"])
     if not env["use_volk"]:
         env.Append(LIBS=["vulkan"])
     env["SHLIBSUFFIX"] = ".so"

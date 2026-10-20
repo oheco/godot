@@ -5,6 +5,85 @@ native temporary filesystem; fixtures clean up their own temporary directories.
 Persistent build evidence belongs in a separate cache/output directory, not the
 source template or a user's configured DevEco project.
 
+## Native EGL/GLES manager and export rendering selection
+
+```sh
+python3 platform/openharmony/tests/test_gl_manager.py \
+  --native-sdk "$NATIVE_SDK" --output "$NEW_EGL_RECEIPT"
+python3 platform/openharmony/tests/test_rendering_export.py \
+  --sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY" --library-only
+```
+
+The manager fixture compiles the complete production manager and the bundled
+GLAD sources, signs the executable and runs failure/cleanup/context-transfer
+cases. Its real EGL/GLES probe replaces only the window surface with a pbuffer;
+clear/readback and rendering-thread migration use the real driver. Pbuffer
+results do not establish XComponent presentation or actual window VSync support.
+The configuration cases also execute the platform configuration and GLAD build
+rules, including the Vulkan-only build option.
+
+The export fixture starts independent native headless Editors with isolated
+project/XDG/Godot paths and keeps the real HOME. It covers Compatibility,
+Mobile/Forward+, feature and preset overrides, the inactive driver's settings,
+unsupported driver/method errors and the retained ETC2/ASTC requirement. Use
+`--library-only` against the final rebuilt signed Editor to test its compiled
+exporter. Without that option it compiles the byte-exact production validation
+method into the fixture, allowing a previous signed library to exercise the new
+validation before a full build. `--generated-headers "$PREVIOUS_SOURCE_ROOT"`
+can supply missing generated headers for this development mode.
+`--expect-original-bug` runs a Vulkan control and requires the old library to
+reject two otherwise valid Compatibility configurations. No configuration test
+opens a GPU window or establishes renderer presentation.
+
+## Signed engine rendering into a real native window
+
+After the platform build has generated its headers, select the corresponding
+signed Editor, debug or release library:
+
+```sh
+python3 platform/openharmony/tests/test_rendering_window.py \
+  --native-sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY" \
+  --engine-target editor --method gl_compatibility \
+  --render-thread separate --resize --output "$NEW_WINDOW_EVIDENCE_DIR"
+```
+
+Use `--method mobile` or `--method forward_plus` for Vulkan, and
+`--engine-target template_debug` / `template_release` for those signed libraries.
+Omit `--resize` for 320×240 and use `--render-thread safe` for a main-thread run.
+The test preserves HOME and isolates project/XDG/Godot/oo paths in TMPDIR. It
+compiles and signs only its small runner, verifies the selected library's signed
+ELF metadata and actual loaded path, then uses normal OS/Main startup. Project
+settings select the backend; no rendering-method/driver command-line override is
+passed.
+
+The fixture waits for 20 post-draw frames, reads back 2D, 3D, depth and background
+pixels, saves a PNG, and independently consumes at least 10 real presentation
+buffers. Optional resize also requires at least 5 actual 640×480 buffers through
+the public display resize path. It checks VSync 0/1 requests and getters, reports
+EGL swap-interval errors, waits for GPU fences and verifies balanced buffer release
+and surface destruction. It does not measure display scanout timing or cover
+ArkTS, installed HAP startup, UIAbility or visible ArkUI windows.
+
+## Template backend metadata and real export rejection
+
+```sh
+python3 platform/openharmony/tests/test_template_rendering.py --generation-only
+python3 platform/openharmony/tests/test_template_rendering.py \
+  --godot "$FINAL_SIGNED_EDITOR_CLI" --jobs 2
+```
+
+Generation runs the complete production bundle action with actual template staging
+and ZIP serialization, adapting only SCons I/O boundaries and disabling the native
+signer for explicitly non-executable ELF data. It checks the declared capabilities
+follow the build flags. The metadata-only Vulkan-disabled fixture does not establish
+that this platform supports a Vulkan-disabled engine build.
+
+The CLI matrix performs 19 real project-only exports, covering selected debug and
+release templates, old Vulkan templates, new GLES templates, default/custom
+selection and malformed JSON/driver metadata. It requires unsupported backend
+combinations to fail with an update/rebuild diagnostic. Fixture libraries and
+exported PCKs are never executed; runnable template and HAP acceptance are separate.
+
 ## Child-game crash isolation and Output
 
 ```sh

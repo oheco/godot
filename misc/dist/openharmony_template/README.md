@@ -3,7 +3,9 @@
 This is the **only** DevEco source project for exported games and the Godot
 Editor. Both use the same Ability, ArkTS page, input mapping, N-API contract and
 engine thread. Defaults use the oo OpenHarmony SDK **26.0.0**, minimum compatible
-API **26**, ARM64 and Vulkan. A selected complete HarmonyOS SDK bundle uses
+API **26** and ARM64. Official native libraries support Vulkan and Compatibility
+through EGL/OpenGL ES 3.0+; the project's rendering method chooses the backend.
+A selected complete HarmonyOS SDK bundle uses
 `runtimeOS: HarmonyOS`; a standalone versioned OpenHarmony SDK uses
 `runtimeOS: OpenHarmony`. Both use dotted API26 SDK strings such as `26.0.0` for
 compile, target and compatible fields. Games use deviceTypes **`phone`** in

@@ -40,12 +40,18 @@ class RenderingDevice;
 class NativeMenu;
 
 class InputEvent;
+#ifdef GLES3_ENABLED
+class GLManagerOpenHarmony;
+#endif
 
 class DisplayServerOpenHarmony : public DisplayServer {
 	GDSOFTCLASS(DisplayServerOpenHarmony, DisplayServer);
 	String rendering_driver;
 	RenderingContextDriver *rendering_context = nullptr;
 	RenderingDevice *rendering_device = nullptr;
+#ifdef GLES3_ENABLED
+	GLManagerOpenHarmony *gl_manager = nullptr;
+#endif
 	// OpenHarmony has no global menu support, but the editor dereferences
 	// NativeMenu::get_singleton() unconditionally, so a plain NativeMenu (whose
 	// defaults report no features) has to exist, exactly as on the headless driver.
@@ -147,6 +153,10 @@ public:
 
 	virtual bool has_feature(DisplayServerEnums::Feature p_feature) const override;
 	virtual String get_name() const override;
+	virtual void release_rendering_thread() override;
+	virtual void gl_window_make_current(DisplayServerEnums::WindowID p_window_id) override;
+	virtual void swap_buffers() override;
+	virtual int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override;
 	virtual int get_screen_count() const override;
 	virtual int get_primary_screen() const override;
 	virtual Point2i screen_get_position(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override;
