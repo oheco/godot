@@ -3,8 +3,12 @@
 """Validate real native-window rendering with an existing signed OpenHarmony library.
 
 Builds/signs only the small ConsumerSurface runner, then boots the selected signed
-engine through its normal OS/Main C++ entry. Project settings select the renderer;
-no rendering-method/driver command-line override is used. Verifies 20 post-draw
+engine through its normal OS/Main C++ entry. Editor cases use a loose project;
+hardened templates require --editor-cli and --template-zip to export that same
+scene through the actual OpenHarmony exporter, then automatically load runner.pck
+beside runner.signed, with no --path/--main-pack or signed-ELF modification.
+Project settings select the renderer; no rendering-method/driver command-line
+override is used. Verifies 20 post-draw
 frames, 2D/3D/depth pixels, vsync requests/getters, and >=10 acquired/released real
 presentation buffers. --resize additionally requires 640x480 buffers after the
 public display resize boundary. It does not measure display scanout synchronization
@@ -28,6 +32,9 @@ import struct
 import subprocess
 import sys
 import tempfile
+import zipfile
+
+from pck_audit import pack_index
 
 
 SOURCE = Path(__file__).resolve().parents[3]
@@ -74,10 +81,12 @@ def isolated_environment(root):
     # Clear inherited engine/XDG overrides rather than passing user's settings to
     # the fixture. Keep the real HOME, including for native signing tools.
     environment = {name: value for name, value in os.environ.items()
-                   if not name.startswith(('GODOT_', 'XDG_', 'NATIVE_WINDOW_PROBE_'))}
+                   if not name.startswith(('GODOT_', 'XDG_', 'DOTNET_', 'NUGET_', 'COREHOST_', 'COMPlus_', 'LD_', 'NATIVE_WINDOW_PROBE_'))}
     variables = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
                  'XDG_RUNTIME_DIR', 'XDG_CONFIG_DIRS', 'XDG_DATA_DIRS',
-                 'GODOT_OHOS_DATA_DIR', 'GODOT_OHOS_CACHE_DIR', 'OHECO_ROOT', 'TMPDIR')
+                 'GODOT_OHOS_DATA_DIR', 'GODOT_OHOS_CACHE_DIR', 'OHECO_ROOT', 'TMPDIR',
+                 'DOTNET_CLI_HOME', 'NUGET_PACKAGES', 'NUGET_HTTP_CACHE_PATH',
+                 'NUGET_PLUGINS_CACHE_PATH', 'DOTNET_BUNDLE_EXTRACT_BASE_DIR')
     for variable in variables:
         directory = root / variable.lower()
         directory.mkdir(mode=0o700)
@@ -85,6 +94,8 @@ def isolated_environment(root):
     environment['TMP'] = environment['TMPDIR']
     environment['TEMP'] = environment['TMPDIR']
     environment.pop('LD_PRELOAD', None)
+    environment['PYTHONDONTWRITEBYTECODE'] = '1'
+    environment['DOTNET_CLI_TELEMETRY_OPTOUT'] = '1'
     return environment
 
 
@@ -113,7 +124,93 @@ window/vsync/vsync_mode=0
 [rendering]
 renderer/rendering_method="''' + method + '''"
 renderer/rendering_method.mobile="''' + method + '''"
+textures/vram_compression/import_etc2_astc=true
 ''').encode()
+
+
+def export_sdk_root(args):
+    selected = args.sdk_root or os.environ.get('GODOT_OHOS_SDK_ROOT')
+    if selected:
+        return Path(selected).expanduser().resolve(strict=True)
+    packages = Path(os.environ.get('OHECO_ROOT') or Path.home() / '.oheco')
+    launcher = (packages / 'bin/hvigorw').resolve(strict=True)
+    tools = next((parent for parent in launcher.parents if (parent / 'hvigor/bin/hvigorw.js').is_file()), None)
+    if tools is None:
+        raise RuntimeError('Select a real export SDK with --sdk-root or the active Command Line Tools')
+    return (tools / 'sdk').resolve(strict=True)
+
+
+def native_build(library, launcher=None):
+    metadata = json.loads((library.parent / 'build-info.json').read_text(encoding='utf-8'))
+    if metadata.get('libgodot.so_sha256') != sha256(library) or metadata.get('openharmony_host_abi') != 4:
+        raise RuntimeError('Signed library hash/ABI differs from its build-info.json')
+    if launcher and (metadata.get('godot_sha256') != sha256(launcher) or not signed_elf(launcher) or not signed_elf(library)):
+        raise RuntimeError('Export Editor must match its signed launcher/library build-info.json')
+    return metadata
+
+
+def export_template_pack(args, project, runtime, environment, destination, receipt, export_sdk):
+    editor = args.editor_cli.expanduser().resolve(strict=True)
+    archive_path = args.template_zip.expanduser().resolve(strict=True)
+    library = Path(receipt['library'])
+    editor_library = editor.parent / 'libgodot.so'
+    native = native_build(library)
+    editor_native = native_build(editor_library, editor)
+    if native['source_commit'] != editor_native['source_commit'] or native['engine_version'] != editor_native['engine_version']:
+        raise RuntimeError('Export Editor and selected template library must be built from the same engine version/source')
+    with zipfile.ZipFile(archive_path) as archive:
+        metadata = json.loads(archive.read('entry/src/main/resources/rawfile/godot_template.json'))
+        with archive.open('entry/libs/arm64-v8a/libgodot.so') as payload:
+            payload_hash = hashlib.file_digest(payload, 'sha256').hexdigest()
+    if (metadata.get('hostAbi') != native['openharmony_host_abi'] or metadata.get('target') != args.engine_target
+            or metadata.get('architecture') != 'arm64-v8a' or receipt['driver'] not in metadata.get('renderingDrivers', ['vulkan'])
+            or payload_hash != receipt['library_sha256']):
+        raise RuntimeError('Actual template ZIP metadata/library must match the selected signed native engine')
+    protected = (editor, editor_library, archive_path, editor.parent / 'build-info.json', library.parent / 'build-info.json')
+    receipt.update(editor_cli=str(editor), editor_native_build=editor_native, native_build=native,
+                   template_zip=str(archive_path), template_zip_sha256=sha256(archive_path), template_metadata=metadata,
+                   template_library_sha256=payload_hash, export_sdk_root=str(export_sdk),
+                   launch_input_sha256={str(path): sha256(path) for path in protected})
+    # Only the Editor can accept --path. Its loader must not pick up the selected
+    # template library from the native runner's LD_LIBRARY_PATH.
+    export_environment = dict(environment, LD_LIBRARY_PATH=str(editor.parent), GODOT_OHOS_SDK_ROOT=str(export_sdk))
+    version_command = [editor, '--version']
+    receipt['editor_version_exit'] = run(version_command, cwd=project, environment=export_environment,
+                                       log=destination / 'editor-version.log', timeout=60)
+    version_lines = (destination / 'editor-version.log').read_text(encoding='utf-8').splitlines()
+    if receipt['editor_version_exit'] or editor_native['engine_version'] not in version_lines:
+        raise RuntimeError('Actual signed export Editor version differs from build-info.json')
+    receipt['editor_version'] = editor_native['engine_version']
+    preset = ('[preset.0]\nname="OpenHarmony"\nplatform="OpenHarmony"\nrunnable=true\n'
+              'advanced_options=true\nexport_filter="all_resources"\ninclude_filter=""\nexclude_filter=""\n[preset.0.options]\n'
+              'architectures/arm64=true\narchitectures/x86_64=false\n'
+              'build/export_project_only=true\nbuild/override_project_dir=false\nbuild/sign=false\n'
+              'build/bundle_id="org.oheco.renderingwindowfixture"\n')
+    mode = 'debug' if args.engine_target == 'template_debug' else 'release'
+    preset += 'custom_template/' + mode + '=' + json.dumps(str(archive_path)) + '\n'
+    (project / 'export_presets.cfg').write_text(preset, encoding='utf-8')
+    export_target = project.parent / 'Window.hap'
+    command = [editor, '--headless', '--path', project, '--export-' + mode, 'OpenHarmony', export_target]
+    receipt.update(export_argv=[str(value) for value in command], export_cwd=str(project),
+                   export_project_only=True, product_build_requested=False, product_sign_requested=False)
+    receipt['export_exit'] = run(command, cwd=project, environment=export_environment, log=destination / 'export.log', timeout=300)
+    export_log = (destination / 'export.log').read_text(encoding='utf-8', errors='replace')
+    if receipt['export_exit'] or 'SCRIPT ERROR:' in export_log or 'Build skipped as requested.' not in export_log or export_target.exists():
+        raise RuntimeError('Actual project-only export failed or unexpectedly built a HAP; see export.log')
+    generated = export_target.with_suffix('')
+    pck = generated / 'entry/src/main/resources/rawfile/template.pck'
+    entries = pack_index(pck)
+    exported_library_hash = sha256(generated / 'entry/libs/arm64-v8a/libgodot.so')
+    if exported_library_hash != payload_hash:
+        raise RuntimeError('Actual exporter changed the signed template native payload')
+    adjacent = runtime / 'runner.pck'  # Main strips the .signed extension from EXEC_PATH.
+    shutil.copyfile(pck, adjacent)
+    if sha256(adjacent) != sha256(pck):
+        raise RuntimeError('Adjacent exported PCK copy differs from the actual export')
+    receipt.update(exported_library_sha256=exported_library_hash, exported_pck=str(pck),
+                   pck_sha256=sha256(pck), pck_size=pck.stat().st_size, sidecar_pck=str(adjacent),
+                   sidecar_pck_sha256=sha256(adjacent),
+                   pck_index=[dict(path=entry.path, size=entry.size, md5=entry.md5) for entry in entries])
 
 
 def collect_result(destination, args, receipt):
@@ -154,8 +251,14 @@ def collect_result(destination, args, receipt):
     driver = 'opengl3' if args.method == 'gl_compatibility' else 'vulkan'
     resize_passed = (receipt['native_resize_observed'] and size_data.get('initial', 0) > 0
                      and size_data.get('resized', 0) >= MINIMUM_RESIZED_BUFFERS) if args.resize else size_data.get('initial', 0) >= MINIMUM_BUFFERS
+    packed_ok = args.engine_target == 'editor' or (
+        receipt.get('export_exit') == 0 and receipt.get('noPathOverrides') and receipt.get('runtime_no_loose_project')
+        and receipt.get('pck_sha256') == receipt.get('sidecar_pck_sha256')
+        and receipt.get('exported_library_sha256') == receipt['library_sha256']
+        and receipt.get('template_library_sha256') == receipt['library_sha256'])
     receipt['pass'] = bool(
-        receipt.get('run_exit') == 0 and receipt['loaded_library_matches'] and receipt.get('temporary_cleaned')
+        packed_ok and receipt.get('launch_inputs_unchanged') and receipt.get('runner_unchanged')
+        and receipt.get('run_exit') == 0 and receipt['loaded_library_matches'] and receipt.get('temporary_cleaned')
         and receipt.get('project_unchanged') and receipt.get('sources_unchanged') and receipt.get('library_unchanged')
         and not receipt['egl_swap_interval_errors'] and not receipt['crash_logs']
         and graphics.get('pass') is True and graphics.get('method') == args.method and graphics.get('driver') == driver
@@ -173,6 +276,7 @@ def run_fixture(args, destination, receipt):
         raise RuntimeError('Run on native aarch64 HarmonyOS')
     sdk = args.native_sdk.expanduser().resolve(strict=True)
     library = args.library.expanduser().resolve(strict=True)
+    export_sdk = export_sdk_root(args) if args.engine_target != 'editor' else None
     if library.name.endswith(('.raw', '.unsigned')) or not signed_elf(library):
         raise RuntimeError('Refusing an unsigned/raw engine library; a pre-signed ELF with .codesign is required')
     compiler = sdk / 'llvm/bin/clang++'
@@ -189,6 +293,8 @@ def run_fixture(args, destination, receipt):
                    native_sdk=str(sdk), source=str(SOURCE), engine_target=args.engine_target,
                    method=args.method, driver='opengl3' if args.method == 'gl_compatibility' else 'vulkan',
                    renderer_selection='project.godot', renderer_cli_overrides=False,
+                   project_launch='editor-loose-project' if args.engine_target == 'editor' else 'exported-adjacent-pck',
+                   signed_elf_pack_appended=False, launch_input_sha256={},
                    render_thread=args.render_thread or 'engine-default', resize_requested=args.resize,
                    minimum_buffers=MINIMUM_BUFFERS, minimum_resized_buffers=MINIMUM_RESIZED_BUFFERS if args.resize else 0,
                    signed_execution_only=True, display_scanout_sync_measured=False,
@@ -211,7 +317,9 @@ def run_fixture(args, destination, receipt):
                 environment['GODOT_RENDERING_WINDOW_DRIVER'] = receipt['driver']
                 environment['GODOT_RENDERING_WINDOW_RESIZE'] = '1' if args.resize else '0'
                 receipt['home_preserved'] = environment.get('HOME') == os.environ.get('HOME')
-                unsigned, executable = work / 'runner.unsigned', work / 'runner.signed'
+                runtime = work / 'runtime'
+                runtime.mkdir()
+                unsigned, executable = work / 'runner.unsigned', runtime / 'runner.signed'
                 defines = ['OPENHARMONY_ENABLED', 'UNIX_ENABLED', 'THREADS_ENABLED', '__OPEN_HARMONY__', 'VULKAN_ENABLED', 'RD_ENABLED', 'NDEBUG']
                 if args.engine_target == 'editor':
                     defines.append('TOOLS_ENABLED')
@@ -246,16 +354,29 @@ def run_fixture(args, destination, receipt):
                     '[node name="NativeWindowFixture" type="Node3D"]\nscript = ExtResource("1")\n', encoding='utf-8')
                 shutil.copyfile(TESTS / 'rendering_window_scene.gd', project / 'rendering_window_scene.gd')
                 receipt['project_settings_sha256'] = hashlib.sha256(project_bytes).hexdigest()
-                command = [executable, '--path', project, '--audio-driver', 'Dummy', '--resolution', '320x240',
-                           '--log-file', destination / 'engine.log', '--verbose']
+                command = [executable]
+                if args.engine_target == 'editor':
+                    command += ['--path', project]
+                else:
+                    export_template_pack(args, project, runtime, environment, destination, receipt, export_sdk)
+                receipt['runtime_no_loose_project'] = not (runtime / 'project.godot').exists() and not project.is_relative_to(runtime)
+                receipt['runtime_entries_before_start'] = sorted(path.name for path in runtime.iterdir())
+                receipt['noPathOverrides'] = '--path' not in command and '--main-pack' not in command
+                if args.engine_target != 'editor' and (not receipt['noPathOverrides'] or not receipt['runtime_no_loose_project']
+                        or receipt['runtime_entries_before_start'] != ['runner.pck', 'runner.signed']):
+                    raise RuntimeError('Hardened template must use only its signed runner and adjacent real exported pack')
+                command += ['--audio-driver', 'Dummy', '--resolution', '320x240',
+                            '--log-file', destination / 'engine.log', '--verbose']
                 if args.render_thread:
                     command += ['--render-thread', args.render_thread]
                 receipt['run_argv'] = [str(value) for value in command]
+                receipt['run_cwd'] = str(runtime)
                 try:
-                    receipt['run_exit'] = run(command, cwd=work, environment=environment, log=destination / 'runner.log', timeout=100)
+                    receipt['run_exit'] = run(command, cwd=runtime, environment=environment, log=destination / 'runner.log', timeout=100)
                 except subprocess.TimeoutExpired:
                     receipt['run_exit'] = 'timeout'
                 receipt['project_unchanged'] = project_path.read_bytes() == project_bytes
+                receipt['runner_unchanged'] = sha256(executable) == receipt['runner_sha256']
             finally:
                 for index, crash in enumerate(work.rglob('godot-*-crash.log')):
                     shutil.copyfile(crash, destination / ('native-' + str(index) + '-' + crash.name))
@@ -266,6 +387,7 @@ def run_fixture(args, destination, receipt):
             receipt['temporary_cleaned'] = not work.exists()
         receipt['sources_unchanged'] = all(path.read_bytes() == data for path, data in snapshots.items())
         receipt['library_unchanged'] = sha256(library) == receipt['library_sha256']
+        receipt['launch_inputs_unchanged'] = all(sha256(Path(path)) == digest for path, digest in receipt['launch_input_sha256'].items())
     collect_result(destination, args, receipt)
 
 
@@ -274,11 +396,18 @@ def main():
     parser.add_argument('--native-sdk', type=Path, required=True, help='Prepared native SDK with llvm/ and sysroot/')
     parser.add_argument('--library', type=Path, required=True, help='Existing signed libgodot.so for the selected target')
     parser.add_argument('--engine-target', choices=('editor', 'template_debug', 'template_release'), required=True)
+    parser.add_argument('--editor-cli', type=Path, help='Signed Editor CLI for actual template project-only export')
+    parser.add_argument('--template-zip', type=Path, help='Actual template ZIP containing exactly the selected signed library')
+    parser.add_argument('--sdk-root', type=Path, help='Real export SDK root; defaults to GODOT_OHOS_SDK_ROOT or the active tools bundled SDK')
     parser.add_argument('--method', choices=('mobile', 'forward_plus', 'gl_compatibility'), required=True)
     parser.add_argument('--output', type=Path, required=True, help='NEW output directory; parent must already exist')
     parser.add_argument('--render-thread', choices=('safe', 'separate'))
     parser.add_argument('--resize', action='store_true', help='Resize the real producer/display to 640x480 at loop iteration 8')
     args = parser.parse_args()
+    if args.engine_target != 'editor' and (not args.editor_cli or not args.template_zip):
+        parser.error('Template cases require --editor-cli and --template-zip for a real exported adjacent PCK')
+    if args.engine_target == 'editor' and any((args.editor_cli, args.template_zip, args.sdk_root)):
+        parser.error('--editor-cli, --template-zip and --sdk-root are for template cases')
     requested = args.output.expanduser()
     if requested.exists() or requested.is_symlink():
         parser.error('--output must be a new directory; existing evidence is never overwritten')

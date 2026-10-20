@@ -41,14 +41,30 @@ After the platform build has generated its headers, select the corresponding
 signed Editor, debug or release library:
 
 ```sh
-python3 platform/openharmony/tests/test_rendering_window.py \
+python3 -B platform/openharmony/tests/test_rendering_window.py \
   --native-sdk "$NATIVE_SDK" --library "$SIGNED_EDITOR_LIBRARY" \
   --engine-target editor --method gl_compatibility \
   --render-thread separate --resize --output "$NEW_WINDOW_EVIDENCE_DIR"
+python3 -B platform/openharmony/tests/test_rendering_window.py \
+  --native-sdk "$NATIVE_SDK" --library "$SIGNED_DEBUG_LIBRARY" \
+  --engine-target template_debug --editor-cli "$SIGNED_EDITOR_CLI" \
+  --template-zip "$SIGNED_DEBUG_TEMPLATE_ZIP" --sdk-root "$SDK_ROOT" \
+  --method gl_compatibility --output "$NEW_TEMPLATE_WINDOW_EVIDENCE_DIR"
 ```
 
-Use `--method mobile` or `--method forward_plus` for Vulkan, and
-`--engine-target template_debug` / `template_release` for those signed libraries.
+Use `--method mobile` or `--method forward_plus` for Vulkan. For release, select
+`--engine-target template_release` and its matching signed library/template ZIP.
+Template cases require a signed Editor CLI and a real template ZIP whose native
+payload matches the selected library and adjacent build-info provenance. The
+actual OpenHarmony project-only exporter produces the fixture PCK with build/sign
+disabled. The runner automatically discovers its adjacent `runner.pck` in a
+separate runtime directory, without `--path`, `--main-pack`, a loose project in
+cwd or modification of the signed ELF. Editor cases retain loose-project startup.
+`--sdk-root` selects a real export SDK; its default is the caller's
+`GODOT_OHOS_SDK_ROOT` or the active Command Line Tools' bundled SDK. Export logs,
+PCK/template/native hashes and runtime arguments/cwd are recorded in the receipt;
+the exported project and sidecar PCK are temporary. This covers pack loading and
+ConsumerSurface rendering; HAP NativeResourceManager startup remains separate.
 Omit `--resize` for 320×240 and use `--render-thread safe` for a main-thread run.
 The test preserves HOME and isolates project/XDG/Godot/oo paths in TMPDIR. It
 compiles and signs only its small runner, verifies the selected library's signed
