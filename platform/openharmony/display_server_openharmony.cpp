@@ -165,6 +165,8 @@ DisplayServerOpenHarmony::~DisplayServerOpenHarmony() {
 		ohos_wrapper_set_mouse_mode(OS_OpenHarmony::get_singleton()->get_window_id(), false, true, true);
 	}
 	if (rendering_device) {
+		// RenderingServer has joined its worker; reclaim the device for final cleanup.
+		rendering_device->make_current();
 		memdelete(rendering_device);
 	}
 	if (rendering_context) {
