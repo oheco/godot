@@ -190,6 +190,10 @@ void DisplayServerOpenHarmony::release_rendering_thread() {
 }
 
 void DisplayServerOpenHarmony::gl_window_make_current(DisplayServerEnums::WindowID p_window_id) {
+	// Off-screen viewports use the context already bound to the rendering thread.
+	if (p_window_id == DisplayServerEnums::INVALID_WINDOW_ID) {
+		return;
+	}
 	ERR_FAIL_COND(p_window_id != DisplayServerEnums::MAIN_WINDOW_ID);
 #ifdef GLES3_ENABLED
 	if (gl_manager) {

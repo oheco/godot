@@ -8,8 +8,8 @@ hardened templates require --editor-cli and --template-zip to export that same
 scene through the actual OpenHarmony exporter, then automatically load runner.pck
 beside runner.signed, with no --path/--main-pack or signed-ELF modification.
 Project settings select the renderer; no rendering-method/driver command-line
-override is used. Verifies 20 post-draw
-frames, 2D/3D/depth pixels, vsync requests/getters, and >=10 acquired/released real
+override is used. Verifies 20 post-draw frames, 2D/3D/depth pixels, a real
+SubViewport's readback and composited texture, vsync requests/getters, and >=10 acquired/released real
 presentation buffers. --resize additionally requires 640x480 buffers after the
 public display resize boundary. It does not measure display scanout synchronization
 or cover ArkTS, HAP installation, UIAbility or visible ArkUI windows.
@@ -213,11 +213,47 @@ def export_template_pack(args, project, runtime, environment, destination, recei
                    pck_index=[dict(path=entry.path, size=entry.size, md5=entry.md5) for entry in entries])
 
 
+def log_errors(text, engine_target):
+    """Allow two exact, once-per-log diagnostics of this GDScript-only host."""
+    lines = re.sub(r'\x1b\[[0-9;]*m', '', text).splitlines()
+    errors, allowed = [], set()
+    for index, line in enumerate(lines):
+        message = line.strip()
+        if not re.match(r'^(?:ERROR|SCRIPT ERROR|USER ERROR|FATAL(?: ERROR)?):', message):
+            continue
+        origin = lines[index + 1].strip() if index + 1 < len(lines) else ''
+        policy = None
+        # ConsumerSurface has no UIAbility to queue a window-mode request to.
+        if (message == 'ERROR: Cannot queue window mode change.'
+                and re.fullmatch(r'at: window_set_mode \(platform/openharmony/display_server_openharmony\.cpp:\d+\)', origin)):
+            policy = 'consumer-without-uiability'
+        # The isolated Editor runs only GDScript and deliberately has no .NET root.
+        if (engine_target == 'editor' and message == 'ERROR: The host fxr folder does not exist: /usr/share/dotnet/host/fxr.'
+                and re.fullmatch(r'at: try_get_path_from_dotnet_root \(modules/mono/editor/hostfxr_resolver\.cpp:\d+\)', origin)):
+            policy = 'gdscript-editor-without-dotnet'
+        expected = policy is not None and policy not in allowed
+        if expected:
+            allowed.add(policy)
+        errors.append(dict(line=index + 1, message=message, origin=origin,
+                           expected=expected, fixture_allowance=policy))
+    return errors
+
+
 def collect_result(destination, args, receipt):
     log_path = destination / 'runner.log'
     log = log_path.read_text(encoding='utf-8', errors='replace') if log_path.exists() else ''
     engine_log_path = destination / 'engine.log'
     engine_log = engine_log_path.read_text(encoding='utf-8', errors='replace') if engine_log_path.exists() else ''
+    receipt['engine_log_present'] = bool(engine_log.strip())
+    receipt['engine_log_sha256'] = sha256(engine_log_path) if engine_log_path.is_file() else None
+    receipt['engine_errors'] = log_errors(engine_log, args.engine_target)
+    receipt['runner_errors'] = log_errors(log, args.engine_target)
+    receipt['unexpected_engine_errors'] = [error for error in receipt['engine_errors'] if not error['expected']]
+    receipt['unexpected_runner_errors'] = [error for error in receipt['runner_errors'] if not error['expected']]
+    binding_error = re.compile(r'gl_window_make_current|MAIN_WINDOW_ID|make.?current|(?:bind|release).*context|context.*(?:current|bind)', re.IGNORECASE)
+    receipt['gl_context_binding_errors'] = [dict(log=source, **error) for source, errors in
+                                          (('engine.log', receipt['engine_errors']), ('runner.log', receipt['runner_errors']))
+                                          for error in errors if binding_error.search(error['message'] + ' ' + error['origin'])]
     expected_library = receipt['library']
     receipt['loaded_library_matches'] = bool(re.search(
         r'^ENGINE_LIBRARY path=' + re.escape(expected_library) + r' expected=' + re.escape(expected_library) + r' match=1$', log, re.MULTILINE))
@@ -236,14 +272,15 @@ def collect_result(destination, args, receipt):
     graphics_path = destination / 'viewport-receipt.json'
     if graphics_path.exists():
         receipt['graphics'] = json.loads(graphics_path.read_text(encoding='utf-8'))
-    png = destination / 'viewport.png'
     expected_size = [640, 480] if args.resize else [320, 240]
-    if png.exists():
-        with png.open('rb') as stream:
-            header = stream.read(24)
-        if len(header) == 24 and header[:8] == b'\x89PNG\r\n\x1a\n' and header[12:16] == b'IHDR':
-            receipt['png_size'] = list(struct.unpack('>II', header[16:24]))
-        receipt['png_sha256'] = sha256(png)
+    for prefix, filename in (('png', 'viewport.png'), ('offscreen_png', 'offscreen.png')):
+        png = destination / filename
+        if png.exists():
+            with png.open('rb') as stream:
+                header = stream.read(24)
+            if len(header) == 24 and header[:8] == b'\x89PNG\r\n\x1a\n' and header[12:16] == b'IHDR':
+                receipt[prefix + '_size'] = list(struct.unpack('>II', header[16:24]))
+            receipt[prefix + '_sha256'] = sha256(png)
     receipt['crash_logs'] = sorted(path.name for path in destination.glob('*crash.log'))
     consumer_data = receipt.get('consumer', {})
     size_data = receipt.get('consumer_sizes', {})
@@ -261,9 +298,16 @@ def collect_result(destination, args, receipt):
         and receipt.get('run_exit') == 0 and receipt['loaded_library_matches'] and receipt.get('temporary_cleaned')
         and receipt.get('project_unchanged') and receipt.get('sources_unchanged') and receipt.get('library_unchanged')
         and not receipt['egl_swap_interval_errors'] and not receipt['crash_logs']
+        and receipt['engine_log_present'] and not receipt['unexpected_engine_errors']
+        and not receipt['unexpected_runner_errors'] and not receipt['gl_context_binding_errors']
         and graphics.get('pass') is True and graphics.get('method') == args.method and graphics.get('driver') == driver
         and graphics.get('viewport_size') == expected_size and graphics.get('frame_post_draw_waits') == 20
         and graphics.get('checks', {}).get('vsync_requests_and_getters') is True
+        and graphics.get('offscreen_viewport_size') == [64, 64] and graphics.get('offscreen_update_always') is True
+        and receipt.get('offscreen_png_size') == [64, 64]
+        and all(graphics.get('checks', {}).get(check) is True for check in (
+            'offscreen_image_valid', 'offscreen_size', 'offscreen_white', 'offscreen_magenta',
+            'offscreen_composite_white', 'offscreen_composite_magenta', 'offscreen_png_saved'))
         and graphics.get('display_scanout_sync_measured') is False and receipt.get('png_size') == expected_size
         and consumer_data.get('acquired', 0) >= MINIMUM_BUFFERS
         and consumer_data.get('acquired') == consumer_data.get('released')

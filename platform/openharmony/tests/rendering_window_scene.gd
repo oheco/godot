@@ -2,6 +2,12 @@
 # Native-window graphics acceptance; display scanout synchronization is not measured.
 extends Node3D
 
+func image_sha256(image: Image) -> String:
+	var context := HashingContext.new()
+	context.start(HashingContext.HASH_SHA256)
+	context.update(image.get_data())
+	return context.finish().hex_encode()
+
 func _ready() -> void:
 	var environment := Environment.new()
 	environment.background_mode = Environment.BG_COLOR
@@ -48,6 +54,33 @@ func _ready() -> void:
 	cyan.color = Color(0, 1, 1)
 	overlay.add_child(cyan)
 
+	# Every off-screen GLES draw uses INVALID_WINDOW_ID and must preserve the
+	# rendering thread's current context. Composite an asymmetric real texture,
+	# rather than only exercising the main window's render target.
+	var offscreen := SubViewport.new()
+	offscreen.size = Vector2i(64, 64)
+	offscreen.disable_3d = true
+	offscreen.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	offscreen.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	add_child(offscreen)
+	var magenta := ColorRect.new()
+	magenta.size = Vector2(64, 64)
+	magenta.color = Color(1, 0, 1)
+	offscreen.add_child(magenta)
+	var white := ColorRect.new()
+	white.position = Vector2(4, 8)
+	white.size = Vector2(20, 16)
+	white.color = Color(1, 1, 1)
+	offscreen.add_child(white)
+	var composite := TextureRect.new()
+	composite.position = Vector2(236, 164)
+	composite.size = Vector2(64, 64)
+	composite.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	composite.stretch_mode = TextureRect.STRETCH_SCALE
+	composite.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	composite.texture = offscreen.get_texture()
+	overlay.add_child(composite)
+
 	var vsync_requests: Array = []
 	var vsync_getters_match := true
 	for frame in range(20):
@@ -63,17 +96,34 @@ func _ready() -> void:
 	var expected_size := Vector2i(640, 480) if resize_requested else Vector2i(320, 240)
 	var image := get_viewport().get_texture().get_image()
 	var valid_image := image != null and not image.is_empty()
+	var offscreen_image := offscreen.get_texture().get_image()
+	var valid_offscreen := offscreen_image != null and not offscreen_image.is_empty()
 	var checks := {
 		"image_valid": valid_image,
 		"method_exact": RenderingServer.get_current_rendering_method() == OS.get_environment("GODOT_RENDERING_WINDOW_METHOD"),
 		"driver_exact": RenderingServer.get_current_rendering_driver_name() == OS.get_environment("GODOT_RENDERING_WINDOW_DRIVER"),
 		"vsync_requests_and_getters": vsync_getters_match and vsync_requests.size() == 3,
 		"viewport_size": valid_image and image.get_size() == expected_size,
+		"offscreen_image_valid": valid_offscreen,
+		"offscreen_size": valid_offscreen and offscreen_image.get_size() == Vector2i(64, 64),
+		"offscreen_white": false, "offscreen_magenta": false,
+		"offscreen_composite_white": false, "offscreen_composite_magenta": false,
 	}
 	var sample_colors := {}
 	var hash := ""
+	var offscreen_hash := ""
 	var png_status := ERR_UNCONFIGURED
+	var offscreen_png_status := ERR_UNCONFIGURED
 	var output := OS.get_environment("GODOT_RENDERING_WINDOW_OUTPUT")
+	if valid_offscreen and offscreen_image.get_size() == Vector2i(64, 64):
+		var offscreen_white := offscreen_image.get_pixel(12, 16)
+		var offscreen_magenta := offscreen_image.get_pixel(48, 48)
+		checks["offscreen_white"] = offscreen_white.is_equal_approx(Color(1, 1, 1))
+		checks["offscreen_magenta"] = offscreen_magenta.is_equal_approx(Color(1, 0, 1))
+		sample_colors["offscreen_white"] = str(offscreen_white)
+		sample_colors["offscreen_magenta"] = str(offscreen_magenta)
+		offscreen_hash = image_sha256(offscreen_image)
+		offscreen_png_status = offscreen_image.save_png(output.path_join("offscreen.png"))
 	if valid_image and image.get_size() == expected_size:
 		# The optional native resize preserves 4:3. World-space 3D samples scale;
 		# the CanvasLayer rectangles retain their ordinary fixed pixel positions.
@@ -90,13 +140,17 @@ func _ready() -> void:
 		checks["yellow_2d"] = yellow_pixel.is_equal_approx(Color(1, 1, 0))
 		checks["cyan_2d"] = cyan_pixel.is_equal_approx(Color(0, 1, 1))
 		checks["background"] = background.b > 0.2 and background.r < 0.02 and background.g < 0.02
-		sample_colors = {"red_3d": str(red_pixel), "green_3d_depth": str(green_pixel), "yellow_2d": str(yellow_pixel), "cyan_2d": str(cyan_pixel), "background": str(background)}
-		var hash_context := HashingContext.new()
-		hash_context.start(HashingContext.HASH_SHA256)
-		hash_context.update(image.get_data())
-		hash = hash_context.finish().hex_encode()
+		sample_colors.merge({"red_3d": str(red_pixel), "green_3d_depth": str(green_pixel), "yellow_2d": str(yellow_pixel), "cyan_2d": str(cyan_pixel), "background": str(background)})
+		var composite_white := image.get_pixel(248, 180)
+		var composite_magenta := image.get_pixel(284, 212)
+		checks["offscreen_composite_white"] = composite_white.is_equal_approx(Color(1, 1, 1))
+		checks["offscreen_composite_magenta"] = composite_magenta.is_equal_approx(Color(1, 0, 1))
+		sample_colors["offscreen_composite_white"] = str(composite_white)
+		sample_colors["offscreen_composite_magenta"] = str(composite_magenta)
+		hash = image_sha256(image)
 		png_status = image.save_png(output.path_join("viewport.png"))
 	checks["png_saved"] = png_status == OK
+	checks["offscreen_png_saved"] = offscreen_png_status == OK
 	var passed := true
 	for value in checks.values():
 		passed = passed and value
@@ -113,6 +167,10 @@ func _ready() -> void:
 		"checks": checks,
 		"sample_colors": sample_colors,
 		"png_status": png_status,
+		"offscreen_viewport_size": [offscreen_image.get_width(), offscreen_image.get_height()] if valid_offscreen else [],
+		"offscreen_update_always": offscreen.render_target_update_mode == SubViewport.UPDATE_ALWAYS,
+		"offscreen_pixel_sha256": offscreen_hash,
+		"offscreen_png_status": offscreen_png_status,
 		"headless": false,
 		"frame_post_draw_waits": 20,
 		"vsync_requests": vsync_requests,
